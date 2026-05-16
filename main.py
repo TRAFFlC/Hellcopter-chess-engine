@@ -1,53 +1,31 @@
 import argparse
 import logging
-import time
-from config import LOG_LEVEL, ENGINE_MAX_DEPTH, ENGINE_TIME_LIMIT
-from game import play_game
-
-
-def run_cli(games, max_depth, time_limit):
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s",
-                        level=getattr(logging, LOG_LEVEL, logging.INFO))
-    logger = logging.getLogger(__name__)
-
-    logger.info("Starting chess bot - Games: %s, Depth: %d, Time: %.1fs",
-                "infinite" if games == 0 else str(games), max_depth, time_limit)
-
-    game_count = 0
-    try:
-        while games == 0 or game_count < games:
-            game_count += 1
-            logger.info("Game %d starting", game_count)
-            try:
-                play_game(max_depth=max_depth, time_limit=time_limit)
-            except Exception as e:
-                logger.error("Error during game %d: %s", game_count, e)
-            logger.info("Game %d ended", game_count)
-            if games == 0 or game_count < games:
-                time.sleep(2)
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-
+import sys
 
 def main():
-    parser = argparse.ArgumentParser(description="Automated Chess Bot")
-    parser.add_argument("--games", "-g", type=int, default=0,
-                        help="Number of games to play (0 = infinite)")
-    parser.add_argument("--depth", "-d", type=int, default=ENGINE_MAX_DEPTH,
-                        help=f"Max search depth (default: {ENGINE_MAX_DEPTH})")
-    parser.add_argument("--time", "-t", type=float, default=ENGINE_TIME_LIMIT,
-                        help=f"Time limit per move in seconds (default: {ENGINE_TIME_LIMIT})")
-    parser.add_argument("--cli", action="store_true",
-                        help="Run in CLI mode (no GUI)")
+    parser = argparse.ArgumentParser(description="Hellcopter Chess Engine")
+    parser.add_argument("--gui", action="store_true", help="Run GUI")
+    parser.add_argument("--uci", action="store_true", help="Run as UCI engine")
+    parser.add_argument("--fen", type=str, help="FEN position to analyze")
+    parser.add_argument("--depth", type=int, default=10, help="Max search depth")
+    parser.add_argument("--time", type=float, default=2.0, help="Time limit in seconds")
     args = parser.parse_args()
 
-    if args.cli:
-        run_cli(args.games, args.depth, args.time)
+    if args.uci:
+        from uci_engine import main as uci_main
+        uci_main()
+    elif args.gui:
+        from gui import main as gui_main
+        gui_main()
+    elif args.fen:
+        import engine_wrapper as ew
+        ew.reload_library()
+        move, score, nodes = ew.search_with_score(args.fen, args.time, args.depth)
+        print(f"Move: {move}")
+        print(f"Score: {score}")
+        print(f"Nodes: {nodes:,}")
     else:
-        from gui import ChessBotGUI
-        app = ChessBotGUI()
-        app.run()
-
+        parser.print_help()
 
 if __name__ == "__main__":
     main()

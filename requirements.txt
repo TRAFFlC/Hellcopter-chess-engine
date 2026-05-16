@@ -1,5 +1,2 @@
-pyautogui
-opencv-python
 python-chess
 numpy
-Pillow
