@@ -1,9 +1,18 @@
 #include "engine_core.h"
+#include "engine_params.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <ctype.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <stdatomic.h>
+#endif
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -13,133 +22,52 @@
 #endif
 
 #define INF 1000000
-#define MATE_SCORE 900000
-#define DELTA 900
+#define EVAL_SCORE_INVALID 9999999
+/* MATE_SCORE and DELTA now defined in engine_params.h */
 #define MAX_MOVES 256
 #define ENGINE_VERSION 20260511
 
-static const int piece_values[7] = {0, 100, 300, 320, 480, 900, 20000};
+/* ============================================================================
+ * RUNTIME PARAMETER STRUCTURE
+ * ============================================================================
+ * This structure holds runtime-loaded parameters that can override the
+ * compile-time defaults from engine_params.h
+ */
+typedef struct
+{
+    int piece_values[7]; /* 0=empty, 1=pawn, 2=knight, 3=bishop, 4=rook, 5=queen, 6=king */
+    int mg_pst[6][64];   /* Middlegame PST for pawn, knight, bishop, rook, queen, king */
+    int eg_pst[6][64];   /* Endgame PST for pawn, knight, bishop, rook, queen, king */
+    int bishop_pair_bonus;
+    int doubled_pawn_penalty;
+    int isolated_pawn_penalty;
+    int passed_pawn_bonus[8];
+    int open_file_bonus;
+    int semi_open_file_bonus;
+    int null_move_reduction;
+    int null_move_min_depth;
+    int lmr_enabled;
+    int lmr_min_depth;
+    int lmr_move_threshold;
+    int futility_enabled;
+    int futility_margin_base;
+    int razoring_enabled;
+    int razoring_margin;
+    int mate_score;
+    int delta;
+    int threading_enabled;
+    int num_threads;
+    int loaded; /* Flag: 1 if parameters loaded from file, 0 if using defaults */
+} RuntimeParams;
 
-static const int mg_pawn[64] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
-    90, 90, 90, 90, 90, 90, 90, 90,
-    50, 50, 60, 80, 80, 60, 50, 50,
-    20, 20, 40, 65, 65, 40, 20, 20,
-    10, 10, 20, 45, 45, 20, 10, 10,
-    5, 0, -5, 10, 10, -5, 0, 5,
-    5, 10, 10, 0, 0, 10, 10, 5,
-    0, 0, 0, 0, 0, 0, 0, 0};
+/* Global runtime parameters - initialized to defaults */
+static RuntimeParams g_runtime_params = {0};
 
-static const int eg_pawn[64] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
-    80, 80, 80, 80, 80, 80, 80, 80,
-    50, 50, 50, 50, 50, 50, 50, 50,
-    30, 30, 30, 30, 30, 30, 30, 30,
-    20, 20, 20, 20, 20, 20, 20, 20,
-    10, 10, 10, 10, 10, 10, 10, 10,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0};
+/* Piece values array - using values from engine_params.h or runtime params */
+static const int piece_values[7] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, KING_VALUE};
 
-static const int mg_knight[64] = {
-    -50, -40, -30, -30, -30, -30, -40, -50,
-    -40, -20, 0, 0, 0, 0, -20, -40,
-    -30, 0, 10, 15, 15, 10, 0, -30,
-    -30, 5, 15, 30, 30, 15, 5, -30,
-    -30, 0, 15, 30, 30, 15, 0, -30,
-    -30, 5, 10, 15, 15, 10, 5, -30,
-    -40, -20, 0, 5, 5, 0, -20, -40,
-    -50, -40, -30, -30, -30, -30, -40, -50};
-
-static const int eg_knight[64] = {
-    -50, -40, -30, -30, -30, -30, -40, -50,
-    -40, -20, 0, 0, 0, 0, -20, -40,
-    -30, 0, 10, 15, 15, 10, 0, -30,
-    -30, 0, 15, 25, 25, 15, 0, -30,
-    -30, 0, 15, 25, 25, 15, 0, -30,
-    -30, 0, 10, 15, 15, 10, 0, -30,
-    -40, -20, 0, 0, 0, 0, -20, -40,
-    -50, -40, -30, -30, -30, -30, -40, -50};
-
-static const int mg_bishop[64] = {
-    -20, -10, -10, -10, -10, -10, -10, -20,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -10, 0, 5, 10, 10, 5, 0, -10,
-    -10, 5, 5, 10, 10, 5, 5, -10,
-    -10, 0, 10, 10, 10, 10, 0, -10,
-    -10, 10, 10, 10, 10, 10, 10, -10,
-    -10, 5, 0, 0, 0, 0, 5, -10,
-    -20, -10, -10, -10, -10, -10, -10, -20};
-
-static const int eg_bishop[64] = {
-    -20, -10, -10, -10, -10, -10, -10, -20,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -10, 0, 5, 10, 10, 5, 0, -10,
-    -10, 0, 10, 10, 10, 10, 0, -10,
-    -10, 0, 10, 10, 10, 10, 0, -10,
-    -10, 0, 10, 10, 10, 10, 0, -10,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -20, -10, -10, -10, -10, -10, -10, -20};
-
-static const int mg_rook[64] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
-    5, 10, 10, 10, 10, 10, 10, 5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    0, 0, 0, 5, 5, 0, 0, 0};
-
-static const int eg_rook[64] = {
-    0, 0, 0, 0, 0, 0, 0, 0,
-    5, 10, 10, 10, 10, 10, 10, 5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    -5, 0, 0, 0, 0, 0, 0, -5,
-    0, 0, 0, 5, 5, 0, 0, 0};
-
-static const int mg_queen[64] = {
-    -20, -10, -10, -5, -5, -10, -10, -20,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -10, 0, 5, 5, 5, 5, 0, -10,
-    -5, 0, 5, 5, 5, 5, 0, -5,
-    0, 0, 5, 5, 5, 5, 0, -5,
-    -10, 5, 5, 5, 5, 5, 0, -10,
-    -10, 0, 5, 0, 0, 0, 0, -10,
-    -20, -10, -10, -5, -5, -10, -10, -20};
-
-static const int eg_queen[64] = {
-    -20, -10, -10, -5, -5, -10, -10, -20,
-    -10, 0, 0, 0, 0, 0, 0, -10,
-    -10, 0, 5, 5, 5, 5, 0, -10,
-    -5, 0, 5, 5, 5, 5, 0, -5,
-    0, 0, 5, 5, 5, 5, 0, -5,
-    -10, 5, 5, 5, 5, 5, 0, -10,
-    -10, 0, 5, 0, 0, 0, 0, -10,
-    -20, -10, -10, -5, -5, -10, -10, -20};
-
-static const int mg_king[64] = {
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -20, -30, -30, -40, -40, -30, -30, -20,
-    -10, -20, -20, -20, -20, -20, -20, -10,
-    20, 20, 0, 0, 0, 0, 20, 20,
-    20, 30, 10, 0, 0, 10, 30, 20};
-
-static const int eg_king[64] = {
-    -50, -40, -30, -20, -20, -30, -40, -50,
-    -30, -20, -10, 0, 0, -10, -20, -30,
-    -30, -10, 20, 30, 30, 20, -10, -30,
-    -30, -10, 30, 40, 40, 30, -10, -30,
-    -30, -10, 30, 40, 40, 30, -10, -30,
-    -30, -10, 20, 30, 30, 20, -10, -30,
-    -30, -30, 0, 0, 0, 0, -30, -30,
-    -50, -30, -30, -30, -30, -30, -30, -50};
-
+/* PST tables are now defined in engine_params.h */
+/* Pointer arrays to access PST tables */
 static const int *mg_pst[7] = {NULL, mg_pawn, mg_knight, mg_bishop, mg_rook, mg_queen, mg_king};
 static const int *eg_pst[7] = {NULL, eg_pawn, eg_knight, eg_bishop, eg_rook, eg_queen, eg_king};
 
@@ -178,7 +106,7 @@ static U64 shift_south(U64 b) { return b >> 8; }
 static U64 shift_east(U64 b) { return (b << 1) & ~file_masks[0]; }
 static U64 shift_west(U64 b) { return (b >> 1) & ~file_masks[7]; }
 
-static U64 sliding_attacks_rook(int sq, U64 occupied)
+static U64 slow_rook_attacks(int sq, U64 occupied)
 {
     U64 attacks = 0;
     int r = rank_of(sq), f = file_of(sq);
@@ -214,7 +142,7 @@ static U64 sliding_attacks_rook(int sq, U64 occupied)
     return attacks;
 }
 
-static U64 sliding_attacks_bishop(int sq, U64 occupied)
+static U64 slow_bishop_attacks(int sq, U64 occupied)
 {
     U64 attacks = 0;
     int r = rank_of(sq), f = file_of(sq);
@@ -248,6 +176,108 @@ static U64 sliding_attacks_bishop(int sq, U64 occupied)
             break;
     }
     return attacks;
+}
+
+typedef struct {
+    U64 mask;
+    U64 magic;
+    int shift;
+    U64 *attacks;
+} MagicEntry;
+
+static MagicEntry rook_magics[64];
+static MagicEntry bishop_magics[64];
+static U64 rook_attack_table[102400];
+static U64 bishop_attack_table[5248];
+static int magics_initialized = 0;
+
+static U64 magic_prng_state;
+
+static U64 magic_prng_next(void)
+{
+    magic_prng_state ^= magic_prng_state >> 12;
+    magic_prng_state ^= magic_prng_state << 25;
+    magic_prng_state ^= magic_prng_state >> 27;
+    return magic_prng_state * 2685821657736338717ULL;
+}
+
+static U64 magic_prng_sparse(void)
+{
+    return magic_prng_next() & magic_prng_next() & magic_prng_next();
+}
+
+static void init_magics(MagicEntry magics[], U64 table[], int is_rook)
+{
+    U64 occupancy[4096];
+    U64 reference[4096];
+    int epoch[4096];
+    U64 seeds[8] = {8977ULL, 44560ULL, 54343ULL, 38998ULL,
+                    5731ULL, 95205ULL, 104912ULL, 17020ULL};
+    int cnt = 0;
+    int size = 0;
+    int sq, i;
+    unsigned idx;
+    U64 b, edges, attacks;
+
+    memset(epoch, 0, sizeof(epoch));
+
+    for (sq = 0; sq < 64; sq++)
+    {
+        edges = ((rank_masks[0] | rank_masks[7]) & ~rank_masks[rank_of(sq)]) |
+                ((file_masks[0] | file_masks[7]) & ~file_masks[file_of(sq)]);
+        attacks = is_rook ? slow_rook_attacks(sq, 0) : slow_bishop_attacks(sq, 0);
+
+        magics[sq].mask = attacks & ~edges;
+        magics[sq].shift = 64 - POPCNT64(magics[sq].mask);
+        magics[sq].attacks = sq == 0 ? table : magics[sq - 1].attacks + size;
+        size = 0;
+
+        b = 0;
+        do
+        {
+            occupancy[size] = b;
+            reference[size] = is_rook ? slow_rook_attacks(sq, b) : slow_bishop_attacks(sq, b);
+            size++;
+            b = (b - magics[sq].mask) & magics[sq].mask;
+        } while (b);
+
+        magic_prng_state = seeds[rank_of(sq)];
+
+        for (i = 0; i < size;)
+        {
+            for (magics[sq].magic = 0;
+                 POPCNT64((magics[sq].magic * magics[sq].mask) >> 56) < 6;)
+                magics[sq].magic = magic_prng_sparse();
+
+            for (++cnt, i = 0; i < size; ++i)
+            {
+                idx = (unsigned)(((occupancy[i] & magics[sq].mask) * magics[sq].magic) >> magics[sq].shift);
+                if (epoch[idx] < cnt)
+                {
+                    epoch[idx] = cnt;
+                    magics[sq].attacks[idx] = reference[i];
+                }
+                else if (magics[sq].attacks[idx] != reference[i])
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+static U64 sliding_attacks_rook(int sq, U64 occupied)
+{
+    MagicEntry *m = &rook_magics[sq];
+    unsigned idx = (unsigned)(((occupied & m->mask) * m->magic) >> m->shift);
+    return m->attacks[idx];
+}
+
+static U64 sliding_attacks_bishop(int sq, U64 occupied)
+{
+    MagicEntry *m = &bishop_magics[sq];
+    unsigned idx = (unsigned)(((occupied & m->mask) * m->magic) >> m->shift);
+    return m->attacks[idx];
 }
 
 static void init_knight_attacks(void)
@@ -308,6 +338,12 @@ static void ensure_engine_tables_initialized(void)
         init_king_attacks();
         attacks_initialized = 1;
     }
+    if (!magics_initialized)
+    {
+        init_magics(rook_magics, rook_attack_table, 1);
+        init_magics(bishop_magics, bishop_attack_table, 0);
+        magics_initialized = 1;
+    }
     if (!zobrist_initialized)
     {
         init_zobrist();
@@ -324,6 +360,872 @@ static void init_zobrist(void)
         zobrist_table[i] = seed;
     }
     zobrist_initialized = 1;
+}
+
+/* ============================================================================
+ * JSON PARSING HELPERS
+ * ============================================================================
+ * Simple JSON parser for loading engine parameters from configuration files.
+ * Supports basic JSON types: objects, arrays, strings, numbers, booleans.
+ */
+
+/* Skip whitespace in JSON string */
+static const char *skip_whitespace(const char *json)
+{
+    while (*json && isspace((unsigned char)*json))
+    {
+        json++;
+    }
+    return json;
+}
+
+/* Parse a JSON number */
+static const char *parse_json_number(const char *json, int *out_value)
+{
+    char *end;
+    long value = strtol(json, &end, 10);
+    if (end == json)
+    {
+        return NULL; /* Parse error */
+    }
+    *out_value = (int)value;
+    return end;
+}
+
+/* Parse a JSON boolean */
+static const char *parse_json_boolean(const char *json, int *out_value)
+{
+    if (strncmp(json, "true", 4) == 0)
+    {
+        *out_value = 1;
+        return json + 4;
+    }
+    else if (strncmp(json, "false", 5) == 0)
+    {
+        *out_value = 0;
+        return json + 5;
+    }
+    return NULL; /* Parse error */
+}
+
+/* Parse a JSON string (returns pointer to start of string content and length) */
+static const char *parse_json_string(const char *json, const char **out_start, int *out_length)
+{
+    if (*json != '"')
+    {
+        return NULL;
+    }
+    json++; /* Skip opening quote */
+
+    const char *start = json;
+    int length = 0;
+
+    while (*json && *json != '"')
+    {
+        if (*json == '\\')
+        {
+            json++; /* Skip escape character */
+            if (*json)
+                json++;
+        }
+        else
+        {
+            json++;
+        }
+        length++;
+    }
+
+    if (*json != '"')
+    {
+        return NULL; /* Missing closing quote */
+    }
+
+    *out_start = start;
+    *out_length = length;
+    return json + 1; /* Skip closing quote */
+}
+
+/* Find a key in JSON object and return pointer to its value */
+static const char *find_json_key(const char *json, const char *key)
+{
+    json = skip_whitespace(json);
+
+    if (*json != '{')
+    {
+        return NULL;
+    }
+    json++;
+
+    while (1)
+    {
+        json = skip_whitespace(json);
+
+        if (*json == '}')
+        {
+            return NULL; /* Key not found */
+        }
+
+        /* Parse key */
+        const char *key_start;
+        int key_length;
+        json = parse_json_string(json, &key_start, &key_length);
+        if (!json)
+        {
+            return NULL;
+        }
+
+        json = skip_whitespace(json);
+        if (*json != ':')
+        {
+            return NULL;
+        }
+        json++;
+        json = skip_whitespace(json);
+
+        /* Check if this is the key we're looking for */
+        if (strlen(key) == (size_t)key_length && strncmp(key_start, key, key_length) == 0)
+        {
+            return json; /* Found it! */
+        }
+
+        /* Skip the value */
+        int depth = 0;
+        int in_string = 0;
+        while (*json)
+        {
+            if (*json == '"' && (json == key_start || *(json - 1) != '\\'))
+            {
+                in_string = !in_string;
+            }
+            else if (!in_string)
+            {
+                if (*json == '{' || *json == '[')
+                {
+                    depth++;
+                }
+                else if (*json == '}' || *json == ']')
+                {
+                    if (depth == 0)
+                    {
+                        break;
+                    }
+                    depth--;
+                }
+                else if (*json == ',' && depth == 0)
+                {
+                    json++;
+                    break;
+                }
+            }
+            json++;
+        }
+    }
+}
+
+/* Parse a JSON array of integers */
+static const char *parse_json_int_array(const char *json, int *out_array, int max_count, int *out_count)
+{
+    json = skip_whitespace(json);
+
+    if (*json != '[')
+    {
+        return NULL;
+    }
+    json++;
+
+    int count = 0;
+    while (count < max_count)
+    {
+        json = skip_whitespace(json);
+
+        if (*json == ']')
+        {
+            *out_count = count;
+            return json + 1;
+        }
+
+        if (count > 0)
+        {
+            if (*json != ',')
+            {
+                return NULL;
+            }
+            json++;
+            json = skip_whitespace(json);
+        }
+
+        int value;
+        json = parse_json_number(json, &value);
+        if (!json)
+        {
+            return NULL;
+        }
+
+        out_array[count++] = value;
+    }
+
+    /* Skip remaining elements if array is longer than max_count */
+    json = skip_whitespace(json);
+    while (*json && *json != ']')
+    {
+        json++;
+    }
+
+    if (*json == ']')
+    {
+        *out_count = count;
+        return json + 1;
+    }
+
+    return NULL;
+}
+
+/* ============================================================================
+ * PARAMETER LOADING FUNCTION
+ * ============================================================================
+ */
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+load_params_from_file(const char *filename)
+{
+    FILE *file = fopen(filename, "r");
+    if (!file)
+    {
+        fprintf(stderr, "Error: Cannot open config file: %s\n", filename);
+        return 0;
+    }
+
+    /* Read entire file into memory */
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (file_size <= 0 || file_size > 10 * 1024 * 1024)
+    { /* Max 10MB */
+        fprintf(stderr, "Error: Invalid file size: %ld\n", file_size);
+        fclose(file);
+        return 0;
+    }
+
+    char *json = (char *)malloc(file_size + 1);
+    if (!json)
+    {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        fclose(file);
+        return 0;
+    }
+
+    size_t bytes_read = fread(json, 1, file_size, file);
+    json[bytes_read] = '\0';
+    fclose(file);
+
+    /* Parse JSON and load parameters */
+    const char *params_obj = find_json_key(json, "parameters");
+    if (!params_obj)
+    {
+        fprintf(stderr, "Error: 'parameters' key not found in config file\n");
+        free(json);
+        return 0;
+    }
+
+    /* Initialize runtime params with defaults from engine_params.h */
+    g_runtime_params.piece_values[0] = 0;
+    g_runtime_params.piece_values[1] = PAWN_VALUE;
+    g_runtime_params.piece_values[2] = KNIGHT_VALUE;
+    g_runtime_params.piece_values[3] = BISHOP_VALUE;
+    g_runtime_params.piece_values[4] = ROOK_VALUE;
+    g_runtime_params.piece_values[5] = QUEEN_VALUE;
+    g_runtime_params.piece_values[6] = KING_VALUE;
+
+    /* Copy PST defaults */
+    memcpy(g_runtime_params.mg_pst[0], mg_pawn, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[0], eg_pawn, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[1], mg_knight, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[1], eg_knight, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[2], mg_bishop, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[2], eg_bishop, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[3], mg_rook, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[3], eg_rook, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[4], mg_queen, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[4], eg_queen, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[5], mg_king, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[5], eg_king, 64 * sizeof(int));
+
+    g_runtime_params.bishop_pair_bonus = BISHOP_PAIR_BONUS;
+    g_runtime_params.doubled_pawn_penalty = DOUBLED_PAWN_PENALTY;
+    g_runtime_params.isolated_pawn_penalty = ISOLATED_PAWN_PENALTY;
+    memcpy(g_runtime_params.passed_pawn_bonus, passed_pawn_bonus, 8 * sizeof(int));
+    g_runtime_params.open_file_bonus = OPEN_FILE_BONUS;
+    g_runtime_params.semi_open_file_bonus = SEMI_OPEN_FILE_BONUS;
+    g_runtime_params.null_move_reduction = NULL_MOVE_REDUCTION;
+    g_runtime_params.null_move_min_depth = NULL_MOVE_MIN_DEPTH;
+    g_runtime_params.lmr_enabled = LMR_ENABLED;
+    g_runtime_params.lmr_min_depth = LMR_MIN_DEPTH;
+    g_runtime_params.lmr_move_threshold = LMR_MOVE_THRESHOLD;
+    g_runtime_params.futility_enabled = FUTILITY_ENABLED;
+    g_runtime_params.futility_margin_base = FUTILITY_MARGIN_BASE;
+    g_runtime_params.razoring_enabled = RAZORING_ENABLED;
+    g_runtime_params.razoring_margin = RAZORING_MARGIN;
+    g_runtime_params.mate_score = MATE_SCORE;
+    g_runtime_params.delta = DELTA;
+    g_runtime_params.threading_enabled = THREADING_ENABLED;
+    g_runtime_params.num_threads = NUM_THREADS;
+
+    /* Parse piece_values */
+    const char *piece_values_obj = find_json_key(params_obj, "piece_values");
+    if (piece_values_obj)
+    {
+        const char *val;
+        int value;
+
+        if ((val = find_json_key(piece_values_obj, "pawn")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[1] = value;
+            }
+        }
+        if ((val = find_json_key(piece_values_obj, "knight")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[2] = value;
+            }
+        }
+        if ((val = find_json_key(piece_values_obj, "bishop")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[3] = value;
+            }
+        }
+        if ((val = find_json_key(piece_values_obj, "rook")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[4] = value;
+            }
+        }
+        if ((val = find_json_key(piece_values_obj, "queen")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[5] = value;
+            }
+        }
+        if ((val = find_json_key(piece_values_obj, "king")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.piece_values[6] = value;
+            }
+        }
+    }
+
+    /* Parse PST tables */
+    const char *pst_obj = find_json_key(params_obj, "pst");
+    if (pst_obj)
+    {
+        const char *table;
+        int count;
+
+        if ((table = find_json_key(pst_obj, "mg_pawn")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[0], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_pawn")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[0], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "mg_knight")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[1], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_knight")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[1], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "mg_bishop")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[2], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_bishop")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[2], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "mg_rook")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[3], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_rook")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[3], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "mg_queen")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[4], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_queen")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[4], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "mg_king")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.mg_pst[5], 64, &count);
+        }
+        if ((table = find_json_key(pst_obj, "eg_king")) != NULL)
+        {
+            parse_json_int_array(table, g_runtime_params.eg_pst[5], 64, &count);
+        }
+    }
+
+    /* Parse eval_weights */
+    const char *eval_weights_obj = find_json_key(params_obj, "eval_weights");
+    if (eval_weights_obj)
+    {
+        const char *val;
+        int value, count;
+
+        if ((val = find_json_key(eval_weights_obj, "bishop_pair_bonus")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.bishop_pair_bonus = value;
+            }
+        }
+        if ((val = find_json_key(eval_weights_obj, "doubled_pawn_penalty")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.doubled_pawn_penalty = value;
+            }
+        }
+        if ((val = find_json_key(eval_weights_obj, "isolated_pawn_penalty")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.isolated_pawn_penalty = value;
+            }
+        }
+        if ((val = find_json_key(eval_weights_obj, "passed_pawn_bonus")) != NULL)
+        {
+            parse_json_int_array(val, g_runtime_params.passed_pawn_bonus, 8, &count);
+        }
+        if ((val = find_json_key(eval_weights_obj, "open_file_bonus")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.open_file_bonus = value;
+            }
+        }
+        if ((val = find_json_key(eval_weights_obj, "semi_open_file_bonus")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.semi_open_file_bonus = value;
+            }
+        }
+    }
+
+    /* Parse search_params */
+    const char *search_params_obj = find_json_key(params_obj, "search_params");
+    if (search_params_obj)
+    {
+        const char *val;
+        int value;
+
+        if ((val = find_json_key(search_params_obj, "null_move_reduction")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.null_move_reduction = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "null_move_min_depth")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.null_move_min_depth = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "lmr_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+            {
+                g_runtime_params.lmr_enabled = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "lmr_min_depth")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.lmr_min_depth = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "lmr_move_threshold")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.lmr_move_threshold = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "futility_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+            {
+                g_runtime_params.futility_enabled = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "futility_margin_base")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.futility_margin_base = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "razoring_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+            {
+                g_runtime_params.razoring_enabled = value;
+            }
+        }
+        if ((val = find_json_key(search_params_obj, "razoring_margin")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.razoring_margin = value;
+            }
+        }
+    }
+
+    /* Parse constants */
+    const char *constants_obj = find_json_key(params_obj, "constants");
+    if (constants_obj)
+    {
+        const char *val;
+        int value;
+
+        if ((val = find_json_key(constants_obj, "mate_score")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.mate_score = value;
+            }
+        }
+        if ((val = find_json_key(constants_obj, "delta")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.delta = value;
+            }
+        }
+    }
+
+    /* Parse threading */
+    const char *threading_obj = find_json_key(params_obj, "threading");
+    if (threading_obj)
+    {
+        const char *val;
+        int value;
+
+        if ((val = find_json_key(threading_obj, "enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+            {
+                g_runtime_params.threading_enabled = value;
+            }
+        }
+        if ((val = find_json_key(threading_obj, "num_threads")) != NULL)
+        {
+            if (parse_json_number(val, &value))
+            {
+                g_runtime_params.num_threads = value;
+            }
+        }
+    }
+
+    /* ========================================================================
+     * PARAMETER VALIDATION
+     * ========================================================================
+     * Validate all loaded parameters to ensure they are within reasonable
+     * ranges. This prevents invalid configurations from causing engine
+     * malfunction or undefined behavior.
+     */
+
+    int validation_errors = 0;
+    int validation_warnings = 0;
+
+    /* Validate piece values - must be positive and in reasonable ranges */
+    if (g_runtime_params.piece_values[1] <= 0 || g_runtime_params.piece_values[1] > 200)
+    {
+        fprintf(stderr, "ERROR: Invalid pawn value: %d (expected 50-200)\n",
+                g_runtime_params.piece_values[1]);
+        validation_errors++;
+    }
+    if (g_runtime_params.piece_values[2] <= 0 || g_runtime_params.piece_values[2] > 500)
+    {
+        fprintf(stderr, "ERROR: Invalid knight value: %d (expected 200-500)\n",
+                g_runtime_params.piece_values[2]);
+        validation_errors++;
+    }
+    if (g_runtime_params.piece_values[3] <= 0 || g_runtime_params.piece_values[3] > 500)
+    {
+        fprintf(stderr, "ERROR: Invalid bishop value: %d (expected 200-500)\n",
+                g_runtime_params.piece_values[3]);
+        validation_errors++;
+    }
+    if (g_runtime_params.piece_values[4] <= 0 || g_runtime_params.piece_values[4] > 800)
+    {
+        fprintf(stderr, "ERROR: Invalid rook value: %d (expected 300-800)\n",
+                g_runtime_params.piece_values[4]);
+        validation_errors++;
+    }
+    if (g_runtime_params.piece_values[5] <= 0 || g_runtime_params.piece_values[5] > 1500)
+    {
+        fprintf(stderr, "ERROR: Invalid queen value: %d (expected 700-1500)\n",
+                g_runtime_params.piece_values[5]);
+        validation_errors++;
+    }
+    if (g_runtime_params.piece_values[6] <= 0 || g_runtime_params.piece_values[6] > 100000)
+    {
+        fprintf(stderr, "ERROR: Invalid king value: %d (expected 10000-100000)\n",
+                g_runtime_params.piece_values[6]);
+        validation_errors++;
+    }
+
+    /* Validate piece value relationships */
+    if (g_runtime_params.piece_values[2] < g_runtime_params.piece_values[1])
+    {
+        fprintf(stderr, "WARNING: Knight value (%d) is less than pawn value (%d)\n",
+                g_runtime_params.piece_values[2], g_runtime_params.piece_values[1]);
+        validation_warnings++;
+    }
+    if (g_runtime_params.piece_values[3] < g_runtime_params.piece_values[1])
+    {
+        fprintf(stderr, "WARNING: Bishop value (%d) is less than pawn value (%d)\n",
+                g_runtime_params.piece_values[3], g_runtime_params.piece_values[1]);
+        validation_warnings++;
+    }
+    if (g_runtime_params.piece_values[4] < g_runtime_params.piece_values[2])
+    {
+        fprintf(stderr, "WARNING: Rook value (%d) is less than knight value (%d)\n",
+                g_runtime_params.piece_values[4], g_runtime_params.piece_values[2]);
+        validation_warnings++;
+    }
+    if (g_runtime_params.piece_values[5] < g_runtime_params.piece_values[4])
+    {
+        fprintf(stderr, "WARNING: Queen value (%d) is less than rook value (%d)\n",
+                g_runtime_params.piece_values[5], g_runtime_params.piece_values[4]);
+        validation_warnings++;
+    }
+
+    /* Validate PST tables - values should be within reasonable bounds */
+    int piece_idx, sq;
+    for (piece_idx = 0; piece_idx < 6; piece_idx++)
+    {
+        for (sq = 0; sq < 64; sq++)
+        {
+            if (g_runtime_params.mg_pst[piece_idx][sq] < -500 ||
+                g_runtime_params.mg_pst[piece_idx][sq] > 500)
+            {
+                fprintf(stderr, "WARNING: PST value out of range for piece %d square %d: mg=%d\n",
+                        piece_idx, sq, g_runtime_params.mg_pst[piece_idx][sq]);
+                validation_warnings++;
+            }
+            if (g_runtime_params.eg_pst[piece_idx][sq] < -500 ||
+                g_runtime_params.eg_pst[piece_idx][sq] > 500)
+            {
+                fprintf(stderr, "WARNING: PST value out of range for piece %d square %d: eg=%d\n",
+                        piece_idx, sq, g_runtime_params.eg_pst[piece_idx][sq]);
+                validation_warnings++;
+            }
+        }
+    }
+
+    /* Validate evaluation weights */
+    if (g_runtime_params.bishop_pair_bonus < 0 || g_runtime_params.bishop_pair_bonus > 200)
+    {
+        fprintf(stderr, "WARNING: Bishop pair bonus out of range: %d (expected 0-200)\n",
+                g_runtime_params.bishop_pair_bonus);
+        validation_warnings++;
+    }
+    if (g_runtime_params.doubled_pawn_penalty > 0 || g_runtime_params.doubled_pawn_penalty < -100)
+    {
+        fprintf(stderr, "WARNING: Doubled pawn penalty out of range: %d (expected -100 to 0)\n",
+                g_runtime_params.doubled_pawn_penalty);
+        validation_warnings++;
+    }
+    if (g_runtime_params.isolated_pawn_penalty > 0 || g_runtime_params.isolated_pawn_penalty < -100)
+    {
+        fprintf(stderr, "WARNING: Isolated pawn penalty out of range: %d (expected -100 to 0)\n",
+                g_runtime_params.isolated_pawn_penalty);
+        validation_warnings++;
+    }
+    if (g_runtime_params.open_file_bonus < 0 || g_runtime_params.open_file_bonus > 100)
+    {
+        fprintf(stderr, "WARNING: Open file bonus out of range: %d (expected 0-100)\n",
+                g_runtime_params.open_file_bonus);
+        validation_warnings++;
+    }
+    if (g_runtime_params.semi_open_file_bonus < 0 || g_runtime_params.semi_open_file_bonus > 100)
+    {
+        fprintf(stderr, "WARNING: Semi-open file bonus out of range: %d (expected 0-100)\n",
+                g_runtime_params.semi_open_file_bonus);
+        validation_warnings++;
+    }
+
+    /* Validate passed pawn bonuses */
+    int rank;
+    for (rank = 0; rank < 8; rank++)
+    {
+        if (g_runtime_params.passed_pawn_bonus[rank] < 0 ||
+            g_runtime_params.passed_pawn_bonus[rank] > 300)
+        {
+            fprintf(stderr, "WARNING: Passed pawn bonus for rank %d out of range: %d (expected 0-300)\n",
+                    rank, g_runtime_params.passed_pawn_bonus[rank]);
+            validation_warnings++;
+        }
+    }
+
+    /* Validate search parameters */
+    if (g_runtime_params.null_move_reduction < 1 || g_runtime_params.null_move_reduction > 5)
+    {
+        fprintf(stderr, "ERROR: Null move reduction out of range: %d (expected 1-5)\n",
+                g_runtime_params.null_move_reduction);
+        validation_errors++;
+    }
+    if (g_runtime_params.null_move_min_depth < 1 || g_runtime_params.null_move_min_depth > 10)
+    {
+        fprintf(stderr, "ERROR: Null move min depth out of range: %d (expected 1-10)\n",
+                g_runtime_params.null_move_min_depth);
+        validation_errors++;
+    }
+    if (g_runtime_params.lmr_enabled != 0 && g_runtime_params.lmr_enabled != 1)
+    {
+        fprintf(stderr, "ERROR: LMR enabled must be 0 or 1, got: %d\n",
+                g_runtime_params.lmr_enabled);
+        validation_errors++;
+    }
+    if (g_runtime_params.lmr_min_depth < 1 || g_runtime_params.lmr_min_depth > 10)
+    {
+        fprintf(stderr, "ERROR: LMR min depth out of range: %d (expected 1-10)\n",
+                g_runtime_params.lmr_min_depth);
+        validation_errors++;
+    }
+    if (g_runtime_params.lmr_move_threshold < 1 || g_runtime_params.lmr_move_threshold > 10)
+    {
+        fprintf(stderr, "ERROR: LMR move threshold out of range: %d (expected 1-10)\n",
+                g_runtime_params.lmr_move_threshold);
+        validation_errors++;
+    }
+    if (g_runtime_params.futility_enabled != 0 && g_runtime_params.futility_enabled != 1)
+    {
+        fprintf(stderr, "ERROR: Futility enabled must be 0 or 1, got: %d\n",
+                g_runtime_params.futility_enabled);
+        validation_errors++;
+    }
+    if (g_runtime_params.futility_margin_base < 50 || g_runtime_params.futility_margin_base > 500)
+    {
+        fprintf(stderr, "ERROR: Futility margin base out of range: %d (expected 50-500)\n",
+                g_runtime_params.futility_margin_base);
+        validation_errors++;
+    }
+    if (g_runtime_params.razoring_enabled != 0 && g_runtime_params.razoring_enabled != 1)
+    {
+        fprintf(stderr, "ERROR: Razoring enabled must be 0 or 1, got: %d\n",
+                g_runtime_params.razoring_enabled);
+        validation_errors++;
+    }
+    if (g_runtime_params.razoring_margin < 100 || g_runtime_params.razoring_margin > 1000)
+    {
+        fprintf(stderr, "ERROR: Razoring margin out of range: %d (expected 100-1000)\n",
+                g_runtime_params.razoring_margin);
+        validation_errors++;
+    }
+
+    /* Validate constants */
+    if (g_runtime_params.mate_score < 100000 || g_runtime_params.mate_score > 10000000)
+    {
+        fprintf(stderr, "ERROR: Mate score out of range: %d (expected 100000-10000000)\n",
+                g_runtime_params.mate_score);
+        validation_errors++;
+    }
+    if (g_runtime_params.delta < 100 || g_runtime_params.delta > 2000)
+    {
+        fprintf(stderr, "ERROR: Delta out of range: %d (expected 100-2000)\n",
+                g_runtime_params.delta);
+        validation_errors++;
+    }
+
+    /* Validate threading parameters */
+    if (g_runtime_params.threading_enabled != 0 && g_runtime_params.threading_enabled != 1)
+    {
+        fprintf(stderr, "ERROR: Threading enabled must be 0 or 1, got: %d\n",
+                g_runtime_params.threading_enabled);
+        validation_errors++;
+    }
+    if (g_runtime_params.num_threads < 1 || g_runtime_params.num_threads > 64)
+    {
+        fprintf(stderr, "ERROR: Number of threads out of range: %d (expected 1-64)\n",
+                g_runtime_params.num_threads);
+        validation_errors++;
+    }
+
+    /* Report validation results */
+    if (validation_errors > 0)
+    {
+        fprintf(stderr, "\n=== PARAMETER VALIDATION FAILED ===\n");
+        fprintf(stderr, "Found %d error(s) and %d warning(s)\n",
+                validation_errors, validation_warnings);
+        fprintf(stderr, "Configuration file rejected: %s\n", filename);
+        free(json);
+        return 0;
+    }
+
+    if (validation_warnings > 0)
+    {
+        printf("\n=== PARAMETER VALIDATION WARNINGS ===\n");
+        printf("Found %d warning(s) - parameters loaded but may not be optimal\n",
+               validation_warnings);
+    }
+
+    g_runtime_params.loaded = 1;
+    free(json);
+
+    printf("\n=== PARAMETERS LOADED SUCCESSFULLY ===\n");
+    printf("Configuration file: %s\n", filename);
+    printf("Piece values: P=%d N=%d B=%d R=%d Q=%d K=%d\n",
+           g_runtime_params.piece_values[1],
+           g_runtime_params.piece_values[2],
+           g_runtime_params.piece_values[3],
+           g_runtime_params.piece_values[4],
+           g_runtime_params.piece_values[5],
+           g_runtime_params.piece_values[6]);
+    printf("Search params: LMR=%s Futility=%s Razoring=%s\n",
+           g_runtime_params.lmr_enabled ? "enabled" : "disabled",
+           g_runtime_params.futility_enabled ? "enabled" : "disabled",
+           g_runtime_params.razoring_enabled ? "enabled" : "disabled");
+    printf("Threading: %s (%d threads)\n",
+           g_runtime_params.threading_enabled ? "enabled" : "disabled",
+           g_runtime_params.num_threads);
+    printf("Validation: %d error(s), %d warning(s)\n",
+           validation_errors, validation_warnings);
+
+    return 1;
+}
+
+/* Helper function to get piece value (uses runtime params if loaded) */
+static int get_piece_value(int piece_type)
+{
+    if (g_runtime_params.loaded && piece_type >= 0 && piece_type < 7)
+    {
+        return g_runtime_params.piece_values[piece_type];
+    }
+    return piece_values[piece_type];
 }
 
 static double get_time(void)
@@ -355,6 +1257,332 @@ static int has_non_pawn_material(const Board *b, int side)
 {
     return (b->pieces[side][KNIGHT] | b->pieces[side][BISHOP] |
             b->pieces[side][ROOK] | b->pieces[side][QUEEN]) != 0;
+}
+
+/* ============================================================================
+ * LMR (Late Move Reduction) Helper Functions
+ * ============================================================================
+ */
+
+/**
+ * Check if a move gives check to the opponent
+ *
+ * @param b The board position
+ * @param move The move to check
+ * @return 1 if the move gives check, 0 otherwise
+ */
+static int move_gives_check(const Board *b, const Move *move)
+{
+    Board copy = *b;
+    make_move(&copy, move);
+    return is_check(&copy, b->side_to_move);
+}
+
+/**
+ * Check if a move is a killer move
+ *
+ * @param s The search state
+ * @param move The move to check
+ * @param depth The current search depth
+ * @return 1 if the move is a killer move, 0 otherwise
+ */
+static int is_killer_move(const SearchState *s, const Move *move, int depth)
+{
+    if (depth >= 64)
+        return 0;
+
+    int i;
+    for (i = 0; i < 2; i++)
+    {
+        if (s->killers[depth][i].from == move->from &&
+            s->killers[depth][i].to == move->to)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * Determine if Late Move Reduction (LMR) should be applied to a move
+ *
+ * LMR is a search optimization that reduces the search depth for moves that
+ * are unlikely to be best. This function checks all the conditions that must
+ * be met for LMR to be safely applied.
+ *
+ * @param s The search state
+ * @param move The move to check
+ * @param depth The current search depth
+ * @param move_num The move number (0-indexed, 0 is the first move)
+ * @param in_check Whether the current side is in check
+ * @return 1 if LMR should be applied, 0 otherwise
+ */
+static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
+                            int move_num, int in_check)
+{
+    /* LMR must be enabled in configuration */
+    if (!g_runtime_params.lmr_enabled)
+        return 0;
+
+    /* Depth must be sufficient for reduction to be meaningful */
+    if (depth < g_runtime_params.lmr_min_depth)
+        return 0;
+
+    /* Don't reduce PV nodes (first few moves) */
+    if (move_num < g_runtime_params.lmr_move_threshold)
+        return 0;
+
+    /* Don't reduce when in check (tactical position) */
+    if (in_check)
+        return 0;
+
+    /* Don't reduce capture moves (tactical) */
+    if (move->capture)
+        return 0;
+
+    /* Don't reduce promotion moves (tactical) */
+    if (move->promotion)
+        return 0;
+
+    /* Don't reduce moves that give check (tactical) */
+    if (move_gives_check(&s->board, move))
+        return 0;
+
+    /* Don't reduce killer moves (historically good moves) */
+    if (is_killer_move(s, move, depth))
+        return 0;
+
+    /* All conditions met - LMR can be applied */
+    return 1;
+}
+
+/**
+ * Calculate the reduction depth for Late Move Reduction (LMR)
+ *
+ * This function computes how much to reduce the search depth for late moves
+ * that are unlikely to be best. The reduction is based on:
+ * - Current search depth (deeper searches allow more reduction)
+ * - Move number (later moves get more reduction)
+ *
+ * Formula: reduction = 1 + floor(log(depth) * log(move_num) / 2.5)
+ *
+ * The formula is designed to:
+ * - Give minimal reduction for early depths and move numbers
+ * - Increase reduction logarithmically as depth and move number increase
+ * - Avoid over-reduction that could miss tactical opportunities
+ *
+ * @param depth The current search depth (must be >= 1)
+ * @param move_num The move number (0-indexed, must be >= 1 for meaningful reduction)
+ * @return The reduction amount (always >= 1, capped at depth - 1)
+ */
+static int calculate_reduction(int depth, int move_num)
+{
+    /* Sanity checks */
+    if (depth < 1 || move_num < 1)
+        return 0;
+
+    /* Calculate reduction using logarithmic formula
+     * reduction = 1 + floor(log(depth) * log(move_num) / 2.5)
+     *
+     * Using natural logarithm (log) for both depth and move_num
+     * The divisor 2.5 controls the aggressiveness of reduction:
+     * - Smaller values = more aggressive reduction
+     * - Larger values = more conservative reduction
+     */
+    double log_depth = log((double)depth);
+    double log_move_num = log((double)move_num);
+    int reduction = 1 + (int)(log_depth * log_move_num / 2.5);
+
+    /* Cap reduction to avoid reducing below depth 1
+     * We must leave at least 1 ply for the reduced search
+     */
+    if (reduction >= depth)
+        reduction = depth - 1;
+
+    /* Ensure minimum reduction of 1 when conditions are met */
+    if (reduction < 1)
+        reduction = 1;
+
+    return reduction;
+}
+
+/**
+ * Determine if Futility Pruning should be applied to a move
+ *
+ * Futility Pruning is a forward pruning technique that skips moves in shallow
+ * positions when the static evaluation is far below alpha. The idea is that if
+ * the current position is so bad that even with a generous margin, we can't
+ * reach alpha, then searching this move is futile.
+ *
+ * This function checks all the conditions that must be met for Futility Pruning
+ * to be safely applied:
+ *
+ * 1. Futility Pruning must be enabled in configuration
+ * 2. Depth must be shallow (typically <= 3 plies)
+ * 3. Not in a PV node (move_num > 0, first move is always searched)
+ * 4. Not in check (tactical position)
+ * 5. Static evaluation + margin <= alpha (position is hopeless)
+ * 6. Move is not tactical (not a capture, check, or promotion)
+ *
+ * @param s The search state
+ * @param move The move to check
+ * @param depth The current search depth
+ * @param move_num The move number (0-indexed, 0 is the first move)
+ * @param in_check Whether the current side is in check
+ * @param alpha The current alpha bound
+ * @return 1 if Futility Pruning should be applied (skip this move), 0 otherwise
+ */
+static int should_apply_futility_pruning(SearchState *s, const Move *move,
+                                         int depth, int move_num, int in_check,
+                                         int alpha)
+{
+    /* Futility Pruning must be enabled in configuration */
+    if (!g_runtime_params.futility_enabled)
+        return 0;
+
+    /* Only apply at shallow depths (typically depth <= 3)
+     * At deeper depths, the position can change too much for static eval to be reliable
+     */
+    if (depth > 3 || depth <= 0)
+        return 0;
+
+    /* Don't prune PV nodes (first move)
+     * The first move is likely to be the best move from move ordering,
+     * so we should always search it fully
+     */
+    if (move_num == 0)
+        return 0;
+
+    /* Don't prune when in check (tactical position)
+     * Check positions are tactical and require full search
+     */
+    if (in_check)
+        return 0;
+
+    /* Don't prune tactical moves - these can dramatically change the evaluation
+     * Tactical moves include:
+     * - Captures (can win material)
+     * - Promotions (can create a queen)
+     * - Moves that give check (can lead to checkmate)
+     */
+    if (move->capture)
+        return 0;
+
+    if (move->promotion)
+        return 0;
+
+    if (move_gives_check(&s->board, move))
+        return 0;
+
+    /* Calculate the futility margin based on depth
+     * Deeper positions get larger margins because there's more potential for improvement
+     * Formula: margin = futility_margin_base * depth
+     *
+     * Example with futility_margin_base = 150:
+     * - depth 1: margin = 150 (about 1.5 pawns)
+     * - depth 2: margin = 300 (about 3 pawns)
+     * - depth 3: margin = 450 (about 4.5 pawns)
+     */
+    int margin = g_runtime_params.futility_margin_base * depth;
+
+    /* Get static evaluation of current position
+     * This is from the perspective of the side to move
+     */
+    int eval = evaluate(&s->board);
+
+    /* Check if position is hopeless even with the margin
+     * If eval + margin <= alpha, then even in the best case scenario
+     * (gaining 'margin' centipawns), we still can't reach alpha.
+     * Therefore, searching this move is futile.
+     *
+     * Note: We use <= instead of < to be slightly more aggressive
+     */
+    if (eval + margin <= alpha)
+    {
+        /* All conditions met - this move can be pruned */
+        return 1;
+    }
+
+    /* Don't prune - at least one condition is not met */
+    return 0;
+}
+
+/**
+ * Determine if Razoring should be applied at the current node
+ *
+ * Razoring is a pruning technique that reduces the search depth when the static
+ * evaluation is far below alpha at low depths. The idea is that if the position
+ * is so bad that even with a generous margin, we can't reach alpha, then we can
+ * reduce the search depth or return the evaluation directly.
+ *
+ * This function checks all the conditions that must be met for Razoring to be
+ * safely applied:
+ *
+ * 1. Razoring must be enabled in configuration
+ * 2. Depth must be very shallow (typically <= 3 plies)
+ * 3. Not in a PV node (move_num > 0, first move is always searched)
+ * 4. Not in check (tactical position)
+ * 5. Static evaluation + razor_margin < alpha (position is very bad)
+ *
+ * Unlike Futility Pruning which skips individual moves, Razoring is applied
+ * at the node level before move generation or early in the search.
+ *
+ * @param s The search state
+ * @param depth The current search depth
+ * @param alpha The current alpha bound
+ * @param in_check Whether the current side is in check
+ * @return 1 if Razoring should be applied, 0 otherwise
+ */
+static int should_apply_razoring(SearchState *s, int depth, int alpha,
+                                 int in_check)
+{
+    /* Razoring must be enabled in configuration */
+    if (!g_runtime_params.razoring_enabled)
+        return 0;
+
+    /* Only apply at very shallow depths (typically depth <= 3)
+     * Razoring is most effective at shallow depths where the static
+     * evaluation is more reliable
+     */
+    if (depth > 3 || depth <= 0)
+        return 0;
+
+    /* Don't apply Razoring when in check (tactical position)
+     * Check positions are tactical and require full search
+     */
+    if (in_check)
+        return 0;
+
+    /* Calculate the razor margin based on depth
+     * Formula: razor_margin = razoring_margin + (depth - 1) * 150
+     *
+     * Example with razoring_margin = 300:
+     * - depth 1: margin = 300 (about 3 pawns)
+     * - depth 2: margin = 450 (about 4.5 pawns)
+     * - depth 3: margin = 600 (about 6 pawns)
+     */
+    int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 150;
+
+    /* Get static evaluation of current position
+     * This is from the perspective of the side to move
+     */
+    int eval = evaluate(&s->board);
+
+    /* Check if position is very bad even with the razor margin
+     * If eval + razor_margin < alpha, then even in an optimistic scenario
+     * (gaining 'razor_margin' centipawns), we still can't reach alpha.
+     * Therefore, we can apply Razoring.
+     *
+     * Note: We use < instead of <= to be conservative
+     */
+    if (eval + razor_margin < alpha)
+    {
+        /* All conditions met - Razoring can be applied */
+        return 1;
+    }
+
+    /* Don't apply Razoring - at least one condition is not met */
+    return 0;
 }
 
 static int piece_on_square(const Board *b, int sq)
@@ -397,6 +1625,7 @@ board_from_fen(Board *b, const char *fen)
     b->castling_rights = 0;
     b->halfmove_clock = 0;
     b->fullmove_number = 1;
+    b->eval_score = EVAL_SCORE_INVALID;
 
     const char *p = fen;
     int rank = 7, file = 0;
@@ -646,6 +1875,54 @@ static int g_last_search_depth = 0;
 static int g_last_search_nodes = 0;
 static int g_depth_nodes[64] = {0};
 static int g_last_best_score = 0;
+
+/* LMR statistics from last search */
+static int g_last_lmr_reductions = 0;
+static int g_last_lmr_re_searches = 0;
+static int g_last_lmr_nodes_saved = 0;
+
+/* Futility Pruning statistics from last search */
+static int g_last_futility_prunes = 0;
+static int g_last_futility_nodes_saved = 0;
+
+/* Razoring statistics from last search */
+static int g_last_razoring_prunes = 0;
+static int g_last_razoring_nodes_saved = 0;
+
+/* ============================================================================
+ * TINY PERTURBATION MECHANISM
+ * ============================================================================
+ * When multiple moves have similar evaluations, introduce small perturbation
+ * to allow the engine to make different choices, adding variety to play.
+ */
+static U64 g_perturb_rng_state = 0;
+static int g_perturb_threshold = 5;   /* Score difference threshold in centipawns */
+static int g_perturb_probability = 30; /* Probability to choose second best (0-100) */
+static int g_perturb_enabled = 1;      /* Enable/disable perturbation */
+
+static U64 perturb_xorshift64(void)
+{
+    U64 x = g_perturb_rng_state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    return g_perturb_rng_state = x;
+}
+
+static void perturb_rng_seed(void)
+{
+    if (g_perturb_rng_state == 0)
+    {
+        g_perturb_rng_state = (U64)time(NULL) ^ 0x123456789ABCDEFULL;
+        g_perturb_rng_state ^= (U64)clock();
+    }
+}
+
+static int perturb_rand_int(int max)
+{
+    if (max <= 0) return 0;
+    return (int)(perturb_xorshift64() % (U64)max);
+}
 
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1144,6 +2421,7 @@ void make_move(Board *b, const Move *m)
     }
 
     b->side_to_move = opp;
+    b->eval_score = EVAL_SCORE_INVALID;
 }
 
 void unmake_move(Board *b, const Move *m, const Board *old)
@@ -1190,6 +2468,20 @@ static int count_bits(U64 bb)
     return POPCNT64(bb);
 }
 
+static int count_total_material(Board *b)
+{
+    int count = 0;
+    int side, pt;
+    for (side = 0; side < 2; side++)
+    {
+        for (pt = PAWN; pt < KING; pt++)
+        {
+            count += count_bits(b->pieces[side][pt]);
+        }
+    }
+    return count;
+}
+
 static int lsb_index(U64 bb)
 {
     return __builtin_ctzll(bb);
@@ -1199,8 +2491,11 @@ static int lsb_index(U64 bb)
 __declspec(dllexport)
 #endif
 int
-evaluate(const Board *b)
+evaluate(Board *b)
 {
+    if (b->eval_score != EVAL_SCORE_INVALID)
+        return b->eval_score;
+
     int score = 0;
     int side, pt;
     int npm_w = 0, npm_b = 0;
@@ -1263,7 +2558,7 @@ evaluate(const Board *b)
         for (f = 0; f < 8; f++)
         {
             if (files[f] > 1)
-                score += sign * (-35 * (files[f] - 1));
+                score += sign * (DOUBLED_PAWN_PENALTY * (files[f] - 1));
         }
         temp = pawns;
         while (temp)
@@ -1277,7 +2572,7 @@ evaluate(const Board *b)
             if (f < 7 && files[f + 1] > 0)
                 isolated = 0;
             if (isolated)
-                score += sign * (-25);
+                score += sign * ISOLATED_PAWN_PENALTY;
 
             int r = rank_of(sq);
             int passed = 1;
@@ -1305,8 +2600,18 @@ evaluate(const Board *b)
             }
             if (passed)
             {
-                int bonus = (side == WHITE) ? (40 + 15 * r) : (40 + 15 * (7 - r));
-                score += sign * bonus;
+                int bonus_rank = (side == WHITE) ? r : (7 - r);
+                int bonus = passed_pawn_bonus[bonus_rank];
+                int eg_scale = (24 - phase) / 6;
+                if (eg_scale > 3)
+                    eg_scale = 3;
+                int eg_bonus = bonus * eg_scale / 6;
+                score += sign * (bonus + eg_bonus);
+                if (bonus_rank >= 5)
+                {
+                    int promotion_threat = (bonus_rank == 6) ? 150 : 50;
+                    score += sign * promotion_threat;
+                }
             }
 
             int chain = 0;
@@ -1331,7 +2636,15 @@ evaluate(const Board *b)
                 }
             }
             if (chain)
-                score += sign * 10;
+                score += sign * PAWN_CHAIN_BONUS;
+
+            if (phase >= 20)
+            {
+                if (side == WHITE && (sq == 27 || sq == 28))
+                    score += sign * 10;
+                else if (side == BLACK && (sq == 35 || sq == 36))
+                    score += sign * 10;
+            }
         }
     }
 
@@ -1340,7 +2653,7 @@ evaluate(const Board *b)
         int sign = (side == WHITE) ? 1 : -1;
         if (count_bits(b->pieces[side][BISHOP]) >= 2)
         {
-            score += sign * 55;
+            score += sign * BISHOP_PAIR_BONUS;
         }
     }
 
@@ -1360,11 +2673,11 @@ evaluate(const Board *b)
             int enemy_pawns_on_file = count_bits(enemy_pawns & file_mask);
             if (own_pawns_on_file == 0 && enemy_pawns_on_file == 0)
             {
-                score += sign * 30;
+                score += sign * OPEN_FILE_BONUS;
             }
             else if (own_pawns_on_file == 0 && enemy_pawns_on_file > 0)
             {
-                score += sign * 15;
+                score += sign * SEMI_OPEN_FILE_BONUS;
             }
         }
 
@@ -1379,14 +2692,14 @@ evaluate(const Board *b)
                 {
                     if (!(own_rooks & file_mask))
                     {
-                        score += sign * 8;
+                        score += sign * ROOK_POTENTIAL_OPEN_FILE;
                     }
                 }
                 else if (!(own_pawns & file_mask) && (enemy_pawns & file_mask))
                 {
                     if (!(own_rooks & file_mask))
                     {
-                        score += sign * 4;
+                        score += sign * ROOK_POTENTIAL_SEMI_OPEN;
                     }
                 }
             }
@@ -1414,9 +2727,9 @@ evaluate(const Board *b)
                     pawns_on_color++;
             }
             if (pawns_on_color == 0)
-                score += sign * 15;
+                score += sign * BISHOP_MOBILITY_BONUS;
             else if (pawns_on_color >= 2)
-                score += sign * (-15);
+                score += sign * BISHOP_BAD_PENALTY;
         }
     }
 
@@ -1434,7 +2747,7 @@ evaluate(const Board *b)
                 ek_sq = lsb_index(enemy_king);
             int ek_rank = (ek_sq >= 0) ? ek_sq / 8 : -1;
             int enemy_king_on_8th = (side == WHITE) ? (ek_rank == 7) : (ek_rank == 0);
-            score += sign * (30 + (enemy_king_on_8th ? 20 : 0)) * rooks_on_7th;
+            score += sign * (ROOK_ON_7TH_BONUS + (enemy_king_on_8th ? ROOK_ON_7TH_WITH_KING : 0)) * rooks_on_7th;
         }
     }
 
@@ -1764,7 +3077,7 @@ evaluate(const Board *b)
             }
 
             if (is_outpost)
-                score += sign * 45;
+                score += sign * 45; /* TODO: Add KNIGHT_OUTPOST_BONUS to engine_params.h */
 
             if (f == 0 || f == 7)
             {
@@ -1779,8 +3092,22 @@ evaluate(const Board *b)
         U64 attacked_by_knight = own_minor_major & enemy_knight_attacks & ~enemy_pawn_attacks;
         U64 defended_by_own_pawn = own_minor_major & own_pawn_defense;
 
-        score += sign * (-30 * count_bits(attacked_by_pawn));
-        score += sign * (-25 * count_bits(attacked_by_knight));
+        U64 queens_attacked_by_pawn = attacked_by_pawn & b->pieces[side][QUEEN];
+        U64 rooks_attacked_by_pawn = attacked_by_pawn & b->pieces[side][ROOK];
+        U64 minors_attacked_by_pawn = attacked_by_pawn & ~(queens_attacked_by_pawn | rooks_attacked_by_pawn);
+        score += sign * (-50 * count_bits(queens_attacked_by_pawn));
+        score += sign * (-40 * count_bits(rooks_attacked_by_pawn));
+        score += sign * (-30 * count_bits(minors_attacked_by_pawn));
+        score += sign * (-10 * count_bits(queens_attacked_by_pawn));
+        score += sign * (-5 * count_bits(rooks_attacked_by_pawn));
+
+        U64 queens_attacked_by_knight = attacked_by_knight & b->pieces[side][QUEEN];
+        U64 rooks_attacked_by_knight = attacked_by_knight & b->pieces[side][ROOK];
+        U64 minors_attacked_by_knight = attacked_by_knight & ~(queens_attacked_by_knight | rooks_attacked_by_knight);
+        score += sign * (-40 * count_bits(queens_attacked_by_knight));
+        score += sign * (-30 * count_bits(rooks_attacked_by_knight));
+        score += sign * (-25 * count_bits(minors_attacked_by_knight));
+
         score += sign * (10 * count_bits(defended_by_own_pawn));
 
         U64 enemy_knights_bb = b->pieces[opp][KNIGHT];
@@ -1928,6 +3255,20 @@ evaluate(const Board *b)
             score += 80;
     }
 
+    if (b->halfmove_clock >= 40)
+    {
+        int abs_score = (score > 0) ? score : -score;
+        if (abs_score > 300)
+        {
+            int penalty = (b->halfmove_clock - 40) * (abs_score / 100);
+            if (score > 0)
+                score -= penalty;
+            else
+                score += penalty;
+        }
+    }
+
+    b->eval_score = score;
     return score;
 }
 
@@ -1980,7 +3321,9 @@ U64 compute_hash(const Board *b)
 
 static int mvv_lva(const Board *b, const Move *m)
 {
-    static const int mvv[7] = {0, 100, 300, 320, 480, 900, 20000};
+    /* MVV-LVA: Most Valuable Victim - Least Valuable Attacker */
+    /* Using piece values from engine_params.h */
+    static const int mvv[7] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, KING_VALUE};
     int from_piece = piece_on_square(b, m->from);
     return mvv[m->capture] * 10 - piece_values[from_piece];
 }
@@ -2250,7 +3593,193 @@ static int qsearch_generate_moves(const Board *b, Move *moves)
     return count;
 }
 
-int quiescence_search(SearchState *s, int alpha, int beta, int ply)
+static int generate_checking_moves(const Board *b, Move *moves, int start_count)
+{
+    int count = start_count;
+    int side = b->side_to_move;
+    int opp = 1 - side;
+    U64 own = side_pieces(b, side);
+    U64 enemy = side_pieces(b, opp);
+    U64 occupied = own | enemy;
+
+    int opp_king_sq = -1;
+    U64 opp_king = b->pieces[opp][KING];
+    if (opp_king)
+        opp_king_sq = lsb_index(opp_king);
+    if (opp_king_sq < 0)
+        return count;
+
+    U64 queen_check_squares = (sliding_attacks_rook(opp_king_sq, occupied) |
+                               sliding_attacks_bishop(opp_king_sq, occupied));
+    U64 rook_check_squares = sliding_attacks_rook(opp_king_sq, occupied);
+    U64 bishop_check_squares = sliding_attacks_bishop(opp_king_sq, occupied);
+    U64 knight_check_squares = knight_attacks[opp_king_sq];
+
+    U64 queens = b->pieces[side][QUEEN];
+    while (queens)
+    {
+        int sq = lsb_index(queens);
+        queens &= queens - 1;
+        U64 all_att = sliding_attacks_bishop(sq, occupied) | sliding_attacks_rook(sq, occupied);
+        U64 non_cap = all_att & ~enemy & ~own & queen_check_squares;
+        while (non_cap)
+        {
+            int to = lsb_index(non_cap);
+            non_cap &= non_cap - 1;
+            moves[count++] = (Move){sq, to, 0, 0, 0};
+        }
+    }
+
+    U64 rooks = b->pieces[side][ROOK];
+    while (rooks)
+    {
+        int sq = lsb_index(rooks);
+        rooks &= rooks - 1;
+        U64 all_att = sliding_attacks_rook(sq, occupied);
+        U64 non_cap = all_att & ~enemy & ~own & rook_check_squares;
+        while (non_cap)
+        {
+            int to = lsb_index(non_cap);
+            non_cap &= non_cap - 1;
+            moves[count++] = (Move){sq, to, 0, 0, 0};
+        }
+    }
+
+    U64 bishops = b->pieces[side][BISHOP];
+    while (bishops)
+    {
+        int sq = lsb_index(bishops);
+        bishops &= bishops - 1;
+        U64 all_att = sliding_attacks_bishop(sq, occupied);
+        U64 non_cap = all_att & ~enemy & ~own & bishop_check_squares;
+        while (non_cap)
+        {
+            int to = lsb_index(non_cap);
+            non_cap &= non_cap - 1;
+            moves[count++] = (Move){sq, to, 0, 0, 0};
+        }
+    }
+
+    U64 knights = b->pieces[side][KNIGHT];
+    while (knights)
+    {
+        int sq = lsb_index(knights);
+        knights &= knights - 1;
+        U64 all_att = knight_attacks[sq];
+        U64 non_cap = all_att & ~enemy & ~own & knight_check_squares;
+        while (non_cap)
+        {
+            int to = lsb_index(non_cap);
+            non_cap &= non_cap - 1;
+            moves[count++] = (Move){sq, to, 0, 0, 0};
+        }
+    }
+
+    {
+        U64 pawns = b->pieces[side][PAWN];
+        U64 opp_king_bb = (U64)1 << opp_king_sq;
+        while (pawns)
+        {
+            int sq = lsb_index(pawns);
+            pawns &= pawns - 1;
+            int r = rank_of(sq), f = file_of(sq);
+            if (side == WHITE)
+            {
+                if (r == 6)
+                {
+                    int to = sq + 8;
+                    if (!(occupied & (1ULL << to)))
+                    {
+                        U64 queen_att = sliding_attacks_bishop(to, (occupied & ~(1ULL << sq)) | (1ULL << to)) |
+                                        sliding_attacks_rook(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 rook_att = sliding_attacks_rook(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 bishop_att = sliding_attacks_bishop(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 knight_att = knight_attacks[to];
+                        if (queen_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, QUEEN, 0, 0};
+                        if (rook_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, ROOK, 0, 0};
+                        if (bishop_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, BISHOP, 0, 0};
+                        if (knight_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, KNIGHT, 0, 0};
+                    }
+                }
+                else
+                {
+                    int to1 = sq + 8;
+                    if (!(occupied & (1ULL << to1)))
+                    {
+                        if (f > 0 && ((to1 - 1) == opp_king_sq))
+                            moves[count++] = (Move){sq, to1, 0, 0, 0};
+                        else if (f < 7 && ((to1 + 1) == opp_king_sq))
+                            moves[count++] = (Move){sq, to1, 0, 0, 0};
+                        if (r == 1)
+                        {
+                            int to2 = sq + 16;
+                            if (!(occupied & (1ULL << to2)))
+                            {
+                                if (f > 0 && ((to2 - 1) == opp_king_sq))
+                                    moves[count++] = (Move){sq, to2, 0, 0, 0};
+                                else if (f < 7 && ((to2 + 1) == opp_king_sq))
+                                    moves[count++] = (Move){sq, to2, 0, 0, 0};
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (r == 1)
+                {
+                    int to = sq - 8;
+                    if (!(occupied & (1ULL << to)))
+                    {
+                        U64 queen_att = sliding_attacks_bishop(to, (occupied & ~(1ULL << sq)) | (1ULL << to)) |
+                                        sliding_attacks_rook(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 rook_att = sliding_attacks_rook(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 bishop_att = sliding_attacks_bishop(to, (occupied & ~(1ULL << sq)) | (1ULL << to));
+                        U64 knight_att = knight_attacks[to];
+                        if (queen_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, QUEEN, 0, 0};
+                        if (rook_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, ROOK, 0, 0};
+                        if (bishop_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, BISHOP, 0, 0};
+                        if (knight_att & opp_king_bb)
+                            moves[count++] = (Move){sq, to, KNIGHT, 0, 0};
+                    }
+                }
+                else
+                {
+                    int to1 = sq - 8;
+                    if (!(occupied & (1ULL << to1)))
+                    {
+                        if (f > 0 && ((to1 - 1) == opp_king_sq))
+                            moves[count++] = (Move){sq, to1, 0, 0, 0};
+                        else if (f < 7 && ((to1 + 1) == opp_king_sq))
+                            moves[count++] = (Move){sq, to1, 0, 0, 0};
+                        if (r == 6)
+                        {
+                            int to2 = sq - 16;
+                            if (!(occupied & (1ULL << to2)))
+                            {
+                                if (f > 0 && ((to2 - 1) == opp_king_sq))
+                                    moves[count++] = (Move){sq, to2, 0, 0, 0};
+                                else if (f < 7 && ((to2 + 1) == opp_king_sq))
+                                    moves[count++] = (Move){sq, to2, 0, 0, 0};
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return count;
+}
+
+int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth)
 {
     if (s->aborted)
         return 0;
@@ -2283,6 +3812,10 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply)
     else
     {
         n = qsearch_generate_moves(&s->board, moves);
+        if (ply < 60 && qs_depth == 0)
+        {
+            n = generate_checking_moves(&s->board, moves, n);
+        }
     }
     int i;
     for (i = 0; i < n; i++)
@@ -2299,7 +3832,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply)
         if (!is_check(&s->board, copy.side_to_move))
         {
             legal_count++;
-            int score = -quiescence_search(s, -beta, -alpha, next_ply);
+            int score = -quiescence_search(s, -beta, -alpha, next_ply, qs_depth + 1);
             if (score > alpha)
             {
                 alpha = score;
@@ -2326,6 +3859,10 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     if (s->aborted)
         return 0;
     s->nodes++;
+    if (ply >= 100)
+    {
+        return quiescence_search(s, alpha, beta, ply, 0);
+    }
     if ((s->nodes & 511) == 0)
     {
         double elapsed = get_time() - s->start_time;
@@ -2344,18 +3881,21 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     {
         int rep_i;
+        int total_reps = 0;
         int game_reps = 0;
-        for (rep_i = 0; rep_i < s->search_history_count; rep_i++)
-        {
-            if (s->search_history[rep_i] == key)
-                return 0;
-        }
+        int search_reps = 0;
         for (rep_i = 0; rep_i < s->game_history_count; rep_i++)
         {
             if (s->game_history[rep_i] == key)
                 game_reps++;
         }
-        if (game_reps >= 2)
+        for (rep_i = 0; rep_i < s->search_history_count; rep_i++)
+        {
+            if (s->search_history[rep_i] == key)
+                search_reps++;
+        }
+        total_reps = game_reps + search_reps;
+        if (total_reps >= 2)
             return 0;
     }
 
@@ -2367,6 +3907,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         s->search_history_count++;
     }
 
+    if (s->board.halfmove_clock >= 100)
+    {
+        s->search_history_count = saved_history_count;
+        return 0;
+    }
+
     int in_check = is_check(&s->board, s->board.side_to_move);
     if (in_check && ext_count < 4)
     {
@@ -2374,10 +3920,67 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         ext_count++;
     }
 
+    int is_endgame = 0;
+    {
+        int npm_w = 0, npm_b = 0;
+        int pt;
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        {
+            int c = count_bits(s->board.pieces[WHITE][pt]);
+            npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+            c = count_bits(s->board.pieces[BLACK][pt]);
+            npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+        }
+        int phase = npm_w + npm_b;
+        if (phase <= ENDGAME_PHASE_THRESHOLD)
+            is_endgame = 1;
+    }
+    if (is_endgame && depth >= 2 && depth < 8)
+    {
+        depth += ENDGAME_DEPTH_BONUS;
+    }
+
     if (depth <= 0)
     {
         s->search_history_count = saved_history_count;
-        return quiescence_search(s, alpha, beta, ply);
+        return quiescence_search(s, alpha, beta, ply, 0);
+    }
+
+    /* Razoring: If the static evaluation is far below alpha at shallow depths,
+     * we can reduce the search depth or return the evaluation directly.
+     * This is applied before move generation to save time.
+     */
+    if (should_apply_razoring(s, depth, alpha, in_check))
+    {
+        /* Get static evaluation */
+        int eval = evaluate(&s->board);
+
+        /* Calculate razor margin */
+        int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 150;
+        if (is_endgame) razor_margin = razor_margin * 3 / 2;
+
+        /* If eval + margin is still below alpha, do a quiescence search
+         * to verify the position is really bad */
+        if (eval + razor_margin < alpha)
+        {
+            /* Do a quiescence search to verify */
+            int q_score = quiescence_search(s, alpha, beta, ply, 0);
+
+            /* If quiescence search confirms the position is bad, return it */
+            if (q_score < alpha)
+            {
+                /* Estimate nodes saved by Razoring
+                 * This is a rough estimate based on typical search tree size at this depth */
+                int estimated_nodes_saved = (1 << depth) - 1; /* 2^depth - 1 */
+
+                /* Update Razoring statistics */
+                s->razoring_prunes++;
+                s->razoring_nodes_saved += estimated_nodes_saved;
+
+                s->search_history_count = saved_history_count;
+                return q_score;
+            }
+        }
     }
 
     Board *b = &s->board;
@@ -2422,12 +4025,14 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     Move best_move = {0};
     int flag = 1;
 
-    if (depth >= 4 && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move))
+    if (depth >= NULL_MOVE_MIN_DEPTH && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move))
     {
         Board saved = *b;
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
-        int null_score = -negamax(s, depth - 3, -beta, -beta + 1, 0, ply + 1);
+        int nmr = NULL_MOVE_REDUCTION;
+        if (is_endgame) nmr += ENDGAME_NMR_BONUS;
+        int null_score = -negamax(s, depth - (nmr + 1), -beta, -beta + 1, 0, ply + 1);
         *b = saved;
         if (s->aborted)
         {
@@ -2436,11 +4041,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         if (null_score >= beta)
         {
-            if (depth >= 6)
+            if (depth >= NULL_MOVE_VERIFICATION_DEPTH)
             {
                 int saved_for_verify = s->search_history_count;
                 s->search_history_count = saved_history_count;
-                int verify_score = negamax(s, depth - 5, alpha, beta, ext_count, ply);
+                int verify_score = negamax(s, depth - NULL_MOVE_VERIFICATION_REDUCTION, alpha, beta, ext_count, ply);
                 s->search_history_count = saved_for_verify;
                 if (s->aborted)
                 {
@@ -2463,6 +4068,25 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     for (i = 0; i < n; i++)
     {
+        /* Check if we should apply Futility Pruning to this move
+         * Futility Pruning is checked BEFORE making the move to avoid unnecessary work
+         * This is different from LMR which is checked after making the move
+         */
+        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha))
+        {
+            /* Estimate nodes saved by skipping this move
+             * This is a rough estimate based on typical search tree size at this depth
+             * Formula: 2^depth gives approximate nodes in subtree */
+            int estimated_nodes_saved = (1 << depth) - 1; /* 2^depth - 1 */
+
+            /* Update Futility Pruning statistics */
+            s->futility_prunes++;
+            s->futility_nodes_saved += estimated_nodes_saved;
+
+            /* Skip this move entirely - don't even make it on the board */
+            continue;
+        }
+
         Board old = *b;
         make_move(b, &moves[i]);
         if (is_check(b, old.side_to_move))
@@ -2475,14 +4099,56 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int score;
         if (i == 0)
         {
+            /* First move: always search at full depth with full window */
             score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
         }
         else
         {
-            score = -negamax(s, depth - 1, -alpha - 1, -alpha, ext_count, ply + 1);
-            if (score > alpha && score < beta)
+            /* Check if we should apply LMR to this move */
+            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check);
+
+            if (apply_lmr)
             {
-                score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
+                /* Calculate reduction depth */
+                int reduction = calculate_reduction(depth, i);
+                if (is_endgame && reduction > 0) reduction -= 1;
+
+                /* Estimate nodes that will be saved by this reduction
+                 * This is a rough estimate based on typical branching factor
+                 * Actual savings depend on position complexity */
+                int estimated_nodes_saved = (1 << reduction) - 1; /* 2^reduction - 1 */
+
+                /* Apply LMR: search with reduced depth and null window */
+                score = -negamax(s, depth - 1 - reduction, -alpha - 1, -alpha, ext_count, ply + 1);
+
+                /* Update LMR statistics */
+                s->lmr_reductions++;
+                s->lmr_nodes_saved += estimated_nodes_saved;
+
+                /* If reduced search fails high (score > alpha), re-search at full depth */
+                if (score > alpha)
+                {
+                    /* Re-search with null window at full depth */
+                    score = -negamax(s, depth - 1, -alpha - 1, -alpha, ext_count, ply + 1);
+                    s->lmr_re_searches++;
+
+                    /* If still fails high and within window, do full window search */
+                    if (score > alpha && score < beta)
+                    {
+                        score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
+                    }
+                }
+            }
+            else
+            {
+                /* Normal search without LMR: null window search first */
+                score = -negamax(s, depth - 1, -alpha - 1, -alpha, ext_count, ply + 1);
+
+                /* If fails high, re-search with full window */
+                if (score > alpha && score < beta)
+                {
+                    score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
+                }
             }
         }
         *b = old;
@@ -2587,6 +4253,80 @@ evaluate_fen(const char *fen)
 __declspec(dllexport)
 #endif
 void
+debug_print_board(const char *fen)
+{
+    ensure_engine_tables_initialized();
+    Board b;
+    board_from_fen(&b, fen);
+    
+    printf("Board from FEN: %s\n", fen);
+    printf("Side to move: %s\n", b.side_to_move == 0 ? "White" : "Black");
+    printf("Castling rights: %d\n", b.castling_rights);
+    printf("En passant: %d\n", b.en_passant);
+    printf("Halfmove clock: %d\n", b.halfmove_clock);
+    
+    printf("\nPieces:\n");
+    int side, pt;
+    for (side = 0; side < 2; side++) {
+        printf("%s:\n", side == 0 ? "White" : "Black");
+        for (pt = 0; pt < 6; pt++) {
+            U64 bb = b.pieces[side][pt];
+            if (bb) {
+                printf("  %s: ", pt == 0 ? "Pawn" : pt == 1 ? "Knight" : pt == 2 ? "Bishop" : pt == 3 ? "Rook" : pt == 4 ? "Queen" : "King");
+                while (bb) {
+                    int sq = __builtin_ctzll(bb);
+                    bb &= bb - 1;
+                    printf("%c%d ", 'a' + (sq % 8), 1 + (sq / 8));
+                }
+                printf("\n");
+            }
+        }
+    }
+    
+    printf("\nBoard display:\n");
+    int rank, file;
+    for (rank = 7; rank >= 0; rank--) {
+        printf("%d ", rank + 1);
+        for (file = 0; file < 8; file++) {
+            int sq = rank * 8 + file;
+            char c = '.';
+            for (side = 0; side < 2; side++) {
+                for (pt = 0; pt < 6; pt++) {
+                    if (b.pieces[side][pt] & (1ULL << sq)) {
+                        static const char white_chars[] = "PNBRQK";
+                        static const char black_chars[] = "pnbrqk";
+                        c = side == 0 ? white_chars[pt] : black_chars[pt];
+                        break;
+                    }
+                }
+            }
+            printf("%c ", c);
+        }
+        printf("\n");
+    }
+    printf("  a b c d e f g h\n");
+    
+    Move moves[MAX_MOVES];
+    int n = generate_pseudo_legal_moves(&b, moves);
+    printf("\nPseudo-legal moves: %d\n", n);
+    
+    int legal = 0;
+    int i;
+    for (i = 0; i < n; i++) {
+        Board copy = b;
+        make_move(&b, &moves[i]);
+        if (!is_check(&b, b.side_to_move ^ 1)) {
+            legal++;
+        }
+        b = copy;
+    }
+    printf("Legal moves: %d\n", legal);
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
 debug_root_moves(const char *fen, int depth, int *out_scores, int *out_from, int *out_to, int *out_count)
 {
     ensure_engine_tables_initialized();
@@ -2594,19 +4334,19 @@ debug_root_moves(const char *fen, int depth, int *out_scores, int *out_from, int
     memset(&s, 0, sizeof(SearchState));
     board_from_fen(&s.board, fen);
     s.start_time = get_time();
-    s.time_limit = 30.0;
+    s.time_limit = 300.0;
     s.aborted = 0;
     s.nodes = 0;
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
     s.search_history_count = 0;
     s.game_history_count = 0;
+    int i;
 
     Board *b = &s.board;
     Move root_moves[MAX_MOVES];
     int n_moves = generate_pseudo_legal_moves(b, root_moves);
     int legal_moves_count = 0;
-    int i;
     for (i = 0; i < n_moves; i++)
     {
         Board copy = *b;
@@ -2654,12 +4394,12 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
     s.search_history_count = 0;
     s.game_history_count = 0;
+    int i;
 
     Board *b = &s.board;
     Move root_moves[MAX_MOVES];
     int n_moves = generate_pseudo_legal_moves(b, root_moves);
     int legal_moves_count = 0;
-    int i;
     for (i = 0; i < n_moves; i++)
     {
         Board copy = *b;
@@ -2743,7 +4483,21 @@ Move
 find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nodes,
                  U64 *game_history, int game_history_count)
 {
+    static int params_loaded = 0;
     ensure_engine_tables_initialized();
+    if (!params_loaded)
+    {
+        const char *env_path = getenv("ENGINE_PARAMS");
+        if (env_path && env_path[0] != '\0')
+        {
+            load_params_from_file(env_path);
+        }
+        else
+        {
+            load_params_from_file("engine_params.json");
+        }
+        params_loaded = 1;
+    }
 
     SearchState s;
     memset(&s, 0, sizeof(SearchState));
@@ -2767,15 +4521,32 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         s.game_history_count = gh_limit;
     }
 
+    {
+        U64 root_key = compute_hash(&s.board);
+        if (s.search_history_count < 256)
+        {
+            s.search_history[s.search_history_count] = root_key;
+            s.search_history_count++;
+        }
+    }
+
     Move best_move = {0};
     int best_score = -INF;
     int depth;
+    int i;
+
+    int root_scores[MAX_MOVES];
+    int scores_valid = 0;
+    for (i = 0; i < MAX_MOVES; i++)
+        root_scores[i] = -INF;
+
+    if (g_perturb_enabled)
+        perturb_rng_seed();
 
     Board *b = &s.board;
     Move root_moves[MAX_MOVES];
     int n_moves = generate_pseudo_legal_moves(b, root_moves);
     int legal_moves_count = 0;
-    int i;
     for (i = 0; i < n_moves; i++)
     {
         Board copy = *b;
@@ -2795,7 +4566,15 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         return best_move;
     }
 
-    for (depth = 1; depth <= max_depth; depth++)
+    int material = count_total_material(&s.board);
+    int depth_bonus = 0;
+    if (material <= 4)
+        depth_bonus = 2;
+    else if (material <= 6)
+        depth_bonus = 1;
+    int effective_max_depth = max_depth + depth_bonus;
+
+    for (depth = 1; depth <= effective_max_depth; depth++)
     {
         if (depth >= 5)
         {
@@ -2834,6 +4613,8 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
             if (s.aborted)
                 break;
 
+            root_scores[i] = score;
+
             if (score > current_score)
             {
                 current_score = score;
@@ -2848,10 +4629,25 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         if (!s.aborted && current_score > -INF)
         {
             best_move = current_best;
+            best_move.score = current_score;
             best_score = current_score;
+            scores_valid = 1;
             g_last_search_depth = depth;
             g_last_search_nodes = s.nodes;
             g_last_best_score = current_score;
+
+            /* Save LMR statistics */
+            g_last_lmr_reductions = s.lmr_reductions;
+            g_last_lmr_re_searches = s.lmr_re_searches;
+            g_last_lmr_nodes_saved = s.lmr_nodes_saved;
+
+            /* Save Futility Pruning statistics */
+            g_last_futility_prunes = s.futility_prunes;
+            g_last_futility_nodes_saved = s.futility_nodes_saved;
+
+            /* Save Razoring statistics */
+            g_last_razoring_prunes = s.razoring_prunes;
+            g_last_razoring_nodes_saved = s.razoring_nodes_saved;
             if (depth < 64)
                 g_depth_nodes[depth] = s.nodes - nodes_before;
             {
@@ -2873,9 +4669,454 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
             break;
     }
 
+    if (g_perturb_enabled && scores_valid && legal_moves_count >= 2)
+    {
+        int best_idx = -1;
+        int second_best_idx = -1;
+        int best_val = -INF;
+        int second_best_val = -INF;
+
+        for (i = 0; i < legal_moves_count; i++)
+        {
+            if (root_scores[i] > best_val)
+            {
+                second_best_val = best_val;
+                second_best_idx = best_idx;
+                best_val = root_scores[i];
+                best_idx = i;
+            }
+            else if (root_scores[i] > second_best_val)
+            {
+                second_best_val = root_scores[i];
+                second_best_idx = i;
+            }
+        }
+
+        if (best_idx >= 0 && second_best_idx >= 0)
+        {
+            int diff = best_val - second_best_val;
+            if (diff < g_perturb_threshold)
+            {
+                int rand_val = perturb_rand_int(100);
+                if (rand_val < g_perturb_probability)
+                {
+                    best_move = root_moves[second_best_idx];
+                    best_move.score = second_best_val;
+                    best_score = second_best_val;
+                }
+            }
+        }
+    }
+
     if (out_nodes)
         *out_nodes = s.nodes;
     free(s.tt);
+    return best_move;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+get_root_move_scores(const char *fen, double time_limit, int max_depth,
+                     int *out_scores, int *out_from, int *out_to, int *out_count)
+{
+    ensure_engine_tables_initialized();
+    SearchState s;
+    memset(&s, 0, sizeof(SearchState));
+    board_from_fen(&s.board, fen);
+    s.start_time = get_time();
+    s.time_limit = time_limit;
+    s.aborted = 0;
+    s.nodes = 0;
+    s.tt_size = 1 << 20;
+    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.search_history_count = 0;
+    s.game_history_count = 0;
+
+    Board *b = &s.board;
+    Move root_moves[MAX_MOVES];
+    int n_moves = generate_pseudo_legal_moves(b, root_moves);
+    int legal_moves_count = 0;
+    int i;
+    for (i = 0; i < n_moves; i++)
+    {
+        Board copy = *b;
+        make_move(b, &root_moves[i]);
+        if (!is_check(b, b->side_to_move ^ 1))
+        {
+            root_moves[legal_moves_count++] = root_moves[i];
+        }
+        *b = copy;
+    }
+
+    int depth;
+    int alpha, beta;
+    for (depth = 1; depth <= max_depth; depth++)
+    {
+        alpha = -INF;
+        beta = INF;
+        for (i = 0; i < legal_moves_count; i++)
+        {
+            Board old = *b;
+            make_move(b, &root_moves[i]);
+            int score;
+            if (i == 0)
+                score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+            else
+            {
+                score = -negamax(&s, depth - 1, -alpha - 1, -alpha, 0, 1);
+                if (!s.aborted && score > alpha && score < beta)
+                    score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+            }
+            *b = old;
+            if (s.aborted)
+                break;
+            if (i < 256)
+                root_moves[i].score = score;
+            if (score > alpha)
+                alpha = score;
+        }
+        if (s.aborted)
+            break;
+        {
+            int best_idx = 0;
+            for (i = 1; i < legal_moves_count; i++)
+                if (root_moves[i].score > root_moves[best_idx].score)
+                    best_idx = i;
+            if (best_idx != 0)
+            {
+                Move tmp = root_moves[0];
+                root_moves[0] = root_moves[best_idx];
+                root_moves[best_idx] = tmp;
+            }
+        }
+    }
+
+    int count = 0;
+    for (i = 0; i < legal_moves_count && count < 256; i++)
+    {
+        out_scores[count] = root_moves[i].score;
+        out_from[count] = root_moves[i].from;
+        out_to[count] = root_moves[i].to;
+        count++;
+    }
+    *out_count = count;
+    free(s.tt);
+}
+
+/* ============================================================================
+ * LAZY SMP MULTI-THREADED SEARCH
+ * ============================================================================
+ */
+
+typedef struct
+{
+    Board board;
+    TT_Entry *shared_tt;
+    int tt_size;
+    double start_time;
+    double time_limit;
+    int max_depth;
+    int thread_id;
+    int num_threads;
+    U64 game_history[512];
+    int game_history_count;
+    Move best_move;
+    int best_score;
+    int completed_depth;
+    int nodes;
+    int aborted;
+#ifdef _WIN32
+    HANDLE thread_handle;
+#else
+    pthread_t thread_handle;
+#endif
+} LazySMPWorker;
+
+static volatile int g_smp_stop_flag;
+
+static void smp_worker_search(LazySMPWorker *w)
+{
+    SearchState s;
+    memset(&s, 0, sizeof(SearchState));
+    s.board = w->board;
+    s.start_time = w->start_time;
+    s.time_limit = w->time_limit;
+    s.aborted = 0;
+    s.nodes = 0;
+    s.tt = w->shared_tt;
+    s.tt_size = w->tt_size;
+    s.search_history_count = 0;
+    s.game_history_count = w->game_history_count;
+    if (w->game_history_count > 0)
+    {
+        int limit = w->game_history_count < 512 ? w->game_history_count : 512;
+        memcpy(s.game_history, w->game_history, sizeof(U64) * limit);
+        s.game_history_count = limit;
+    }
+
+    {
+        U64 root_key = compute_hash(&s.board);
+        if (s.search_history_count < 256)
+        {
+            s.search_history[s.search_history_count] = root_key;
+            s.search_history_count++;
+        }
+    }
+
+    Board *b = &s.board;
+    Move root_moves[MAX_MOVES];
+    int n_moves = generate_pseudo_legal_moves(b, root_moves);
+    int legal_count = 0;
+    int i;
+    for (i = 0; i < n_moves; i++)
+    {
+        Board copy = *b;
+        make_move(b, &root_moves[i]);
+        if (!is_check(b, b->side_to_move ^ 1))
+            root_moves[legal_count++] = root_moves[i];
+        *b = copy;
+    }
+
+    if (legal_count == 0)
+    {
+        w->completed_depth = 0;
+        w->nodes = 0;
+        return;
+    }
+
+    int start_depth = 1 + (w->thread_id % 2);
+    int depth_step = w->num_threads > 1 ? 1 : 1;
+
+    Move best_move = root_moves[0];
+    int best_score = -INF;
+
+    for (int depth = start_depth; depth <= w->max_depth; depth += depth_step)
+    {
+        if (g_smp_stop_flag)
+            break;
+        if (depth >= 5)
+        {
+            double elapsed = get_time() - s.start_time;
+            if (elapsed >= w->time_limit * 0.7)
+                break;
+        }
+
+        int nodes_before = s.nodes;
+        Move current_best = {0};
+        int current_score = -INF;
+        int alpha = -INF, beta = INF;
+
+        for (i = 0; i < legal_count; i++)
+        {
+            if (g_smp_stop_flag)
+                break;
+            Board old = *b;
+            make_move(b, &root_moves[i]);
+            int score;
+            if (i == 0)
+            {
+                score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+            }
+            else
+            {
+                score = -negamax(&s, depth - 1, -alpha - 1, -alpha, 0, 1);
+                if (!s.aborted && !g_smp_stop_flag && score > alpha && score < beta)
+                {
+                    score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+                }
+            }
+            *b = old;
+
+            if (s.aborted || g_smp_stop_flag)
+                break;
+
+            if (score > current_score)
+            {
+                current_score = score;
+                current_best = root_moves[i];
+                if (score > alpha)
+                    alpha = score;
+            }
+        }
+
+        if (!s.aborted && !g_smp_stop_flag && current_score > -INF)
+        {
+            best_move = current_best;
+            best_move.score = current_score;
+            best_score = current_score;
+            w->completed_depth = depth;
+            w->nodes = s.nodes;
+            w->best_move = best_move;
+            w->best_score = best_score;
+
+            for (int j = 0; j < legal_count; j++)
+            {
+                if (root_moves[j].from == current_best.from &&
+                    root_moves[j].to == current_best.to &&
+                    root_moves[j].promotion == current_best.promotion)
+                {
+                    Move tmp = root_moves[0];
+                    root_moves[0] = root_moves[j];
+                    root_moves[j] = tmp;
+                    break;
+                }
+            }
+        }
+
+        if (s.aborted || g_smp_stop_flag)
+            break;
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI smp_thread_func(LPVOID arg)
+{
+    LazySMPWorker *w = (LazySMPWorker *)arg;
+    smp_worker_search(w);
+    return 0;
+}
+#else
+static void *smp_thread_func(void *arg)
+{
+    LazySMPWorker *w = (LazySMPWorker *)arg;
+    smp_worker_search(w);
+    return NULL;
+}
+#endif
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+Move find_best_move_smp(const char *fen, double time_limit, int max_depth,
+                        int *out_nodes, U64 *game_history, int game_history_count)
+{
+    static int params_loaded_smp = 0;
+    ensure_engine_tables_initialized();
+    if (!params_loaded_smp)
+    {
+        const char *env_path = getenv("ENGINE_PARAMS");
+        if (env_path && env_path[0] != '\0')
+        {
+            load_params_from_file(env_path);
+        }
+        else
+        {
+            load_params_from_file("engine_params.json");
+        }
+        params_loaded_smp = 1;
+    }
+
+    int num_threads = g_runtime_params.threading_enabled ? g_runtime_params.num_threads : 1;
+    if (num_threads < 1)
+        num_threads = 1;
+    if (num_threads > 64)
+        num_threads = 64;
+
+    if (num_threads == 1)
+    {
+        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+                                game_history, game_history_count);
+    }
+
+    int tt_size = 1 << 20;
+    TT_Entry *shared_tt = (TT_Entry *)calloc(tt_size, sizeof(TT_Entry));
+    if (!shared_tt)
+    {
+        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+                                game_history, game_history_count);
+    }
+
+    LazySMPWorker *workers = (LazySMPWorker *)calloc(num_threads, sizeof(LazySMPWorker));
+    if (!workers)
+    {
+        free(shared_tt);
+        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+                                game_history, game_history_count);
+    }
+
+    g_smp_stop_flag = 0;
+    double start_time = get_time();
+
+    for (int i = 0; i < num_threads; i++)
+    {
+        board_from_fen(&workers[i].board, fen);
+        workers[i].shared_tt = shared_tt;
+        workers[i].tt_size = tt_size;
+        workers[i].start_time = start_time;
+        workers[i].time_limit = time_limit;
+        workers[i].max_depth = max_depth;
+        workers[i].thread_id = i;
+        workers[i].num_threads = num_threads;
+        workers[i].completed_depth = 0;
+        workers[i].best_score = -INF;
+        workers[i].nodes = 0;
+        workers[i].aborted = 0;
+        memset(&workers[i].best_move, 0, sizeof(Move));
+
+        if (game_history && game_history_count > 0)
+        {
+            int limit = game_history_count < 512 ? game_history_count : 512;
+            memcpy(workers[i].game_history, game_history, sizeof(U64) * limit);
+            workers[i].game_history_count = limit;
+        }
+        else
+        {
+            workers[i].game_history_count = 0;
+        }
+    }
+
+    for (int i = 1; i < num_threads; i++)
+    {
+#ifdef _WIN32
+        workers[i].thread_handle = CreateThread(NULL, 0, smp_thread_func,
+                                                &workers[i], 0, NULL);
+#else
+        pthread_create(&workers[i].thread_handle, NULL, smp_thread_func, &workers[i]);
+#endif
+    }
+
+    smp_worker_search(&workers[0]);
+
+    g_smp_stop_flag = 1;
+
+    for (int i = 1; i < num_threads; i++)
+    {
+#ifdef _WIN32
+        WaitForSingleObject(workers[i].thread_handle, INFINITE);
+        CloseHandle(workers[i].thread_handle);
+#else
+        pthread_join(workers[i].thread_handle, NULL);
+#endif
+    }
+
+    Move best_move = workers[0].best_move;
+    int best_depth = workers[0].completed_depth;
+    int best_score = workers[0].best_score;
+    int total_nodes = workers[0].nodes;
+
+    for (int i = 1; i < num_threads; i++)
+    {
+        total_nodes += workers[i].nodes;
+        if (workers[i].completed_depth > best_depth ||
+            (workers[i].completed_depth == best_depth && workers[i].best_score > best_score))
+        {
+            best_move = workers[i].best_move;
+            best_depth = workers[i].completed_depth;
+            best_score = workers[i].best_score;
+        }
+    }
+
+    if (out_nodes)
+        *out_nodes = total_nodes;
+
+    g_last_search_depth = best_depth;
+    g_last_search_nodes = total_nodes;
+    g_last_best_score = best_score;
+
+    free(shared_tt);
+    free(workers);
     return best_move;
 }
 
@@ -2886,4 +5127,41 @@ int
 get_engine_version(void)
 {
     return ENGINE_VERSION;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+LMR_Stats
+get_lmr_stats(void)
+{
+    LMR_Stats stats;
+    stats.reductions = g_last_lmr_reductions;
+    stats.re_searches = g_last_lmr_re_searches;
+    stats.nodes_saved = g_last_lmr_nodes_saved;
+    return stats;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+Pruning_Stats
+get_pruning_stats(void)
+{
+    Pruning_Stats stats;
+    stats.prunes = g_last_futility_prunes;
+    stats.nodes_saved = g_last_futility_nodes_saved;
+    return stats;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+Razoring_Stats
+get_razoring_stats(void)
+{
+    Razoring_Stats stats;
+    stats.prunes = g_last_razoring_prunes;
+    stats.nodes_saved = g_last_razoring_nodes_saved;
+    return stats;
 }

@@ -1,6 +1,12 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+dist/
+build/
+
+# Compiled files
 *.dll
 *.so
 *.a
@@ -9,18 +15,33 @@ __pycache__/
 *.o
 *.exe
 
-.trae/
-.env
-*.log
+# Generated files
+engine_params.h
+engine_params.json
 
-*.txt
-!requirements.txt
-
+# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
+# Environment
+.trae/
+.env
+*.log
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Third-party engines
+test_engines/
+
+# Match records
+match_records/
+
+# Temporary files
+*.tmp
+*.temp
+tune_history.json

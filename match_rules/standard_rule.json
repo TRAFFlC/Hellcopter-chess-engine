@@ -1,0 +1,55 @@
+{
+  "name": "Standard Match Rule",
+  "description": "标准对弈测试规则，用于引擎性能评估",
+  "version": "1.0.0",
+  "created": "2026-05-14",
+  
+  "time_control": {
+    "base_time": 96,
+    "increment": 0.8,
+    "tc_string": "96+0.8"
+  },
+  
+  "rounds": 11,
+  
+  "reference_engines": {
+    "tier_1": ["sargon", "rainman"],
+    "tier_2": ["shallowblue", "tscp181"],
+    "tier_3": ["pulsar", "apollo"],
+    "tier_4": ["monarch"],
+    "tier_5": ["absolute_zero"],
+    "nps_benchmark": ["stockfish"]
+  },
+  
+  "elo_targets": {
+    "sargon": 1163,
+    "rainman": 1427,
+    "shallowblue": 1575,
+    "tscp181": 1607,
+    "pulsar": 1651,
+    "apollo": 1663,
+    "monarch": 2005,
+    "absolute_zero": 2284
+  },
+  
+  "velvet": {
+    "description": "难度可调节引擎",
+    "uci_option": "UCI_LimitStrength",
+    "elo_range": [1225, 3000],
+    "usage": "设置 UCI_LimitStrength=true, UCI_Elo=目标分数"
+  },
+  
+  "benchmark": {
+    "engine": "stockfish",
+    "nps": 2406495,
+    "test_hash_mb": 128,
+    "test_threads": 1,
+    "test_depth": 18,
+    "note": "Stockfish仅作为NPS基准测试，非挑战目标"
+  },
+  
+  "pass_criteria": {
+    "win_rate_threshold": 0.55,
+    "elo_confidence": 0.95
+  }
+}

@@ -17,6 +17,21 @@ class Move(ctypes.Structure):
     ]
 
 
+class LMR_Stats(ctypes.Structure):
+    _fields_ = [
+        ("reductions", ctypes.c_int),
+        ("re_searches", ctypes.c_int),
+        ("nodes_saved", ctypes.c_int),
+    ]
+
+
+class Pruning_Stats(ctypes.Structure):
+    _fields_ = [
+        ("prunes", ctypes.c_int),
+        ("nodes_saved", ctypes.c_int),
+    ]
+
+
 def _sq_to_algebraic(sq: int) -> str:
     file = sq & 7
     rank = sq >> 3
@@ -69,8 +84,40 @@ def _load_library():
     ]
     lib.find_best_move_c.restype = Move
 
+    lib.find_best_move_smp.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_double,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.c_int,
+    ]
+    lib.find_best_move_smp.restype = Move
+
     lib.compute_hash_from_fen.argtypes = [ctypes.c_char_p]
     lib.compute_hash_from_fen.restype = ctypes.c_uint64
+
+    lib.get_lmr_stats.argtypes = []
+    lib.get_lmr_stats.restype = LMR_Stats
+
+    lib.get_pruning_stats.argtypes = []
+    lib.get_pruning_stats.restype = Pruning_Stats
+
+    lib.evaluate_fen.argtypes = [ctypes.c_char_p]
+    lib.evaluate_fen.restype = ctypes.c_int
+
+    lib.debug_root_moves.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    lib.debug_root_moves.restype = None
+
+    lib.debug_print_board.argtypes = [ctypes.c_char_p]
+    lib.debug_print_board.restype = None
 
     try:
         lib.get_engine_version.argtypes = []
@@ -110,7 +157,7 @@ def compute_hash(fen: str) -> int:
 
 
 def search(fen: str, time_limit: float, max_depth: int,
-           position_history: list | None = None) -> tuple[str, int]:
+           position_history: list | None = None, use_smp: bool = False) -> tuple[str, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -120,7 +167,8 @@ def search(fen: str, time_limit: float, max_depth: int,
         hist_count = len(position_history)
         hist_array = (ctypes.c_uint64 * hist_count)(*position_history)
 
-    move = _lib.find_best_move_c(
+    search_func = _lib.find_best_move_smp if use_smp else _lib.find_best_move_c
+    move = search_func(
         fen.encode("utf-8"),
         ctypes.c_double(time_limit),
         ctypes.c_int(max_depth),
@@ -132,8 +180,72 @@ def search(fen: str, time_limit: float, max_depth: int,
     return uci, nodes.value
 
 
+def evaluate_fen(fen: str) -> int:
+    _ensure_loaded()
+    return _lib.evaluate_fen(fen.encode("utf-8"))
+
+
+def search_with_score(fen: str, time_limit: float, max_depth: int,
+                      position_history: list | None = None,
+                      use_smp: bool = False) -> tuple[str, int, int]:
+    _ensure_loaded()
+    nodes = ctypes.c_int(0)
+
+    hist_array = None
+    hist_count = 0
+    if position_history:
+        hist_count = len(position_history)
+        hist_array = (ctypes.c_uint64 * hist_count)(*position_history)
+
+    search_func = _lib.find_best_move_smp if use_smp else _lib.find_best_move_c
+    move = search_func(
+        fen.encode("utf-8"),
+        ctypes.c_double(time_limit),
+        ctypes.c_int(max_depth),
+        ctypes.byref(nodes),
+        hist_array,
+        ctypes.c_int(hist_count),
+    )
+    uci = _move_to_uci(move)
+    return uci, move.score, nodes.value
+
+
 def is_loaded() -> bool:
     return _lib is not None
+
+
+def debug_root_moves(fen: str, depth: int = 1) -> list:
+    _ensure_loaded()
+    scores = (ctypes.c_int * 64)()
+    from_sqs = (ctypes.c_int * 64)()
+    to_sqs = (ctypes.c_int * 64)()
+    count = ctypes.c_int()
+    
+    _lib.debug_root_moves(
+        fen.encode("utf-8"),
+        ctypes.c_int(depth),
+        scores,
+        from_sqs,
+        to_sqs,
+        ctypes.byref(count),
+    )
+    
+    result = []
+    for i in range(count.value):
+        from_sq = from_sqs[i]
+        to_sq = to_sqs[i]
+        from_str = _sq_to_algebraic(from_sq)
+        to_str = _sq_to_algebraic(to_sq)
+        result.append({
+            "move": f"{from_str}{to_str}",
+            "score": scores[i],
+        })
+    return result
+
+
+def debug_print_board(fen: str) -> None:
+    _ensure_loaded()
+    _lib.debug_print_board(fen.encode("utf-8"))
 
 
 def reload_library():
@@ -152,6 +264,27 @@ def reload_library():
     _ensure_loaded()
     ver = get_version()
     logging.info(f"引擎DLL已重载, 版本={ver}")
+
+
+def get_lmr_stats() -> dict:
+    """Get LMR statistics from the last search."""
+    _ensure_loaded()
+    stats = _lib.get_lmr_stats()
+    return {
+        'reductions': stats.reductions,
+        're_searches': stats.re_searches,
+        'nodes_saved': stats.nodes_saved,
+    }
+
+
+def get_pruning_stats() -> dict:
+    """Get Futility Pruning statistics from the last search."""
+    _ensure_loaded()
+    stats = _lib.get_pruning_stats()
+    return {
+        'prunes': stats.prunes,
+        'nodes_saved': stats.nodes_saved,
+    }
 
 
 if __name__ == "__main__":
