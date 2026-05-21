@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import threading
@@ -7,6 +8,39 @@ import engine
 import engine_wrapper
 
 
+class OpeningBook:
+    def __init__(self):
+        self.entries = {}
+        self.loaded = False
+        
+    def load(self, path: str):
+        if not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.entries = data.get("entries", {})
+            self.loaded = True
+            return True
+        except Exception:
+            return False
+    
+    def get_position_key(self, board: chess.Board) -> str:
+        parts = board.fen().split()
+        return f"{parts[0]} {parts[1]}"
+    
+    def lookup(self, board: chess.Board) -> tuple[str | None, dict]:
+        if not self.loaded:
+            return None, {}
+        pos_key = self.get_position_key(board)
+        entry = self.entries.get(pos_key)
+        if not entry:
+            return None, {}
+        preferred = entry.get("preferred")
+        evals = entry.get("hellcopter_eval", {})
+        return preferred, evals
+
+
 class UCIEngine:
     def __init__(self):
         self.board = chess.Board()
@@ -14,9 +48,16 @@ class UCIEngine:
         self.position_history = []
         self.search_thread = None
         self.stop_event = threading.Event()
+        self.opening_book = OpeningBook()
+        self._load_opening_book()
 
     def send(self, msg):
         print(msg, flush=True)
+    
+    def _load_opening_book(self):
+        book_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opening_book.json")
+        if self.opening_book.load(book_path):
+            pass
 
     def cmd_uci(self):
         self.send("id name Hellcopter")
@@ -30,7 +71,11 @@ class UCIEngine:
         self._stop_search()
         env_path = os.environ.get("ENGINE_PARAMS")
         if env_path and os.path.isfile(env_path):
-            shutil.copy2(env_path, os.path.join(os.getcwd(), "engine_params.json"))
+            dest = os.path.join(os.getcwd(), "engine_params.json")
+            src_real = os.path.realpath(env_path)
+            dest_real = os.path.realpath(dest)
+            if src_real != dest_real:
+                shutil.copy2(env_path, dest)
         self.eng = engine.ChessEngine()
         self.position_history = []
         self.board = chess.Board()
@@ -73,6 +118,18 @@ class UCIEngine:
     def cmd_go(self, args):
         self._stop_search()
         self.stop_event.clear()
+
+        preferred_move, evals = self.opening_book.lookup(self.board)
+        if preferred_move:
+            try:
+                move = chess.Move.from_uci(preferred_move)
+                if move in self.board.legal_moves:
+                    score = evals.get(preferred_move, 0)
+                    self.send(f"info depth 0 score cp {score} nodes 0 time 0 pv {preferred_move}")
+                    self.send(f"bestmove {preferred_move}")
+                    return
+            except ValueError:
+                pass
 
         params = {}
         tokens = args.split()
@@ -119,12 +176,24 @@ class UCIEngine:
         else:
             return 2.0
 
-        estimated_moves_left = max(10, 40 - self.board.fullmove_number)
-        if estimated_moves_left > 20:
-            estimated_moves_left = 20 + (estimated_moves_left - 20) * 0.5
+        move_num = self.board.fullmove_number
+        
+        if move_num <= 10:
+            estimated_moves_left = 40 - move_num
+            time_fraction = 0.5
+        elif move_num <= 20:
+            estimated_moves_left = 30
+            time_fraction = 0.8
+        elif move_num <= 40:
+            estimated_moves_left = max(15, 50 - move_num)
+            time_fraction = 1.0
+        else:
+            estimated_moves_left = max(10, 60 - move_num)
+            time_fraction = 1.2
 
         time_limit = remaining / estimated_moves_left + inc * 0.85
         time_limit = min(time_limit, remaining * 0.5)
+        time_limit *= time_fraction
 
         if inc > 0:
             time_limit = max(time_limit, inc * 0.9)
@@ -155,7 +224,11 @@ class UCIEngine:
             try:
                 move = chess.Move.from_uci(uci_move)
                 if move in board.legal_moves:
-                    depth = max_depth if max_depth < 100 else 1
+                    # Get actual depth from engine
+                    try:
+                        depth = engine_wrapper.get_last_search_info(0)  # 0 = depth
+                    except:
+                        depth = 1
                     time_ms = int(elapsed * 1000)
                     if abs(score) >= 30000:
                         mate_in = (32767 - abs(score) + 1) // 2

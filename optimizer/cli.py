@@ -149,8 +149,8 @@ def main():
 
     # match
     match = subparsers.add_parser("match", help="Run match against opponent")
-    match.add_argument("--opponent", default="pulsar",
-                       choices=["monarch", "apollo", "rainman", "shallowblue", "pulsar", "tscp181"])
+    match.add_argument("--opponent", default="shallowblue",
+                       choices=["monarch", "apollo", "rainman", "shallowblue", "tscp181"])
     match.add_argument("--rounds", type=int, default=51)
     match.add_argument("--tc", default="9+0.1")
     match.add_argument("--config-version", default="")
@@ -170,7 +170,7 @@ def main():
     tune.add_argument(
         "--method", choices=["gradient", "grid"], default="gradient")
     tune.add_argument("--base-version", default="1.0.0")
-    tune.add_argument("--opponent", default="pulsar")
+    tune.add_argument("--opponent", default="shallowblue")
     tune.add_argument("--rounds", type=int, default=11)
     tune.add_argument("--tc", default="9+0.1")
     tune.add_argument("--params", help="Comma-separated param keys to tune")

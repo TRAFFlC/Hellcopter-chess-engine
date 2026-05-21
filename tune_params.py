@@ -145,10 +145,13 @@ def parse_match_output(output):
     pattern = re.compile(
         r"Score of\s+(.+?)\s+vs\s+(.+?):\s+(\d+)\s*-\s*(\d+)\s*-\s*(\d+)"
     )
+    last_match = None
     for line in output.splitlines():
         m = pattern.search(line)
         if m:
-            return m.group(1).strip(), m.group(2).strip(), int(m.group(3)), int(m.group(4)), int(m.group(5))
+            last_match = m
+    if last_match:
+        return last_match.group(1).strip(), last_match.group(2).strip(), int(last_match.group(3)), int(last_match.group(4)), int(last_match.group(5))
     return None
 
 

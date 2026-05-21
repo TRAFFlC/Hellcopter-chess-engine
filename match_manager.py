@@ -45,13 +45,19 @@ def create_match_folder(engine_a: str, engine_b: str, record_enabled: bool = Tru
 
 def create_temp_uci_adapter(temp_dir: Path, params_json_path: Path, label: str) -> Path:
     dest_params = temp_dir / "engine_params.json"
-    shutil.copy2(params_json_path, dest_params)
-    
+    from config import load_and_resolve_config
+    resolved = load_and_resolve_config(str(params_json_path))
+    with open(dest_params, "w", encoding="utf-8") as f:
+        json.dump(resolved, f, indent=2)
+
+    dest_params_fwd = str(dest_params).replace("\\", "/")
+    base_dir_fwd = str(BASE_DIR).replace("\\", "/")
     script_path = BASE_DIR / f"_uci_engine_{label}.py"
     with open(script_path, "w", encoding="utf-8") as f:
         f.write("import os\n")
         f.write("import sys\n\n")
-        f.write(f'sys.path.insert(0, r"{BASE_DIR}")\n\n')
+        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
+        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
         f.write("from uci_engine import UCIEngine\n\n")
         f.write('if __name__ == "__main__":\n')
         f.write("    uci = UCIEngine()\n")

@@ -49,6 +49,7 @@ typedef struct
     int score;
     int flag;
     Move best_move;
+    int generation;
 } TT_Entry;
 
 typedef struct
@@ -56,8 +57,12 @@ typedef struct
     Board board;
     TT_Entry *tt;
     int tt_size;
+    int tt_generation;
     Move killers[64][2];
     int history[64][64];
+    Move countermove[64][64];
+    Move followup[64][64];
+    Move move_stack[128];
     int nodes;
     double start_time;
     double time_limit;
@@ -67,18 +72,15 @@ typedef struct
     U64 game_history[512];
     int game_history_count;
 
-    // LMR statistics
-    int lmr_reductions;  // Number of times LMR was applied
-    int lmr_re_searches; // Number of times re-search was needed
-    int lmr_nodes_saved; // Estimated nodes saved by LMR
+    int lmr_reductions;
+    int lmr_re_searches;
+    int lmr_nodes_saved;
 
-    // Futility Pruning statistics
-    int futility_prunes;      // Number of times Futility Pruning was applied
-    int futility_nodes_saved; // Estimated nodes saved by Futility Pruning
+    int futility_prunes;
+    int futility_nodes_saved;
 
-    // Razoring statistics
-    int razoring_prunes;      // Number of times Razoring was applied
-    int razoring_nodes_saved; // Estimated nodes saved by Razoring
+    int razoring_prunes;
+    int razoring_nodes_saved;
 } SearchState;
 
 void board_from_fen(Board *b, const char *fen);
@@ -133,5 +135,8 @@ typedef struct
 
 /* Get Razoring statistics from last search */
 Razoring_Stats get_razoring_stats(void);
+
+/* Perft function for move generation testing */
+U64 perft(const char *fen, int depth);
 
 #endif

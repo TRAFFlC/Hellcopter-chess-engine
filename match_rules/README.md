@@ -19,28 +19,28 @@ chess/
 
 ## 标准对弈规则
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| **时制** | 96秒 + 0.8秒增量 | 每方基础时间96秒，每步加0.8秒 |
-| **轮数** | 11轮 | 交换先后手，确保公平 |
-| **胜率阈值** | 55% | 超过此阈值视为击败对手 |
+| 参数         | 值               | 说明                          |
+| ------------ | ---------------- | ----------------------------- |
+| **时制**     | 96秒 + 0.8秒增量 | 每方基础时间96秒，每步加0.8秒 |
+| **轮数**     | 11轮             | 交换先后手，确保公平          |
+| **胜率阈值** | 55%              | 超过此阈值视为击败对手        |
 
 ## 参考引擎阶梯 (按Blitz等级分排序)
 
-| 阶梯 | 引擎 | Blitz Elo | 可执行文件 |
-|------|------|-----------|------------|
-| Tier 1 | Sargon | 1163 | `sargon 1163/sargon-engine-static-link.exe` |
-| Tier 1 | Rainman | 1427 | `Rainman 1427/rainman.exe` |
-| Tier 2 | ShallowBlue | 1575 | `ShallowBlue 1575/shallowblue.exe` |
-| Tier 2 | TSCP 181 | 1607 | `TSCP 1607/tscp181.exe` |
-| Tier 3 | Pulsar | 1651 | `Pulsar 1651/pulsar2009-9b.exe` |
-| Tier 3 | Apollo | 1663 | `Apollo 1663/apollo.exe` |
-| Tier 4 | Monarch | 2005 | `Monarch 2005/Monarch(v1.7)/Monarch(v1.7).exe` |
-| Tier 5 | Absolute Zero | 2284 | `Absolute Zero 2284/AbsoluteZero.exe` |
+| 阶梯   | 引擎          | Blitz Elo | 可执行文件                                     |
+| ------ | ------------- | --------- | ---------------------------------------------- |
+| Tier 1 | Sargon        | 1163      | `sargon 1163/sargon-engine-static-link.exe`    |
+| Tier 1 | Rainman       | 1427      | `Rainman 1427/rainman.exe`                     |
+| Tier 2 | ShallowBlue   | 1575      | `ShallowBlue 1575/shallowblue.exe`             |
+| Tier 2 | TSCP 181      | 1607      | `TSCP 1607/tscp181.exe`                        |
+| Tier 3 | Apollo        | 1663      | `Apollo 1663/apollo.exe`                       |
+| Tier 4 | Monarch       | 2005      | `Monarch 2005/Monarch(v1.7)/Monarch(v1.7).exe` |
+| Tier 5 | Absolute Zero | 2284      | `Absolute Zero 2284/AbsoluteZero.exe`          |
 
 ### Velvet (难度可调节)
 
 Velvet引擎可通过UCI参数调节Elo (1225-3000)：
+
 ```
 setoption name UCI_LimitStrength value true
 setoption name UCI_Elo value 1500
@@ -51,6 +51,7 @@ setoption name UCI_Elo value 1500
 Stockfish仅作为NPS基准测试，非挑战目标。
 
 基准数据 (单线程, depth=18, hash=128MB):
+
 - **NPS**: 2,406,495 (~2.4M)
 - **总时间**: 11,976 ms
 - **搜索节点**: 28,820,188
@@ -62,7 +63,7 @@ Stockfish仅作为NPS基准测试，非挑战目标。
 python match_manager.py --engine-a v1.3.0 --engine-b shallowblue
 
 # 自定义参数
-python match_manager.py --engine-a v1.3.0 --engine-b pulsar --rounds 21 --tc 60+0.5
+python match_manager.py --engine-a v1.3.0 --engine-b apollo --rounds 21 --tc 60+0.5
 
 # 不记录对弈过程
 python match_manager.py --engine-a v1.3.0 --engine-b shallowblue --no-record

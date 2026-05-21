@@ -6,6 +6,7 @@
 #include <time.h>
 #include <math.h>
 #include <ctype.h>
+#include <assert.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -1303,105 +1304,73 @@ static int is_killer_move(const SearchState *s, const Move *move, int depth)
     return 0;
 }
 
-/**
- * Determine if Late Move Reduction (LMR) should be applied to a move
- *
- * LMR is a search optimization that reduces the search depth for moves that
- * are unlikely to be best. This function checks all the conditions that must
- * be met for LMR to be safely applied.
- *
- * @param s The search state
- * @param move The move to check
- * @param depth The current search depth
- * @param move_num The move number (0-indexed, 0 is the first move)
- * @param in_check Whether the current side is in check
- * @return 1 if LMR should be applied, 0 otherwise
- */
+static int mvv_lva(const Board *b, const Move *m);
+static int move_gives_check(const Board *b, const Move *move);
+
 static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
                             int move_num, int in_check)
 {
-    /* LMR must be enabled in configuration */
     if (!g_runtime_params.lmr_enabled)
         return 0;
 
-    /* Depth must be sufficient for reduction to be meaningful */
     if (depth < g_runtime_params.lmr_min_depth)
         return 0;
 
-    /* Don't reduce PV nodes (first few moves) */
     if (move_num < g_runtime_params.lmr_move_threshold)
         return 0;
 
-    /* Don't reduce when in check (tactical position) */
     if (in_check)
         return 0;
 
-    /* Don't reduce capture moves (tactical) */
     if (move->capture)
         return 0;
 
-    /* Don't reduce promotion moves (tactical) */
     if (move->promotion)
         return 0;
 
-    /* Don't reduce moves that give check (tactical) */
     if (move_gives_check(&s->board, move))
         return 0;
 
-    /* Don't reduce killer moves (historically good moves) */
     if (is_killer_move(s, move, depth))
         return 0;
 
-    /* All conditions met - LMR can be applied */
     return 1;
 }
 
-/**
- * Calculate the reduction depth for Late Move Reduction (LMR)
- *
- * This function computes how much to reduce the search depth for late moves
- * that are unlikely to be best. The reduction is based on:
- * - Current search depth (deeper searches allow more reduction)
- * - Move number (later moves get more reduction)
- *
- * Formula: reduction = 1 + floor(log(depth) * log(move_num) / 2.5)
- *
- * The formula is designed to:
- * - Give minimal reduction for early depths and move numbers
- * - Increase reduction logarithmically as depth and move number increase
- * - Avoid over-reduction that could miss tactical opportunities
- *
- * @param depth The current search depth (must be >= 1)
- * @param move_num The move number (0-indexed, must be >= 1 for meaningful reduction)
- * @return The reduction amount (always >= 1, capped at depth - 1)
- */
-static int calculate_reduction(int depth, int move_num)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num)
 {
-    /* Sanity checks */
     if (depth < 1 || move_num < 1)
         return 0;
 
-    /* Calculate reduction using logarithmic formula
-     * reduction = 1 + floor(log(depth) * log(move_num) / 2.5)
-     *
-     * Using natural logarithm (log) for both depth and move_num
-     * The divisor 2.5 controls the aggressiveness of reduction:
-     * - Smaller values = more aggressive reduction
-     * - Larger values = more conservative reduction
-     */
+    if (move_num < g_runtime_params.lmr_move_threshold)
+        return 0;
+
     double log_depth = log((double)depth);
     double log_move_num = log((double)move_num);
     int reduction = 1 + (int)(log_depth * log_move_num / 2.5);
 
-    /* Cap reduction to avoid reducing below depth 1
-     * We must leave at least 1 ply for the reduced search
-     */
+    if (move->capture)
+    {
+        int see_score = mvv_lva(&s->board, move) - 100;
+        if (see_score >= 0)
+            reduction = reduction > 1 ? reduction - 1 : 0;
+    }
+
+    if (move->promotion)
+        reduction = reduction > 1 ? reduction - 1 : 0;
+
+    if (move_gives_check(&s->board, move))
+        reduction = reduction > 1 ? reduction - 1 : 0;
+
+    int history_value = s->history[move->from][move->to];
+    if (history_value > 500)
+        reduction = reduction > 1 ? reduction - 1 : 0;
+
     if (reduction >= depth)
         reduction = depth - 1;
 
-    /* Ensure minimum reduction of 1 when conditions are met */
-    if (reduction < 1)
-        reduction = 1;
+    if (reduction < 0)
+        reduction = 0;
 
     return reduction;
 }
@@ -1436,35 +1405,18 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
                                          int depth, int move_num, int in_check,
                                          int alpha)
 {
-    /* Futility Pruning must be enabled in configuration */
     if (!g_runtime_params.futility_enabled)
         return 0;
 
-    /* Only apply at shallow depths (typically depth <= 3)
-     * At deeper depths, the position can change too much for static eval to be reliable
-     */
-    if (depth > 3 || depth <= 0)
+    if (depth > 5 || depth <= 0)
         return 0;
 
-    /* Don't prune PV nodes (first move)
-     * The first move is likely to be the best move from move ordering,
-     * so we should always search it fully
-     */
     if (move_num == 0)
         return 0;
 
-    /* Don't prune when in check (tactical position)
-     * Check positions are tactical and require full search
-     */
     if (in_check)
         return 0;
 
-    /* Don't prune tactical moves - these can dramatically change the evaluation
-     * Tactical moves include:
-     * - Captures (can win material)
-     * - Promotions (can create a queen)
-     * - Moves that give check (can lead to checkmate)
-     */
     if (move->capture)
         return 0;
 
@@ -1474,36 +1426,15 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
     if (move_gives_check(&s->board, move))
         return 0;
 
-    /* Calculate the futility margin based on depth
-     * Deeper positions get larger margins because there's more potential for improvement
-     * Formula: margin = futility_margin_base * depth
-     *
-     * Example with futility_margin_base = 150:
-     * - depth 1: margin = 150 (about 1.5 pawns)
-     * - depth 2: margin = 300 (about 3 pawns)
-     * - depth 3: margin = 450 (about 4.5 pawns)
-     */
     int margin = g_runtime_params.futility_margin_base * depth;
 
-    /* Get static evaluation of current position
-     * This is from the perspective of the side to move
-     */
     int eval = evaluate(&s->board);
 
-    /* Check if position is hopeless even with the margin
-     * If eval + margin <= alpha, then even in the best case scenario
-     * (gaining 'margin' centipawns), we still can't reach alpha.
-     * Therefore, searching this move is futile.
-     *
-     * Note: We use <= instead of < to be slightly more aggressive
-     */
     if (eval + margin <= alpha)
     {
-        /* All conditions met - this move can be pruned */
         return 1;
     }
 
-    /* Don't prune - at least one condition is not met */
     return 0;
 }
 
@@ -1896,9 +1827,9 @@ static int g_last_razoring_nodes_saved = 0;
  * to allow the engine to make different choices, adding variety to play.
  */
 static U64 g_perturb_rng_state = 0;
-static int g_perturb_threshold = 5;   /* Score difference threshold in centipawns */
+static int g_perturb_threshold = 15;  /* Score difference threshold in centipawns - RANDOM_MOVE_MARGIN */
 static int g_perturb_probability = 30; /* Probability to choose second best (0-100) */
-static int g_perturb_enabled = 1;      /* Enable/disable perturbation */
+static int g_perturb_enabled = 0;      /* Enable/disable perturbation - DISABLED for better play */
 
 static U64 perturb_xorshift64(void)
 {
@@ -1960,6 +1891,7 @@ eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int 
     memset(s.history, 0, sizeof(s.history));
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.tt_generation = 1;
 
     Board old = s.board;
     int side = s.board.side_to_move;
@@ -2534,8 +2466,14 @@ evaluate(Board *b)
                 int sq = lsb_index(bb);
                 bb &= bb - 1;
                 int psq = (side == WHITE) ? sq : (sq ^ 56);
-                int mg = mg_pst[pt][psq];
-                int eg = eg_pst[pt][psq];
+                int mg, eg;
+                if (g_runtime_params.loaded) {
+                    mg = g_runtime_params.mg_pst[pt - 1][psq];
+                    eg = g_runtime_params.eg_pst[pt - 1][psq];
+                } else {
+                    mg = mg_pst[pt][psq];
+                    eg = eg_pst[pt][psq];
+                }
                 int tapered = (mg * phase + eg * (24 - phase)) / 24;
                 score += sign * (piece_values[pt] + tapered);
             }
@@ -3268,6 +3206,54 @@ evaluate(Board *b)
         }
     }
 
+    if (phase <= ENDGAME_PHASE_THRESHOLD)
+    {
+        for (side = 0; side < 2; side++)
+        {
+            int sign = (side == WHITE) ? 1 : -1;
+            U64 king_bb = b->pieces[side][KING];
+            if (king_bb)
+            {
+                int king_sq = lsb_index(king_bb);
+                int kf = file_of(king_sq);
+                int kr = rank_of(king_sq);
+                int center_dist = (kf > 3 ? kf - 3 : 3 - kf) + (kr > 3 ? kr - 3 : 3 - kr);
+                int activity_bonus = (6 - center_dist) * KING_ACTIVITY_WEIGHT;
+                score += sign * activity_bonus;
+            }
+        }
+    }
+
+    /* Simplification bonus: encourage side with material advantage to exchange pieces */
+    {
+        int white_non_pawn_material = 0;
+        int black_non_pawn_material = 0;
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        {
+            white_non_pawn_material += count_bits(b->pieces[WHITE][pt]) * piece_values[pt];
+            black_non_pawn_material += count_bits(b->pieces[BLACK][pt]) * piece_values[pt];
+        }
+        int material_balance = white_non_pawn_material - black_non_pawn_material;
+        if (material_balance > SIMPLIFY_THRESHOLD)
+        {
+            int advantage = material_balance - SIMPLIFY_THRESHOLD;
+            int bonus = SIMPLIFY_BONUS * advantage / 100;
+            if (bonus > SIMPLIFY_BONUS * 3)
+                bonus = SIMPLIFY_BONUS * 3;
+            score += bonus;
+        }
+        else if (material_balance < -SIMPLIFY_THRESHOLD)
+        {
+            int advantage = -material_balance - SIMPLIFY_THRESHOLD;
+            int bonus = SIMPLIFY_BONUS * advantage / 100;
+            if (bonus > SIMPLIFY_BONUS * 3)
+                bonus = SIMPLIFY_BONUS * 3;
+            score -= bonus;
+        }
+    }
+
+    assert(score > -MATE_SCORE && score < MATE_SCORE && "Evaluation score out of valid range");
+    
     b->eval_score = score;
     return score;
 }
@@ -3359,6 +3345,10 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
         if (e->flag == 2 && score >= beta)
             return score;
     }
+    else if (e->key != 0)
+    {
+        *out_move = e->best_move;
+    }
     return INF + 1;
 }
 
@@ -3366,7 +3356,23 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
 {
     int idx = (int)(key % s->tt_size);
     TT_Entry *e = &s->tt[idx];
-    if (e->key == 0 || e->depth <= depth)
+    int should_replace = 0;
+    if (e->key == 0)
+    {
+        should_replace = 1;
+    }
+    else if (e->key == key)
+    {
+        if (depth >= e->depth)
+            should_replace = 1;
+    }
+    else
+    {
+        int age_diff = s->tt_generation - e->generation;
+        if (age_diff > 0 || depth > e->depth)
+            should_replace = 1;
+    }
+    if (should_replace)
     {
         int adj_score = score;
         if (adj_score > MATE_SCORE - 100)
@@ -3378,7 +3384,235 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
         e->score = adj_score;
         e->flag = flag;
         e->best_move = best_move;
+        e->generation = s->tt_generation;
     }
+}
+
+static int see_piece_value(int piece)
+{
+    switch (piece)
+    {
+    case PAWN:
+        return PAWN_VALUE;
+    case KNIGHT:
+        return KNIGHT_VALUE;
+    case BISHOP:
+        return BISHOP_VALUE;
+    case ROOK:
+        return ROOK_VALUE;
+    case QUEEN:
+        return QUEEN_VALUE;
+    case KING:
+        return 10000;
+    default:
+        return 0;
+    }
+}
+
+static U64 see_attackers(const Board *b, int sq, int side, U64 occupied)
+{
+    U64 attackers = 0;
+    U64 pawns = b->pieces[side][PAWN];
+    U64 knights = b->pieces[side][KNIGHT];
+    U64 bishops = b->pieces[side][BISHOP];
+    U64 rooks = b->pieces[side][ROOK];
+    U64 queens = b->pieces[side][QUEEN];
+    U64 kings = b->pieces[side][KING];
+
+    if (side == WHITE)
+    {
+        if (sq >= 8)
+        {
+            if (file_of(sq) > 0 && (pawns & (1ULL << (sq - 9))))
+                attackers |= (1ULL << (sq - 9));
+            if (file_of(sq) < 7 && (pawns & (1ULL << (sq - 7))))
+                attackers |= (1ULL << (sq - 7));
+        }
+    }
+    else
+    {
+        if (sq < 56)
+        {
+            if (file_of(sq) > 0 && (pawns & (1ULL << (sq + 7))))
+                attackers |= (1ULL << (sq + 7));
+            if (file_of(sq) < 7 && (pawns & (1ULL << (sq + 9))))
+                attackers |= (1ULL << (sq + 9));
+        }
+    }
+
+    attackers |= knights & knight_attacks[sq];
+    attackers |= kings & king_attacks[sq];
+
+    U64 diag_attackers = bishops | queens;
+    U64 straight_attackers = rooks | queens;
+    attackers |= diag_attackers & sliding_attacks_bishop(sq, occupied);
+    attackers |= straight_attackers & sliding_attacks_rook(sq, occupied);
+
+    return attackers;
+}
+
+static int see_smallest_attacker(const Board *b, int sq, int side, U64 occupied, int *attacker_sq)
+{
+    U64 pawns = b->pieces[side][PAWN] & occupied;
+    U64 knights = b->pieces[side][KNIGHT] & occupied;
+    U64 bishops = b->pieces[side][BISHOP] & occupied;
+    U64 rooks = b->pieces[side][ROOK] & occupied;
+    U64 queens = b->pieces[side][QUEEN] & occupied;
+    U64 kings = b->pieces[side][KING] & occupied;
+
+    if (side == WHITE)
+    {
+        if (sq >= 8)
+        {
+            if (file_of(sq) > 0 && (pawns & (1ULL << (sq - 9))))
+            {
+                *attacker_sq = sq - 9;
+                return PAWN;
+            }
+            if (file_of(sq) < 7 && (pawns & (1ULL << (sq - 7))))
+            {
+                *attacker_sq = sq - 7;
+                return PAWN;
+            }
+        }
+    }
+    else
+    {
+        if (sq < 56)
+        {
+            if (file_of(sq) > 0 && (pawns & (1ULL << (sq + 7))))
+            {
+                *attacker_sq = sq + 7;
+                return PAWN;
+            }
+            if (file_of(sq) < 7 && (pawns & (1ULL << (sq + 9))))
+            {
+                *attacker_sq = sq + 9;
+                return PAWN;
+            }
+        }
+    }
+
+    U64 knight_attackers = knights & knight_attacks[sq];
+    if (knight_attackers)
+    {
+        *attacker_sq = lsb_index(knight_attackers);
+        return KNIGHT;
+    }
+
+    U64 diag_attackers = (bishops | queens) & sliding_attacks_bishop(sq, occupied);
+    if (diag_attackers)
+    {
+        U64 bishop_attackers = bishops & diag_attackers;
+        if (bishop_attackers)
+        {
+            *attacker_sq = lsb_index(bishop_attackers);
+            return BISHOP;
+        }
+        U64 queen_diag = queens & diag_attackers;
+        if (queen_diag)
+        {
+            *attacker_sq = lsb_index(queen_diag);
+            return QUEEN;
+        }
+    }
+
+    U64 straight_attackers = (rooks | queens) & sliding_attacks_rook(sq, occupied);
+    if (straight_attackers)
+    {
+        U64 rook_attackers = rooks & straight_attackers;
+        if (rook_attackers)
+        {
+            *attacker_sq = lsb_index(rook_attackers);
+            return ROOK;
+        }
+        U64 queen_straight = queens & straight_attackers;
+        if (queen_straight)
+        {
+            *attacker_sq = lsb_index(queen_straight);
+            return QUEEN;
+        }
+    }
+
+    U64 king_attackers = kings & king_attacks[sq];
+    if (king_attackers)
+    {
+        *attacker_sq = lsb_index(king_attackers);
+        return KING;
+    }
+
+    return 0;
+}
+
+static int see(Board *b, int from, int to)
+{
+    int captured = piece_on_square(b, to);
+    if (captured == 0 && b->en_passant == to)
+        captured = PAWN;
+
+    if (captured == 0)
+        return 0;
+
+    int capture_value = see_piece_value(captured);
+
+    int attacker_piece = piece_on_square(b, from);
+    int attacker_value = see_piece_value(attacker_piece);
+
+    U64 occupied = 0;
+    int side, pt;
+    for (side = 0; side < 2; side++)
+    {
+        for (pt = PAWN; pt <= KING; pt++)
+        {
+            occupied |= b->pieces[side][pt];
+        }
+    }
+
+    occupied &= ~(1ULL << from);
+    occupied |= (1ULL << to);
+
+    int gain[32];
+    int gain_count = 0;
+    gain[gain_count++] = capture_value;
+
+    int current_sq = to;
+    int stm = 1 - b->side_to_move;
+    int piece = attacker_piece;
+
+    while (1)
+    {
+        int next_attacker_sq;
+        int next_piece = see_smallest_attacker(b, current_sq, stm, occupied, &next_attacker_sq);
+
+        if (next_piece == 0)
+            break;
+
+        int next_value = see_piece_value(next_piece);
+
+        occupied &= ~(1ULL << next_attacker_sq);
+
+        gain[gain_count++] = next_value;
+
+        if (next_piece == KING)
+            break;
+
+        current_sq = next_attacker_sq;
+        stm = 1 - stm;
+        piece = next_piece;
+
+        if (gain_count >= 30)
+            break;
+    }
+
+    while (gain_count > 1)
+    {
+        gain_count--;
+        gain[gain_count - 1] = gain[gain_count - 1] - gain[gain_count];
+        if (gain[gain_count - 1] < 0)
+            gain[gain_count - 1] = 0;
+    }
+
+    return gain[0];
 }
 
 static int qsearch_generate_moves(const Board *b, Move *moves)
@@ -3781,9 +4015,32 @@ static int generate_checking_moves(const Board *b, Move *moves, int start_count)
 
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth)
 {
+    assert(alpha < beta && "Alpha must be less than beta in quiescence_search");
+    
     if (s->aborted)
         return 0;
     s->nodes++;
+
+    int is_endgame_qs = 0;
+    {
+        int npm = 0;
+        int pt;
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        {
+            npm += count_bits(s->board.pieces[WHITE][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+            npm += count_bits(s->board.pieces[BLACK][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+        }
+        if (npm <= ENDGAME_PHASE_THRESHOLD)
+            is_endgame_qs = 1;
+    }
+    int qs_max_depth = is_endgame_qs ? QS_MAX_DEPTH_EG : QS_MAX_DEPTH_MG;
+    if (qs_depth >= qs_max_depth)
+    {
+        int eval = evaluate(&s->board);
+        if (s->board.side_to_move == BLACK)
+            eval = -eval;
+        return eval;
+    }
 
     int in_check = is_check(&s->board, s->board.side_to_move);
     int next_ply = ply + 1;
@@ -3798,6 +4055,8 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         if (alpha < stand_pat)
             alpha = stand_pat;
         if (stand_pat + DELTA < alpha)
+            return alpha;
+        if (stand_pat + QUEEN_VALUE < alpha)
             return alpha;
         if (ply >= 60)
             return alpha;
@@ -3827,6 +4086,14 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     int legal_count = 0;
     for (i = 0; i < n; i++)
     {
+        if (!in_check && moves[i].capture && !moves[i].promotion)
+        {
+            Board temp_board = s->board;
+            int see_score = see(&temp_board, moves[i].from, moves[i].to);
+            if (see_score < 0)
+                continue;
+        }
+
         Board copy = s->board;
         make_move(&s->board, &moves[i]);
         if (!is_check(&s->board, copy.side_to_move))
@@ -3856,6 +4123,8 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
 
 int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int ply)
 {
+    assert(alpha < beta && "Alpha must be less than beta in negamax");
+    
     if (s->aborted)
         return 0;
     s->nodes++;
@@ -4013,6 +4282,22 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     }
                 }
             }
+            if (moves[i].score == 0 && ply >= 2)
+            {
+                Move *cm = &s->countermove[moves[i].from][moves[i].to];
+                if (cm->from == moves[i].from && cm->to == moves[i].to)
+                {
+                    moves[i].score = 30000;
+                }
+            }
+            if (moves[i].score == 0 && ply >= 3)
+            {
+                Move *fu = &s->followup[moves[i].from][moves[i].to];
+                if (fu->from == moves[i].from && fu->to == moves[i].to)
+                {
+                    moves[i].score = 25000;
+                }
+            }
             if (moves[i].score == 0)
             {
                 moves[i].score = s->history[moves[i].from][moves[i].to];
@@ -4068,22 +4353,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     for (i = 0; i < n; i++)
     {
-        /* Check if we should apply Futility Pruning to this move
-         * Futility Pruning is checked BEFORE making the move to avoid unnecessary work
-         * This is different from LMR which is checked after making the move
-         */
         if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha))
         {
-            /* Estimate nodes saved by skipping this move
-             * This is a rough estimate based on typical search tree size at this depth
-             * Formula: 2^depth gives approximate nodes in subtree */
-            int estimated_nodes_saved = (1 << depth) - 1; /* 2^depth - 1 */
-
-            /* Update Futility Pruning statistics */
+            int estimated_nodes_saved = (1 << depth) - 1;
             s->futility_prunes++;
             s->futility_nodes_saved += estimated_nodes_saved;
-
-            /* Skip this move entirely - don't even make it on the board */
             continue;
         }
 
@@ -4096,43 +4370,35 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         legal_count++;
 
+        if (ply < 128)
+            s->move_stack[ply] = moves[i];
+
         int score;
         if (i == 0)
         {
-            /* First move: always search at full depth with full window */
             score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
         }
         else
         {
-            /* Check if we should apply LMR to this move */
             int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check);
 
             if (apply_lmr)
             {
-                /* Calculate reduction depth */
-                int reduction = calculate_reduction(depth, i);
+                int reduction = calculate_reduction(s, &moves[i], depth, i);
                 if (is_endgame && reduction > 0) reduction -= 1;
 
-                /* Estimate nodes that will be saved by this reduction
-                 * This is a rough estimate based on typical branching factor
-                 * Actual savings depend on position complexity */
-                int estimated_nodes_saved = (1 << reduction) - 1; /* 2^reduction - 1 */
+                int estimated_nodes_saved = (1 << reduction) - 1;
 
-                /* Apply LMR: search with reduced depth and null window */
                 score = -negamax(s, depth - 1 - reduction, -alpha - 1, -alpha, ext_count, ply + 1);
 
-                /* Update LMR statistics */
                 s->lmr_reductions++;
                 s->lmr_nodes_saved += estimated_nodes_saved;
 
-                /* If reduced search fails high (score > alpha), re-search at full depth */
                 if (score > alpha)
                 {
-                    /* Re-search with null window at full depth */
                     score = -negamax(s, depth - 1, -alpha - 1, -alpha, ext_count, ply + 1);
                     s->lmr_re_searches++;
 
-                    /* If still fails high and within window, do full window search */
                     if (score > alpha && score < beta)
                     {
                         score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
@@ -4141,10 +4407,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             }
             else
             {
-                /* Normal search without LMR: null window search first */
                 score = -negamax(s, depth - 1, -alpha - 1, -alpha, ext_count, ply + 1);
 
-                /* If fails high, re-search with full window */
                 if (score > alpha && score < beta)
                 {
                     score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
@@ -4175,6 +4439,16 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                         s->killers[depth][1] = s->killers[depth][0];
                         s->killers[depth][0] = moves[i];
                         s->history[moves[i].from][moves[i].to] += depth * depth;
+                    }
+                    if (ply >= 1)
+                    {
+                        Move prev_move = s->move_stack[ply - 1];
+                        s->countermove[prev_move.from][prev_move.to] = moves[i];
+                    }
+                    if (ply >= 2)
+                    {
+                        Move prev_own_move = s->move_stack[ply - 2];
+                        s->followup[prev_own_move.from][prev_own_move.to] = moves[i];
                     }
                     tt_store(s, key, depth, beta, flag, best_move, ply);
                     s->search_history_count = saved_history_count;
@@ -4339,6 +4613,7 @@ debug_root_moves(const char *fen, int depth, int *out_scores, int *out_from, int
     s.nodes = 0;
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = 0;
     int i;
@@ -4392,6 +4667,7 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
     s.nodes = 0;
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = 0;
     int i;
@@ -4508,6 +4784,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     s.nodes = 0;
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = 0;
     if (game_history && game_history_count > 0)
@@ -4558,12 +4835,84 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         *b = copy;
     }
 
+    // Check for threefold repetition at root position
+    {
+        U64 root_key = compute_hash(&s.board);
+        int root_reps = 0;
+        int rep_i;
+        for (rep_i = 0; rep_i < s.game_history_count; rep_i++)
+        {
+            if (s.game_history[rep_i] == root_key)
+                root_reps++;
+        }
+        if (root_reps >= 3)
+        {
+            // Position has appeared 3+ times - draw by threefold repetition
+            if (out_nodes)
+                *out_nodes = 0;
+            free(s.tt);
+            return best_move; // Return null move, let cutechess handle the draw
+        }
+    }
+
     if (legal_moves_count == 0)
     {
         if (out_nodes)
             *out_nodes = 0;
         free(s.tt);
         return best_move;
+    }
+
+    // Root move ordering: sort moves for better search efficiency
+    // Prioritize: captures > promotions > center moves > others
+    int move_priorities[MAX_MOVES];
+    for (i = 0; i < legal_moves_count; i++)
+    {
+        Move *m = &root_moves[i];
+        int priority = 0;
+        
+        // Captures get high priority (MVV-LVA: Most Valuable Victim - Least Valuable Attacker)
+        if (m->capture)
+        {
+            static const int victim_values[] = {0, 100, 300, 320, 500, 900, 0};
+            static const int attacker_values[] = {0, 10, 30, 30, 50, 90, 0};
+            int attacker = piece_on_square(b, m->from);
+            priority += 10000 + victim_values[m->capture] - attacker_values[attacker];
+        }
+        
+        // Promotions
+        if (m->promotion)
+            priority += 5000;
+            
+        // Center squares (d4, e4, d5, e5 = index 27,28,35,36)
+        int to_r = rank_of(m->to), to_f = file_of(m->to);
+        if ((to_f >= 2 && to_f <= 5) && (to_r >= 2 && to_r <= 5))
+            priority += 100;
+            
+        // Just to make sure order is deterministic
+        priority += 63 - m->to;
+        
+        move_priorities[i] = priority;
+    }
+    
+    // Simple selection sort by priority descending
+    for (i = 0; i < legal_moves_count - 1; i++)
+    {
+        int best_idx = i;
+        for (int j = i + 1; j < legal_moves_count; j++)
+        {
+            if (move_priorities[j] > move_priorities[best_idx])
+                best_idx = j;
+        }
+        if (best_idx != i)
+        {
+            Move tmp = root_moves[i];
+            root_moves[i] = root_moves[best_idx];
+            root_moves[best_idx] = tmp;
+            int tmp_p = move_priorities[i];
+            move_priorities[i] = move_priorities[best_idx];
+            move_priorities[best_idx] = tmp_p;
+        }
     }
 
     int material = count_total_material(&s.board);
@@ -4636,16 +4985,13 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
             g_last_search_nodes = s.nodes;
             g_last_best_score = current_score;
 
-            /* Save LMR statistics */
             g_last_lmr_reductions = s.lmr_reductions;
             g_last_lmr_re_searches = s.lmr_re_searches;
             g_last_lmr_nodes_saved = s.lmr_nodes_saved;
 
-            /* Save Futility Pruning statistics */
             g_last_futility_prunes = s.futility_prunes;
             g_last_futility_nodes_saved = s.futility_nodes_saved;
 
-            /* Save Razoring statistics */
             g_last_razoring_prunes = s.razoring_prunes;
             g_last_razoring_nodes_saved = s.razoring_nodes_saved;
             if (depth < 64)
@@ -4663,48 +5009,45 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                     }
                 }
             }
+
+            {
+                int hi, hj;
+                for (hi = 0; hi < 64; hi++)
+                {
+                    for (hj = 0; hj < 64; hj++)
+                    {
+                        s.history[hi][hj] = s.history[hi][hj] * 9 / 10;
+                    }
+                }
+            }
+            s.tt_generation++;
         }
 
         if (s.aborted)
             break;
     }
 
-    if (g_perturb_enabled && scores_valid && legal_moves_count >= 2)
+    // Random move selection: among all moves with score within threshold, pick randomly
+    if (scores_valid && g_perturb_enabled && legal_moves_count > 1)
     {
-        int best_idx = -1;
-        int second_best_idx = -1;
-        int best_val = -INF;
-        int second_best_val = -INF;
-
+        int candidate_count = 0;
+        int candidate_indices[MAX_MOVES];
+        int min_acceptable_score = best_score - g_perturb_threshold;
+        
         for (i = 0; i < legal_moves_count; i++)
         {
-            if (root_scores[i] > best_val)
+            if (root_scores[i] >= min_acceptable_score)
             {
-                second_best_val = best_val;
-                second_best_idx = best_idx;
-                best_val = root_scores[i];
-                best_idx = i;
-            }
-            else if (root_scores[i] > second_best_val)
-            {
-                second_best_val = root_scores[i];
-                second_best_idx = i;
+                candidate_indices[candidate_count++] = i;
             }
         }
-
-        if (best_idx >= 0 && second_best_idx >= 0)
+        
+        if (candidate_count > 1)
         {
-            int diff = best_val - second_best_val;
-            if (diff < g_perturb_threshold)
-            {
-                int rand_val = perturb_rand_int(100);
-                if (rand_val < g_perturb_probability)
-                {
-                    best_move = root_moves[second_best_idx];
-                    best_move.score = second_best_val;
-                    best_score = second_best_val;
-                }
-            }
+            int chosen_idx = perturb_rand_int(candidate_count);
+            int move_idx = candidate_indices[chosen_idx];
+            best_move = root_moves[move_idx];
+            best_move.score = root_scores[move_idx];
         }
     }
 
@@ -4722,6 +5065,22 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
                      int *out_scores, int *out_from, int *out_to, int *out_count)
 {
     ensure_engine_tables_initialized();
+    
+    static int params_loaded_scores = 0;
+    if (!params_loaded_scores)
+    {
+        const char *env_path = getenv("ENGINE_PARAMS");
+        if (env_path && env_path[0] != '\0')
+        {
+            load_params_from_file(env_path);
+        }
+        else
+        {
+            load_params_from_file("engine_params.json");
+        }
+        params_loaded_scores = 1;
+    }
+    
     SearchState s;
     memset(&s, 0, sizeof(SearchState));
     board_from_fen(&s.board, fen);
@@ -4731,6 +5090,7 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
     s.nodes = 0;
     s.tt_size = 1 << 20;
     s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
+    s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = 0;
 
@@ -4847,6 +5207,7 @@ static void smp_worker_search(LazySMPWorker *w)
     s.nodes = 0;
     s.tt = w->shared_tt;
     s.tt_size = w->tt_size;
+    s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = w->game_history_count;
     if (w->game_history_count > 0)
@@ -5164,4 +5525,41 @@ get_razoring_stats(void)
     stats.prunes = g_last_razoring_prunes;
     stats.nodes_saved = g_last_razoring_nodes_saved;
     return stats;
+}
+
+static U64 perft_internal(Board *b, int depth)
+{
+    if (depth == 0)
+        return 1;
+
+    Move moves[MAX_MOVES];
+    int n = generate_legal_moves(b, moves);
+
+    if (depth == 1)
+        return (U64)n;
+
+    U64 nodes = 0;
+    for (int i = 0; i < n; i++)
+    {
+        Board old = *b;
+        make_move(b, &moves[i]);
+        nodes += perft_internal(b, depth - 1);
+        unmake_move(b, &moves[i], &old);
+    }
+
+    return nodes;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+U64
+perft(const char *fen, int depth)
+{
+    ensure_engine_tables_initialized();
+
+    Board b;
+    board_from_fen(&b, fen);
+
+    return perft_internal(&b, depth);
 }

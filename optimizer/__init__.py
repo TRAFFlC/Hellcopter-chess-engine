@@ -11,6 +11,16 @@ from .match_runner import MatchRunner, MatchResult
 from .tuner import GradientDescentTuner, GridSearchTuner, TUNABLE_PARAMS
 from .visualizer import Visualizer
 from .build_engine import EngineBuilder
+from .tuning_logger import (
+    TuningLogger,
+    TuningStatus,
+    ParameterChange,
+    EloResult,
+    GitInfo,
+    TuningRecord,
+    create_parameter_change,
+    create_elo_result
+)
 
 __all__ = [
     'ConfigManager',
@@ -21,4 +31,12 @@ __all__ = [
     'TUNABLE_PARAMS',
     'Visualizer',
     'EngineBuilder',
+    'TuningLogger',
+    'TuningStatus',
+    'ParameterChange',
+    'EloResult',
+    'GitInfo',
+    'TuningRecord',
+    'create_parameter_change',
+    'create_elo_result',
 ]

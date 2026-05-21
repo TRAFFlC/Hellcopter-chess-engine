@@ -4,6 +4,50 @@ import argparse
 import subprocess
 import shutil
 import platform
+import json
+import tempfile
+from datetime import datetime
+
+
+def resolve_config(base_dir, config_ref):
+    if not config_ref:
+        return None
+    
+    config_path = os.path.join(base_dir, "configs", f"{config_ref}.json")
+    if os.path.isfile(config_path):
+        return config_path
+    
+    if os.path.isfile(config_ref):
+        return config_ref
+    
+    return None
+
+
+def create_temp_uci_adapter(base_dir, config_path):
+    from config import load_and_resolve_config
+    
+    temp_dir = tempfile.mkdtemp(prefix="hellcopter_match_")
+    dest_params = os.path.join(temp_dir, "engine_params.json")
+    
+    resolved = load_and_resolve_config(config_path)
+    with open(dest_params, "w", encoding="utf-8") as f:
+        json.dump(resolved, f, indent=2)
+    
+    dest_params_fwd = dest_params.replace("\\", "/")
+    base_dir_fwd = base_dir.replace("\\", "/")
+    
+    script_path = os.path.join(temp_dir, "uci_adapter.py")
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write("import os\n")
+        f.write("import sys\n\n")
+        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
+        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
+        f.write("from uci_engine import UCIEngine\n\n")
+        f.write('if __name__ == "__main__":\n')
+        f.write("    uci = UCIEngine()\n")
+        f.write("    uci.run()\n")
+    
+    return script_path, temp_dir
 
 
 def find_cutechess(cli_path, base_dir):
@@ -66,11 +110,7 @@ OPPONENTS = {
         "exe": "shallowblue.exe",
         "proto": "uci",
     },
-    "pulsar": {
-        "dir": "test_engines/Pulsar 1651",
-        "exe": "pulsar2009-9b.exe",
-        "proto": "xboard",
-    },
+
     "tscp181": {
         "dir": "test_engines/TSCP 1607",
         "exe": "tscp181.exe",
@@ -134,9 +174,12 @@ def check_dependencies(base_dir, cutechess_path, opponent_key):
     return cutechess, opp_exe, opp["proto"]
 
 
-def build_command(cutechess, base_dir, opp_exe, opp_proto, args):
+def build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script=None, openings_path=None):
     python_exe = sys.executable or "python"
-    uci_script = os.path.join(base_dir, "uci_engine.py")
+    if uci_script is None:
+        uci_script = os.path.join(base_dir, "uci_engine.py")
+    
+    engine_name = f"Hellcopter-{args.config}" if args.config else "Hellcopter"
 
     each_opts = [f"tc={args.tc}"]
     if args.inc and args.inc > 0:
@@ -145,20 +188,20 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args):
     if args.pgnout:
         pgn_path = os.path.join(base_dir, args.pgnout)
     else:
-        from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        match_dir = os.path.join(base_dir, "match_records", f"{timestamp}-hellcopter-{args.opponent}")
+        config_tag = args.config if args.config else "default"
+        match_dir = os.path.join(base_dir, "match_records", f"{timestamp}-hellcopter-{config_tag}-{args.opponent}")
         os.makedirs(match_dir, exist_ok=True)
         pgn_path = os.path.join(match_dir, "match.pgn")
 
     cmd = [
         cutechess,
         "-engine",
-        "name=Hellcopter",
+        f"name={engine_name}",
         "proto=uci",
         f"cmd={python_exe}",
         f"arg={uci_script}",
-        f"dir={base_dir}",
+        f"dir={os.path.dirname(uci_script) if uci_script else base_dir}",
         "-engine",
         f"name={args.opponent.capitalize()}",
         f"proto={opp_proto}",
@@ -169,9 +212,13 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args):
         "-pgnout", pgn_path,
     ]
 
-    if args.openings:
-        openings_path = os.path.join(base_dir, args.openings) if not os.path.isabs(args.openings) else args.openings
+    if openings_path:
         cmd.extend(["-openings", f"file={openings_path}"])
+
+    if hasattr(args, 'sprt') and args.sprt:
+        sprt_params = args.sprt
+        sprt_str = f"elo0={sprt_params['elo0']},elo1={sprt_params['elo1']},alpha={sprt_params['alpha']},beta={sprt_params['beta']}"
+        cmd.extend(["-sprt", sprt_str])
 
     return cmd
 
@@ -252,6 +299,52 @@ def run_elo_calc(base_dir, pgn_file, match_output):
         print("No score data found in match output and no PGN file available.")
 
 
+def parse_sprt(sprt_str):
+    if not sprt_str:
+        return None
+    parts = sprt_str.split(",")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "SPRT format: elo0,elo1,alpha,beta (e.g. '0,5,0.05,0.05')"
+        )
+    try:
+        return {
+            "elo0": float(parts[0]),
+            "elo1": float(parts[1]),
+            "alpha": float(parts[2]),
+            "beta": float(parts[3]),
+        }
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "SPRT values must be numbers: elo0,elo1,alpha,beta"
+        )
+
+
+def resolve_time_control(args):
+    if args.tc_standard:
+        return "96+0.8"
+    if args.tc_slow:
+        return "300+2.0"
+    return args.tc
+
+
+def resolve_openings(base_dir, openings_arg):
+    if not openings_arg:
+        default_epd = os.path.join(base_dir, "openings.epd")
+        if os.path.isfile(default_epd):
+            return default_epd
+        return None
+    
+    if os.path.isabs(openings_arg):
+        return openings_arg
+    
+    path = os.path.join(base_dir, openings_arg)
+    if os.path.isfile(path):
+        return path
+    
+    return openings_arg
+
+
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -260,11 +353,15 @@ def main():
     )
     parser.add_argument("--opponent", type=str, default="monarch",
                         choices=list(OPPONENTS.keys()),
-                        help="Opponent engine (monarch, apollo, rainman, shallowblue, pulsar, or tscp181)")
+                        help="Opponent engine (monarch, apollo, rainman, shallowblue, tscp181, sargon, or absolute_zero)")
     parser.add_argument("--rounds", type=int, default=20,
                         help="Number of rounds (each round = 2 games with color swap)")
-    parser.add_argument("--tc", type=str, default="60+2",
-                        help="Time control string (e.g. 60+2, 15/40, 5+2)")
+    parser.add_argument("--tc", type=str, default="96+0.8",
+                        help="Time control string (e.g. 96+0.8, 60+2, 15/40)")
+    parser.add_argument("--tc-standard", action="store_true",
+                        help="Use standard time control: 96+0.8s")
+    parser.add_argument("--tc-slow", action="store_true",
+                        help="Use slow time control: 300+2.0s")
     parser.add_argument("--inc", type=int, default=0,
                         help="Increment in seconds (overrides tc increment)")
     parser.add_argument("--cutechess", type=str, default=None,
@@ -272,15 +369,43 @@ def main():
     parser.add_argument("--pgnout", type=str, default=None,
                         help="PGN output filename (default: auto-create in match_records/)")
     parser.add_argument("--openings", type=str, default=None,
-                        help="Opening book file (EPD/PGN)")
+                        help="Opening book file (EPD/PGN). Default: openings.epd if exists")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Hellcopter config version (e.g. v1.5.0)")
+    parser.add_argument("--sprt", type=parse_sprt, default=None,
+                        help="SPRT test: elo0,elo1,alpha,beta (e.g. '0,5,0.05,0.05')")
 
     args = parser.parse_args()
+    
+    if args.tc_standard and args.tc_slow:
+        print("Error: --tc-standard and --tc-slow are mutually exclusive")
+        sys.exit(1)
+    
+    args.tc = resolve_time_control(args)
 
     cutechess, opp_exe, opp_proto = check_dependencies(base_dir, args.cutechess, args.opponent)
 
-    cmd = build_command(cutechess, base_dir, opp_exe, opp_proto, args)
+    uci_script = None
+    temp_dir = None
+    
+    if args.config:
+        config_path = resolve_config(base_dir, args.config)
+        if config_path is None:
+            print(f"Error: Config not found: {args.config}")
+            sys.exit(1)
+        print(f"Using config: {config_path}")
+        uci_script, temp_dir = create_temp_uci_adapter(base_dir, config_path)
+
+    openings_path = resolve_openings(base_dir, args.openings)
+    if openings_path:
+        print(f"Using openings: {openings_path}")
+
+    cmd = build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script, openings_path)
 
     returncode, output = run_cutechess(cmd)
+
+    if temp_dir:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     if returncode != 0:
         print(f"\ncutechess-cli exited with code {returncode}")

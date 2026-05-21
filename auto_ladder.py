@@ -9,7 +9,7 @@ import platform
 from datetime import datetime
 
 
-LADDER = ["shallowblue", "tscp181", "pulsar", "apollo"]
+LADDER = ["shallowblue", "tscp181", "apollo"]
 
 OPPONENTS = {
     "shallowblue": {
@@ -24,12 +24,7 @@ OPPONENTS = {
         "proto": "xboard",
         "elo": 1607,
     },
-    "pulsar": {
-        "dir": "test_engines/Pulsar 1651",
-        "exe": "pulsar2009-9b.exe",
-        "proto": "xboard",
-        "elo": 1651,
-    },
+
     "apollo": {
         "dir": "test_engines/Apollo 1663",
         "exe": "apollo.exe",
@@ -39,7 +34,7 @@ OPPONENTS = {
 }
 
 QUICK_ROUNDS = 5
-QUICK_TC = "12+0.1"
+QUICK_TC = "96+0.8"
 STANDARD_ROUNDS = 11
 STANDARD_TC = "96+0.8"
 WIN_RATE_THRESHOLD = 0.55

@@ -74,7 +74,7 @@ class GradientDescentTuner:
         self.base_version = base_version
         self.base_config = self.cm.import_config(base_version)
 
-    def _evaluate(self, params: Dict, opponent: str = "pulsar",
+    def _evaluate(self, params: Dict, opponent: str = "shallowblue",
                   rounds: int = 11, time_control: str = "9+0.1") -> float:
         version = f"gd_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         try:
@@ -89,7 +89,7 @@ class GradientDescentTuner:
             return -1000.0
 
     def tune(self, params_to_tune: Optional[List[str]] = None,
-             opponent: str = "pulsar", rounds: int = 11,
+             opponent: str = "shallowblue", rounds: int = 11,
              time_control: str = "9+0.1", learning_rate: float = 0.3,
              iterations: int = 10, epsilon: float = 0.05) -> TuningResult:
         if params_to_tune is None:
@@ -173,7 +173,7 @@ class GridSearchTuner:
         self.base_version = base_version
         self.base_config = self.cm.import_config(base_version)
 
-    def _evaluate(self, params: Dict, opponent: str = "pulsar",
+    def _evaluate(self, params: Dict, opponent: str = "shallowblue",
                   rounds: int = 11, time_control: str = "9+0.1") -> float:
         version = f"gs_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         try:
@@ -188,7 +188,7 @@ class GridSearchTuner:
             return -1000.0
 
     def tune(self, params_to_tune: Optional[List[str]] = None,
-             opponent: str = "pulsar", rounds: int = 11,
+             opponent: str = "shallowblue", rounds: int = 11,
              time_control: str = "9+0.1") -> TuningResult:
         if params_to_tune is None:
             params_to_tune = list(TUNABLE_PARAMS.keys())

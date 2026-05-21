@@ -1,0 +1,129 @@
+{
+  "version": "v1.7.0",
+  "release_date": "2026-05-20",
+  "description": "Phase 6 最终验收版本 - 包含所有残局改进 (P0-P4)",
+  "improvements": [
+    {
+      "id": "P0",
+      "name": "静止搜索深度增强",
+      "description": "残局时增加静止搜索深度限制",
+      "params": {
+        "QS_MAX_DEPTH_MG": 8,
+        "QS_MAX_DEPTH_EG": 16
+      }
+    },
+    {
+      "id": "P1",
+      "name": "残局空向裁剪调整",
+      "description": "优化残局空向裁剪参数，提升搜索效率",
+      "params": {
+        "ENDGAME_NMR_BONUS": 1
+      },
+      "effect": "节省 11.6% 搜索节点"
+    },
+    {
+      "id": "P2",
+      "name": "残局搜索深度增加",
+      "description": "增加残局搜索深度奖励",
+      "params": {
+        "ENDGAME_DEPTH_BONUS": 3
+      },
+      "effect": "NPS 提升 8.7%"
+    },
+    {
+      "id": "P3",
+      "name": "王活动性评估",
+      "description": "残局阶段奖励王向中心移动",
+      "params": {
+        "KING_ACTIVITY_WEIGHT": 10
+      }
+    },
+    {
+      "id": "P4",
+      "name": "简化局面识别",
+      "description": "优势方鼓励交换子力",
+      "params": {
+        "SIMPLIFY_THRESHOLD": 200,
+        "SIMPLIFY_BONUS": 15
+      }
+    }
+  ],
+  "parameters": {
+    "piece_values": {
+      "pawn": 100,
+      "knight": 320,
+      "bishop": 340,
+      "rook": 480,
+      "queen": 900,
+      "king": 20000
+    },
+    "eval_weights": {
+      "bishop_pair_bonus": 50,
+      "doubled_pawn_penalty": -10,
+      "isolated_pawn_penalty": -20,
+      "passed_pawn_bonus": [0, 10, 20, 30, 50, 80, 120, 0],
+      "open_file_bonus": 15,
+      "semi_open_file_bonus": 10,
+      "king_activity_weight": 10,
+      "simplify_threshold": 200,
+      "simplify_bonus": 15
+    },
+    "search_params": {
+      "null_move_reduction": 2,
+      "null_move_min_depth": 3,
+      "endgame_nmr_bonus": 1,
+      "endgame_depth_bonus": 3,
+      "qs_max_depth_mg": 8,
+      "qs_max_depth_eg": 16,
+      "lmr_enabled": true,
+      "lmr_min_depth": 3,
+      "lmr_move_threshold": 2,
+      "futility_enabled": true,
+      "futility_margin_base": 150,
+      "razoring_enabled": true,
+      "razoring_margin": 300,
+      "random_move_margin": 15
+    },
+    "constants": {
+      "mate_score": 900000,
+      "delta": 200,
+      "endgame_phase_threshold": 1500
+    },
+    "threading": {
+      "enabled": true,
+      "num_threads": 4
+    }
+  },
+  "test_results": {
+    "multi_opponent": {
+      "tscp181": {
+        "games": 20,
+        "wins": 19,
+        "losses": 1,
+        "draws": 0,
+        "win_rate": 0.95,
+        "elo_diff": 511.5
+      },
+      "shallowblue": {
+        "games": 20,
+        "wins": 4,
+        "losses": 6,
+        "draws": 10,
+        "win_rate": 0.45,
+        "elo_diff": -34.9
+      }
+    },
+    "endgame_suite": {
+      "total_tests": 5,
+      "correct_evaluations": 4,
+      "accuracy": 0.80,
+      "categories": {
+        "强制将杀": "0/1",
+        "兵升变": "1/1",
+        "象马将杀": "1/1",
+        "逼和检测": "1/1",
+        "王活动性": "1/1"
+      }
+    }
+  }
+}

@@ -15,7 +15,7 @@
   "reference_engines": {
     "tier_1": ["sargon", "rainman"],
     "tier_2": ["shallowblue", "tscp181"],
-    "tier_3": ["pulsar", "apollo"],
+    "tier_3": ["apollo"],
     "tier_4": ["monarch"],
     "tier_5": ["absolute_zero"],
     "nps_benchmark": ["stockfish"]
@@ -26,7 +26,7 @@
     "rainman": 1427,
     "shallowblue": 1575,
     "tscp181": 1607,
-    "pulsar": 1651,
+
     "apollo": 1663,
     "monarch": 2005,
     "absolute_zero": 2284

@@ -81,19 +81,6 @@ class ConfigManager:
         return str(config_path)
 
     def import_config(self, version: str) -> Dict[str, Any]:
-        """
-        从 JSON 文件导入配置
-
-        Args:
-            version: 版本号
-
-        Returns:
-            配置字典
-
-        Raises:
-            FileNotFoundError: 如果配置文件不存在
-            ValueError: 如果配置文件格式不正确
-        """
         config_path = self._get_config_path(version)
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -101,7 +88,10 @@ class ConfigManager:
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
 
-        # 验证配置格式
+        if "base_version" in config:
+            from config import resolve_config
+            config = resolve_config(config)
+
         self._validate_config(config)
 
         return config

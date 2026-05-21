@@ -45,7 +45,6 @@ OPPONENTS = {
     "apollo": {"dir": "test_engines/Apollo", "exe": "apollo.exe", "proto": "uci"},
     "rainman": {"dir": "test_engines/Rainman", "exe": "rainman.exe", "proto": "xboard"},
     "shallowblue": {"dir": "test_engines/ShallowBlue", "exe": "shallowblue.exe", "proto": "uci"},
-    "pulsar": {"dir": "test_engines/Pulsar", "exe": "pulsar2009-9b.exe", "proto": "xboard"},
     "tscp181": {"dir": "test_engines/TSCP", "exe": "tscp181.exe", "proto": "xboard"},
 }
 
@@ -116,7 +115,7 @@ class MatchRunner:
                 f"Opponent executable not found: {exe_path}")
         return exe_path, opp["proto"]
 
-    def run_match(self, opponent: str = "pulsar", rounds: int = 51,
+    def run_match(self, opponent: str = "shallowblue", rounds: int = 51,
                   time_control: str = "9+0.1", config_version: str = "",
                   pgnout: Optional[str] = None) -> MatchResult:
         cutechess = _find_cutechess(self.base_dir)
