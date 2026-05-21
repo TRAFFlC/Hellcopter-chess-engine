@@ -150,6 +150,8 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             f.write(f"#define DOUBLED_PAWN_PENALTY {eval_weights.get('doubled_pawn_penalty', -10)}\n")
             f.write(f"#define ISOLATED_PAWN_PENALTY {eval_weights.get('isolated_pawn_penalty', -20)}\n")
             f.write(f"#define PAWN_CHAIN_BONUS 10\n\n")
+            f.write(f"#define SIMPLIFY_THRESHOLD {eval_weights.get('simplify_threshold', 200)}\n")
+            f.write(f"#define SIMPLIFY_BONUS {eval_weights.get('simplify_bonus', 15)}\n\n")
             
             # 通路兵奖励
             passed_pawn_bonus = eval_weights.get('passed_pawn_bonus', [0, 10, 20, 30, 50, 80, 120, 0])
@@ -187,6 +189,9 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             f.write(f"#define RAZORING_ENABLED {1 if search_params.get('razoring_enabled', False) else 0}\n")
             f.write(f"#define RAZORING_MARGIN {search_params.get('razoring_margin', 300)}\n\n")
             
+            f.write(f"#define QS_MAX_DEPTH_MG {search_params.get('qs_max_depth_mg', 8)}\n")
+            f.write(f"#define QS_MAX_DEPTH_EG {search_params.get('qs_max_depth_eg', 16)}\n\n")
+            
             # 常量
             constants = parameters.get("constants", {})
             f.write("/* ============================================================================\n")
@@ -202,7 +207,8 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             f.write(" */\n\n")
             f.write(f"#define ENDGAME_PHASE_THRESHOLD {constants.get('endgame_phase_threshold', 6)}\n")
             f.write(f"#define ENDGAME_DEPTH_BONUS {constants.get('endgame_depth_bonus', 0)}\n")
-            f.write(f"#define ENDGAME_NMR_BONUS {constants.get('endgame_nmr_bonus', 1)}\n\n")
+            f.write(f"#define ENDGAME_NMR_BONUS {constants.get('endgame_nmr_bonus', 1)}\n")
+            f.write(f"#define KING_ACTIVITY_WEIGHT {constants.get('king_activity_weight', 10)}\n\n")
             
             # 多线程
             threading = parameters.get("threading", {})

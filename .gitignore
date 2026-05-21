@@ -45,3 +45,22 @@ match_records/
 *.tmp
 *.temp
 tune_history.json
+
+# Tuning logs and records
+tuning_logs/
+tuning_records/
+
+# Agent files
+.agents/
+
+# Analysis files
+analysis.json
+baseline_elo.json
+param_catalog.json
+rainman.ini
+
+# Test PGN and EPD
+openings.epd
+
+# Trae specs (development)
+.trae/

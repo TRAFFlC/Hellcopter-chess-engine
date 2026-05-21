@@ -119,6 +119,9 @@ def _load_library():
     lib.debug_print_board.argtypes = [ctypes.c_char_p]
     lib.debug_print_board.restype = None
 
+    lib.perft.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.perft.restype = ctypes.c_uint64
+
     try:
         lib.get_engine_version.argtypes = []
         lib.get_engine_version.restype = ctypes.c_int
@@ -277,14 +280,40 @@ def get_lmr_stats() -> dict:
     }
 
 
+def get_last_search_info(what: int) -> int:
+    """Get last search info.
+    
+    what: 0 = depth, 1 = nodes, 2 = score, 100+ = per-depth nodes
+    """
+    _ensure_loaded()
+    return _lib.get_last_search_info(what)
+
+
 def get_pruning_stats() -> dict:
-    """Get Futility Pruning statistics from the last search."""
+    """Get Futility Pruning statistics from last search."""
     _ensure_loaded()
     stats = _lib.get_pruning_stats()
     return {
         'prunes': stats.prunes,
         'nodes_saved': stats.nodes_saved,
     }
+
+
+def perft(fen: str, depth: int) -> int:
+    """Calculate perft value for a position at given depth.
+    
+    Perft (performance test) counts the number of leaf nodes at a given depth,
+    used to verify move generation correctness.
+    
+    Args:
+        fen: FEN string of the position
+        depth: Search depth (0 = 1 node, 1 = number of legal moves, etc.)
+    
+    Returns:
+        Number of leaf nodes at the given depth
+    """
+    _ensure_loaded()
+    return _lib.perft(fen.encode("utf-8"), ctypes.c_int(depth))
 
 
 if __name__ == "__main__":
