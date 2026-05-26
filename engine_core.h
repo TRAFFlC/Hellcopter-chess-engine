@@ -107,7 +107,7 @@ typedef struct
     int tt_generation;
     Move killers[64][2];
     int history[64][64];
-    Move countermove[64][64];
+    Move countermove[2][64][64];
     Move followup[64][64];
     Move move_stack[128];
     int nodes;

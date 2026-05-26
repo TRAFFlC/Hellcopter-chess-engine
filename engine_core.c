@@ -98,14 +98,14 @@ static U64 zobrist_table[12 * 64 + 1 + 4 + 64];
 static int zobrist_initialized = 0;
 static int attacks_initialized = 0;
 
-static const int knight_mob_mg[9] = {-50, -25, -10, 0, 8, 15, 22, 28, 33};
-static const int knight_mob_eg[9] = {-40, -20, -5, 5, 12, 18, 25, 30, 35};
-static const int bishop_mob_mg[14] = {-40, -20, -8, 0, 8, 14, 20, 25, 29, 33, 36, 38, 39, 40};
-static const int bishop_mob_eg[14] = {-30, -15, -5, 3, 10, 16, 22, 27, 30, 33, 35, 37, 38, 39};
-static const int rook_mob_mg[15] = {-30, -15, -5, 0, 5, 10, 14, 18, 22, 25, 28, 30, 32, 33, 34};
-static const int rook_mob_eg[15] = {-25, -12, -3, 3, 8, 13, 18, 22, 26, 29, 31, 33, 35, 36, 37};
-static const int queen_mob_mg[28] = {-20, -10, -3, 2, 6, 10, 14, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48};
-static const int queen_mob_eg[28] = {-15, -7, -1, 4, 8, 12, 16, 19, 22, 25, 27, 29, 31, 33, 34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48};
+static const int knight_mob_mg[9] = {-38, -19, -8, 0, 6, 11, 17, 21, 25};
+static const int knight_mob_eg[9] = {-30, -15, -4, 4, 9, 14, 19, 23, 26};
+static const int bishop_mob_mg[14] = {-30, -15, -6, 0, 6, 11, 15, 19, 22, 25, 27, 29, 29, 30};
+static const int bishop_mob_eg[14] = {-23, -11, -4, 2, 8, 12, 17, 20, 23, 25, 26, 28, 29, 29};
+static const int rook_mob_mg[15] = {-23, -11, -4, 0, 4, 8, 11, 14, 17, 19, 21, 23, 24, 25, 26};
+static const int rook_mob_eg[15] = {-19, -9, -2, 2, 6, 10, 14, 17, 20, 22, 23, 25, 26, 27, 28};
+static const int queen_mob_mg[28] = {-15, -8, -2, 2, 5, 8, 11, 13, 15, 17, 19, 20, 22, 23, 25, 26, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36};
+static const int queen_mob_eg[28] = {-11, -5, -1, 3, 6, 9, 12, 14, 17, 19, 20, 22, 23, 25, 26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36};
 
 static const int king_danger_table[128] = {
     0, 0, 0, 0, 0, 0, 5, 10, 15, 25, 35, 50, 70, 95, 125, 160,
@@ -2794,9 +2794,52 @@ static int evaluate_pawns(Board *b, int phase)
                 score += sign * (bonus + eg_bonus);
                 if (bonus_rank >= 5)
                 {
-                    promotion_threat = (bonus_rank == 6) ? 150 : 50;
+                    promotion_threat = (bonus_rank == 6) ? 100 : 35;
                     score += sign * promotion_threat;
                 }
+
+                {
+                    int supported = 0;
+                    if (f > 0 && (pawns & (1ULL << sq)))
+                    {
+                        U64 adj_file = file_masks[f - 1];
+                        U64 support_pawns = pawns & adj_file;
+                        if (side == WHITE)
+                            support_pawns &= ~((1ULL << sq) - 1);
+                        else
+                            support_pawns &= ~((1ULL << (sq + 1)) - 1);
+                        if (support_pawns)
+                            supported = 1;
+                    }
+                    if (!supported && f < 7)
+                    {
+                        U64 adj_file = file_masks[f + 1];
+                        U64 support_pawns = pawns & adj_file;
+                        if (side == WHITE)
+                            support_pawns &= ~((1ULL << sq) - 1);
+                        else
+                            support_pawns &= ~((1ULL << (sq + 1)) - 1);
+                        if (support_pawns)
+                            supported = 1;
+                    }
+                    if (supported)
+                        score += sign * 15;
+                }
+
+                {
+                    int blocked_sq = (side == WHITE) ? sq + 8 : sq - 8;
+                    if (blocked_sq >= 0 && blocked_sq < 64)
+                    {
+                        U64 blockers = b->pieces[1 - side][KNIGHT] | b->pieces[1 - side][BISHOP] |
+                                       b->pieces[1 - side][ROOK] | b->pieces[1 - side][QUEEN] |
+                                       b->pieces[1 - side][KING];
+                        if (blockers & (1ULL << blocked_sq))
+                        {
+                            score += sign * (-10 - 5 * bonus_rank / 3);
+                        }
+                    }
+                }
+
                 if (side == WHITE)
                     promo_sq = 56 + f;
                 else
@@ -3219,6 +3262,9 @@ evaluate(Board *b)
         int danger_index = (attack_units < 128) ? attack_units : 127;
         int danger = king_danger_table[danger_index];
 
+        if (danger > 2000)
+            danger = 2000;
+
         if (phase_weight > 128)
         {
             danger = danger * 20 / 100;
@@ -3323,11 +3369,11 @@ evaluate(Board *b)
             int pt2 = piece_on_square(b, sq);
             int penalty = 0;
             if (pt2 == QUEEN)
-                penalty = 60;
+                penalty = 45;
             else if (pt2 == ROOK)
-                penalty = 40;
-            else if (pt2 == BISHOP || pt2 == KNIGHT)
                 penalty = 30;
+            else if (pt2 == BISHOP || pt2 == KNIGHT)
+                penalty = 23;
             score -= sign * penalty;
         }
     }
@@ -3520,18 +3566,18 @@ evaluate(Board *b)
         U64 queens_attacked_by_pawn = attacked_by_pawn & b->pieces[side][QUEEN];
         U64 rooks_attacked_by_pawn = attacked_by_pawn & b->pieces[side][ROOK];
         U64 minors_attacked_by_pawn = attacked_by_pawn & ~(queens_attacked_by_pawn | rooks_attacked_by_pawn);
-        score += sign * (-50 * count_bits(queens_attacked_by_pawn));
-        score += sign * (-40 * count_bits(rooks_attacked_by_pawn));
-        score += sign * (-30 * count_bits(minors_attacked_by_pawn));
-        score += sign * (-10 * count_bits(queens_attacked_by_pawn));
-        score += sign * (-5 * count_bits(rooks_attacked_by_pawn));
+        score += sign * (-25 * count_bits(queens_attacked_by_pawn));
+        score += sign * (-20 * count_bits(rooks_attacked_by_pawn));
+        score += sign * (-15 * count_bits(minors_attacked_by_pawn));
+        score += sign * (-5 * count_bits(queens_attacked_by_pawn));
+        score += sign * (-3 * count_bits(rooks_attacked_by_pawn));
 
         U64 queens_attacked_by_knight = attacked_by_knight & b->pieces[side][QUEEN];
         U64 rooks_attacked_by_knight = attacked_by_knight & b->pieces[side][ROOK];
         U64 minors_attacked_by_knight = attacked_by_knight & ~(queens_attacked_by_knight | rooks_attacked_by_knight);
-        score += sign * (-40 * count_bits(queens_attacked_by_knight));
-        score += sign * (-30 * count_bits(rooks_attacked_by_knight));
-        score += sign * (-25 * count_bits(minors_attacked_by_knight));
+        score += sign * (-20 * count_bits(queens_attacked_by_knight));
+        score += sign * (-15 * count_bits(rooks_attacked_by_knight));
+        score += sign * (-13 * count_bits(minors_attacked_by_knight));
 
         score += sign * (10 * count_bits(defended_by_own_pawn));
 
@@ -3544,10 +3590,10 @@ evaluate(Board *b)
             U64 forked_valuable = k_attacks & (b->pieces[side][QUEEN] | b->pieces[side][ROOK]);
             int fork_count = count_bits(forked_valuable);
             if (fork_count >= 2)
-                score += sign * (-150);
+                score += sign * (-75);
             U64 forked_with_king = k_attacks & b->pieces[side][KING];
             if (forked_with_king && count_bits(forked_valuable) >= 1)
-                score += sign * (-120);
+                score += sign * (-60);
         }
 
         U64 queens = b->pieces[side][QUEEN];
@@ -3585,9 +3631,9 @@ evaluate(Board *b)
             if (attacked_by_lesser)
             {
                 if (!defended_by_own_pawn || !(own_pawn_defense & (1ULL << sq)))
-                    score += sign * (-150);
+                    score += sign * (-75);
                 else
-                    score += sign * (-60);
+                    score += sign * (-30);
             }
         }
 
@@ -3614,9 +3660,9 @@ evaluate(Board *b)
             if (rook_attacked_by_lesser)
             {
                 if (!defended_by_own_pawn || !(own_pawn_defense & (1ULL << sq)))
-                    score += sign * (-80);
+                    score += sign * (-40);
                 else
-                    score += sign * (-30);
+                    score += sign * (-15);
             }
         }
     }
@@ -3797,8 +3843,8 @@ evaluate(Board *b)
     }
 
     {
-        int tempo_mg = 12;
-        int tempo_eg = 5;
+        int tempo_mg = 15;
+        int tempo_eg = 8;
         int tempo = (tempo_mg * (256 - phase_weight) + tempo_eg * phase_weight) / 256;
         if (b->side_to_move == WHITE)
             score += tempo;
@@ -4662,6 +4708,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     int in_check = is_check(&s->board, s->board.side_to_move);
     int next_ply = ply + 1;
 
+    int stand_pat_val = 0;
     if (!in_check)
     {
         int stand_pat = evaluate(&s->board);
@@ -4677,6 +4724,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             return alpha;
         if (ply >= 60)
             return alpha;
+        stand_pat_val = stand_pat;
     }
 
     Move moves[MAX_MOVES];
@@ -4704,6 +4752,15 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             Board temp_board = s->board;
             int see_score = see(&temp_board, moves[i].from, moves[i].to);
             if (see_score < 0)
+                continue;
+        }
+
+        if (!in_check && moves[i].capture)
+        {
+            int captured_value = piece_values[moves[i].capture];
+            if (moves[i].promotion)
+                captured_value += piece_values[moves[i].promotion] - piece_values[PAWN];
+            if (stand_pat_val + captured_value + 200 < alpha)
                 continue;
         }
 
@@ -4909,9 +4966,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     }
                 }
             }
-            if (moves[i].score == 0 && ply >= 2)
+            if (moves[i].score == 0 && ply >= 1)
             {
-                Move *cm = &s->countermove[moves[i].from][moves[i].to];
+                Move prev_move_cm = s->move_stack[ply - 1];
+                int prev_side = 1 - s->board.side_to_move;
+                Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
                 if (cm->from == moves[i].from && cm->to == moves[i].to)
                 {
                     moves[i].score = 30000;
@@ -5048,6 +5107,15 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
+        if (!in_check && !moves[i].capture && !moves[i].promotion &&
+            depth <= 3 && legal_count > 3 + depth * depth &&
+            (beta - alpha <= 1) &&
+            s->history[moves[i].from][moves[i].to] < 0 &&
+            !move_gives_check(b, &moves[i]))
+        {
+            continue;
+        }
+
         UndoInfo undo;
         make_move(b, &moves[i], &undo);
         if (is_check(b, 1 - b->side_to_move))
@@ -5136,7 +5204,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     if (ply >= 1)
                     {
                         Move prev_move = s->move_stack[ply - 1];
-                        s->countermove[prev_move.from][prev_move.to] = moves[i];
+                        int prev_side = 1 - b->side_to_move;
+                        s->countermove[prev_side][prev_move.from][prev_move.to] = moves[i];
                     }
                     if (ply >= 2)
                     {
