@@ -98,6 +98,34 @@ static U64 zobrist_table[12 * 64 + 1 + 4 + 64];
 static int zobrist_initialized = 0;
 static int attacks_initialized = 0;
 
+static const int knight_mob_mg[9] = {-50, -25, -10, 0, 8, 15, 22, 28, 33};
+static const int knight_mob_eg[9] = {-40, -20, -5, 5, 12, 18, 25, 30, 35};
+static const int bishop_mob_mg[14] = {-40, -20, -8, 0, 8, 14, 20, 25, 29, 33, 36, 38, 39, 40};
+static const int bishop_mob_eg[14] = {-30, -15, -5, 3, 10, 16, 22, 27, 30, 33, 35, 37, 38, 39};
+static const int rook_mob_mg[15] = {-30, -15, -5, 0, 5, 10, 14, 18, 22, 25, 28, 30, 32, 33, 34};
+static const int rook_mob_eg[15] = {-25, -12, -3, 3, 8, 13, 18, 22, 26, 29, 31, 33, 35, 36, 37};
+static const int queen_mob_mg[28] = {-20, -10, -3, 2, 6, 10, 14, 17, 20, 23, 25, 27, 29, 31, 33, 35, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48};
+static const int queen_mob_eg[28] = {-15, -7, -1, 4, 8, 12, 16, 19, 22, 25, 27, 29, 31, 33, 34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48};
+
+static const int king_danger_table[128] = {
+    0, 0, 0, 0, 0, 0, 5, 10, 15, 25, 35, 50, 70, 95, 125, 160,
+    200, 245, 295, 350, 410, 475, 545, 620, 700, 785, 875, 970, 1070, 1175, 1285, 1400,
+    1520, 1645, 1775, 1910, 2050, 2195, 2345, 2500, 2660, 2825, 2995, 3170, 3350, 3535, 3725, 3920,
+    4120, 4325, 4535, 4750, 4970, 5195, 5425, 5660, 5900, 6145, 6395, 6650, 6910, 7175, 7445, 7720,
+    8000, 8285, 8575, 8870, 9170, 9475, 9785, 10100, 10420, 10745, 11075, 11410, 11750, 12095, 12445, 12800,
+    13160, 13525, 13895, 14270, 14650, 15035, 15425, 15820, 16220, 16625, 17035, 17450, 17870, 18295, 18725, 19160,
+    19600, 20045, 20495, 20950, 21410, 21875, 22345, 22820, 23300, 23785, 24275, 24770, 25270, 25775, 26285, 26800,
+    27320, 27845, 28375, 28910, 29450, 29995, 30545, 31100, 31660, 32225, 32795, 33370, 33950, 34535, 35125, 35720};
+
+typedef struct
+{
+    U64 key;
+    int score;
+} PawnTTEntry;
+
+#define PAWN_HASH_SIZE (1 << 18)
+static PawnTTEntry pawn_hash_table[PAWN_HASH_SIZE];
+
 #define MAX_BLUNDER_ENTRIES 10000
 
 typedef struct
@@ -2703,70 +2731,10 @@ static int count_total_material(Board *b)
     return count;
 }
 
-#ifdef _WIN32
-__declspec(dllexport)
-#endif
-int
-evaluate(Board *b)
+static int evaluate_pawns(Board *b, int phase)
 {
-    if (b->eval_score != EVAL_SCORE_INVALID)
-        return b->eval_score;
-
     int score = 0;
-    int side, pt;
-    int npm_w = 0, npm_b = 0;
-
-    for (side = 0; side < 2; side++)
-    {
-        for (pt = KNIGHT; pt <= QUEEN; pt++)
-        {
-            int c = count_bits(b->pieces[side][pt]);
-            if (side == WHITE)
-                npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                             : pt == ROOK     ? 5
-                                                              : 9);
-            else
-                npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                             : pt == ROOK     ? 5
-                                                              : 9);
-        }
-    }
-
-    int phase = (npm_w + npm_b);
-    if (phase > 31)
-        phase = 31;
-    phase = phase * 24 / 31;
-    if (phase > 24)
-        phase = 24;
-
-    for (side = 0; side < 2; side++)
-    {
-        int sign = (side == WHITE) ? 1 : -1;
-        for (pt = PAWN; pt <= KING; pt++)
-        {
-            U64 bb = b->pieces[side][pt];
-            while (bb)
-            {
-                int sq = lsb_index(bb);
-                bb &= bb - 1;
-                int psq = (side == WHITE) ? sq : (sq ^ 56);
-                int mg, eg;
-                if (g_runtime_params.loaded)
-                {
-                    mg = g_runtime_params.mg_pst[pt - 1][psq];
-                    eg = g_runtime_params.eg_pst[pt - 1][psq];
-                }
-                else
-                {
-                    mg = mg_pst[pt][psq];
-                    eg = eg_pst[pt][psq];
-                }
-                int tapered = (mg * phase + eg * (24 - phase)) / 24;
-                score += sign * (piece_values[pt] + tapered);
-            }
-        }
-    }
-
+    int side;
     for (side = 0; side < 2; side++)
     {
         int sign = (side == WHITE) ? 1 : -1;
@@ -2899,6 +2867,152 @@ evaluate(Board *b)
             }
         }
     }
+    return score;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+evaluate(Board *b)
+{
+    if (b->eval_score != EVAL_SCORE_INVALID)
+        return b->eval_score;
+
+    int score = 0;
+    int side, pt;
+    int npm_w = 0, npm_b = 0;
+
+    for (side = 0; side < 2; side++)
+    {
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        {
+            int c = count_bits(b->pieces[side][pt]);
+            if (side == WHITE)
+                npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                             : pt == ROOK     ? 5
+                                                              : 9);
+            else
+                npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                             : pt == ROOK     ? 5
+                                                              : 9);
+        }
+    }
+
+    int phase = (npm_w + npm_b);
+    if (phase > 31)
+        phase = 31;
+    phase = phase * 24 / 31;
+    if (phase > 24)
+        phase = 24;
+
+    int phase_weight = phase * 256 / 24;
+
+    for (side = 0; side < 2; side++)
+    {
+        int sign = (side == WHITE) ? 1 : -1;
+        for (pt = PAWN; pt <= KING; pt++)
+        {
+            U64 bb = b->pieces[side][pt];
+            while (bb)
+            {
+                int sq = lsb_index(bb);
+                bb &= bb - 1;
+                int psq = (side == WHITE) ? sq : (sq ^ 56);
+                int mg, eg;
+                if (g_runtime_params.loaded)
+                {
+                    mg = g_runtime_params.mg_pst[pt - 1][psq];
+                    eg = g_runtime_params.eg_pst[pt - 1][psq];
+                }
+                else
+                {
+                    mg = mg_pst[pt][psq];
+                    eg = eg_pst[pt][psq];
+                }
+                int tapered = (mg * phase + eg * (24 - phase)) / 24;
+                score += sign * (piece_values[pt] + tapered);
+            }
+        }
+    }
+
+    {
+        U64 occupied = all_pieces(b);
+        for (side = 0; side < 2; side++)
+        {
+            int sign = (side == WHITE) ? 1 : -1;
+            U64 own_pieces = side_pieces(b, side);
+
+            U64 knights = b->pieces[side][KNIGHT];
+            while (knights)
+            {
+                int sq = lsb_index(knights);
+                knights &= knights - 1;
+                int mob = popcount(knight_attacks[sq] & ~own_pieces);
+                if (mob > 8)
+                    mob = 8;
+                int mg_score = knight_mob_mg[mob];
+                int eg_score = knight_mob_eg[mob];
+                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+            }
+
+            U64 bishops = b->pieces[side][BISHOP];
+            while (bishops)
+            {
+                int sq = lsb_index(bishops);
+                bishops &= bishops - 1;
+                int mob = popcount(sliding_attacks_bishop(sq, occupied) & ~own_pieces);
+                if (mob > 13)
+                    mob = 13;
+                int mg_score = bishop_mob_mg[mob];
+                int eg_score = bishop_mob_eg[mob];
+                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+            }
+
+            U64 rooks = b->pieces[side][ROOK];
+            while (rooks)
+            {
+                int sq = lsb_index(rooks);
+                rooks &= rooks - 1;
+                int mob = popcount(sliding_attacks_rook(sq, occupied) & ~own_pieces);
+                if (mob > 14)
+                    mob = 14;
+                int mg_score = rook_mob_mg[mob];
+                int eg_score = rook_mob_eg[mob];
+                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+            }
+
+            U64 queens = b->pieces[side][QUEEN];
+            while (queens)
+            {
+                int sq = lsb_index(queens);
+                queens &= queens - 1;
+                int mob = popcount((sliding_attacks_bishop(sq, occupied) | sliding_attacks_rook(sq, occupied)) & ~own_pieces);
+                if (mob > 27)
+                    mob = 27;
+                int mg_score = queen_mob_mg[mob];
+                int eg_score = queen_mob_eg[mob];
+                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+            }
+        }
+    }
+
+    {
+        int pawn_score;
+        U64 pawn_key = b->pawn_hash;
+        int pawn_idx = (int)(pawn_key & (PAWN_HASH_SIZE - 1));
+        if (pawn_hash_table[pawn_idx].key == pawn_key)
+        {
+            pawn_score = pawn_hash_table[pawn_idx].score;
+        }
+        else
+        {
+            pawn_score = evaluate_pawns(b, phase);
+            pawn_hash_table[pawn_idx].key = pawn_key;
+            pawn_hash_table[pawn_idx].score = pawn_score;
+        }
+        score += pawn_score;
+    }
 
     for (side = 0; side < 2; side++)
     {
@@ -3005,163 +3119,104 @@ evaluate(Board *b)
 
     for (side = 0; side < 2; side++)
     {
+        int opp = 1 - side;
+        int king_square = b->king_sq[side];
         int sign = (side == WHITE) ? 1 : -1;
-        int king_sq = -1;
-        U64 kbb = b->pieces[side][KING];
-        if (kbb)
-            king_sq = lsb_index(kbb);
-        if (king_sq < 0)
-            continue;
-        U64 around = king_attacks[king_sq];
-        around |= (1ULL << king_sq);
-        int attack_weight = 0;
-        int sq;
-        for (sq = 0; sq < 64; sq++)
-        {
-            if (around & (1ULL << sq))
-            {
-                int opp = 1 - side;
-                U64 enemy_queens = b->pieces[opp][QUEEN];
-                U64 enemy_rooks = b->pieces[opp][ROOK];
-                U64 enemy_bishops = b->pieces[opp][BISHOP];
-                U64 enemy_knights = b->pieces[opp][KNIGHT];
-                U64 enemy_pawns = b->pieces[opp][PAWN];
-                U64 enemy_king_bb = b->pieces[opp][KING];
-                U64 occ = side_pieces(b, 0) | side_pieces(b, 1);
 
-                if (enemy_queens && (sliding_attacks_rook(sq, occ) & enemy_queens))
-                    attack_weight += 4;
-                if (enemy_queens && (sliding_attacks_bishop(sq, occ) & enemy_queens))
-                    attack_weight += 4;
-                if (enemy_rooks && (sliding_attacks_rook(sq, occ) & enemy_rooks))
-                    attack_weight += 3;
-                if (enemy_bishops && (sliding_attacks_bishop(sq, occ) & enemy_bishops))
-                    attack_weight += 2;
-                if (enemy_knights && (knight_attacks[sq] & enemy_knights))
-                    attack_weight += 1;
-                if (enemy_pawns)
-                {
-                    if (opp == WHITE)
-                    {
-                        if (sq >= 9 && (sq % 8) > 0 && (enemy_pawns & (1ULL << (sq - 9))))
-                            attack_weight += 1;
-                        if (sq >= 7 && (sq % 8) < 7 && (enemy_pawns & (1ULL << (sq - 7))))
-                            attack_weight += 1;
-                    }
-                    else
-                    {
-                        if (sq <= 54 && (sq % 8) > 0 && (enemy_pawns & (1ULL << (sq + 7))))
-                            attack_weight += 1;
-                        if (sq <= 56 && (sq % 8) < 7 && (enemy_pawns & (1ULL << (sq + 9))))
-                            attack_weight += 1;
-                    }
-                }
-                if (enemy_king_bb && (king_attacks[sq] & enemy_king_bb))
-                    attack_weight += 1;
-            }
+        U64 king_zone = king_attacks[king_square] | (1ULL << king_square);
+        if (side == WHITE)
+        {
+            U64 front = shift_north(king_zone) | shift_north(shift_north(king_zone));
+            king_zone |= front;
         }
-        score += sign * (-5 * attack_weight * (phase < 8 ? 3 : 10) / 10);
-
+        else
         {
-            int defenders = 0;
-            U64 around_king = king_attacks[king_sq] | (1ULL << king_sq);
-            U64 own_pieces = side_pieces(b, side);
-            U64 own_defenders = around_king & own_pieces;
-            defenders = count_bits(own_defenders);
+            U64 front = shift_south(king_zone) | shift_south(shift_south(king_zone));
+            king_zone |= front;
+        }
 
-            U64 enemy_heavy = b->pieces[1 - side][QUEEN] | b->pieces[1 - side][ROOK];
-            if (enemy_heavy && defenders < 3)
+        int attack_units = 0;
+
+        U64 opp_knights = b->pieces[opp][KNIGHT];
+        while (opp_knights)
+        {
+            int sq = lsb_index(opp_knights);
+            opp_knights &= opp_knights - 1;
+            U64 attacks = knight_attacks[sq] & king_zone;
+            if (attacks)
             {
-                int exposure_penalty = (3 - defenders) * 30;
-                if (phase >= 8)
-                {
-                    score += sign * (-exposure_penalty);
-                }
+                attack_units += 2 + count_bits(attacks);
             }
         }
 
-        int kf = file_of(king_sq);
-        int f;
-        for (f = kf - 1; f <= kf + 1; f++)
+        U64 opp_bishops = b->pieces[opp][BISHOP];
+        while (opp_bishops)
+        {
+            int sq = lsb_index(opp_bishops);
+            opp_bishops &= opp_bishops - 1;
+            U64 attacks = sliding_attacks_bishop(sq, all_pieces(b)) & king_zone;
+            if (attacks)
+            {
+                attack_units += 2 + count_bits(attacks);
+            }
+        }
+
+        U64 opp_rooks = b->pieces[opp][ROOK];
+        while (opp_rooks)
+        {
+            int sq = lsb_index(opp_rooks);
+            opp_rooks &= opp_rooks - 1;
+            U64 attacks = sliding_attacks_rook(sq, all_pieces(b)) & king_zone;
+            if (attacks)
+            {
+                attack_units += 3 + count_bits(attacks) * 2;
+            }
+        }
+
+        U64 opp_queens = b->pieces[opp][QUEEN];
+        while (opp_queens)
+        {
+            int sq = lsb_index(opp_queens);
+            opp_queens &= opp_queens - 1;
+            U64 attacks = (sliding_attacks_bishop(sq, all_pieces(b)) | sliding_attacks_rook(sq, all_pieces(b))) & king_zone;
+            if (attacks)
+            {
+                attack_units += 5 + count_bits(attacks) * 2;
+            }
+        }
+
+        int kf = king_square % 8;
+        int kr = king_square / 8;
+        U64 own_pawns = b->pieces[side][PAWN];
+        for (int f = kf - 1; f <= kf + 1; f++)
         {
             if (f < 0 || f > 7)
                 continue;
-            U64 file_mask = 0x0101010101010101ULL << f;
-            U64 own_pawns_on_file = b->pieces[side][PAWN] & file_mask;
-            U64 enemy_pawns_on_file = b->pieces[1 - side][PAWN] & file_mask;
-            if (own_pawns_on_file == 0 && enemy_pawns_on_file == 0)
+            U64 file_mask = file_masks[f];
+            U64 shield_pawns;
+            if (side == WHITE)
             {
-                U64 enemy_rq = (b->pieces[1 - side][ROOK] | b->pieces[1 - side][QUEEN]) & file_mask;
-                if (enemy_rq)
-                {
-                    score += sign * (-25);
-                }
+                shield_pawns = file_mask & own_pawns & (rank_masks[1] | rank_masks[2]);
+            }
+            else
+            {
+                shield_pawns = file_mask & own_pawns & (rank_masks[6] | rank_masks[5]);
+            }
+            if (!shield_pawns)
+            {
+                attack_units += 8;
             }
         }
 
-        int shield_bonus = 0;
-        int kr = rank_of(king_sq);
-        if (side == WHITE && kr <= 1)
+        int danger_index = (attack_units < 128) ? attack_units : 127;
+        int danger = king_danger_table[danger_index];
+
+        if (phase_weight > 128)
         {
-            int shield_count = 0;
-            U64 wp = b->pieces[WHITE][PAWN];
-            int df;
-            for (df = -1; df <= 1; df++)
-            {
-                int af = kf + df;
-                if (af < 0 || af > 7)
-                    continue;
-                int r;
-                for (r = 2; r <= 3; r++)
-                {
-                    int sq2 = r * 8 + af;
-                    if (wp & (1ULL << sq2))
-                    {
-                        shield_count++;
-                        break;
-                    }
-                }
-            }
-            if (shield_count >= 3)
-                shield_bonus = 30;
-            else if (shield_count >= 2)
-                shield_bonus = 15;
-            else if (shield_count == 1)
-                shield_bonus = -10;
-            else
-                shield_bonus = -30;
+            danger = danger * 20 / 100;
         }
-        else if (side == BLACK && kr >= 6)
-        {
-            int shield_count = 0;
-            U64 bp = b->pieces[BLACK][PAWN];
-            int df;
-            for (df = -1; df <= 1; df++)
-            {
-                int af = kf + df;
-                if (af < 0 || af > 7)
-                    continue;
-                int r;
-                for (r = 4; r <= 5; r++)
-                {
-                    int sq2 = r * 8 + af;
-                    if (bp & (1ULL << sq2))
-                    {
-                        shield_count++;
-                        break;
-                    }
-                }
-            }
-            if (shield_count >= 3)
-                shield_bonus = 30;
-            else if (shield_count >= 2)
-                shield_bonus = 15;
-            else if (shield_count == 1)
-                shield_bonus = -10;
-            else
-                shield_bonus = -30;
-        }
-        score += sign * shield_bonus;
+
+        score -= sign * danger;
     }
 
     for (side = 0; side < 2; side++)
@@ -3186,6 +3241,94 @@ evaluate(Board *b)
         U64 pawns = b->pieces[side][PAWN];
         score += sign * (20 * count_bits(pawns & center));
         score += sign * (6 * count_bits(pawns & (ext & ~center)));
+    }
+
+    for (side = 0; side < 2; side++)
+    {
+        int opp = 1 - side;
+        int sign = (side == WHITE) ? 1 : -1;
+        U64 own_pieces_bb = 0;
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+            own_pieces_bb |= b->pieces[side][pt];
+
+        U64 enemy_attacks = 0;
+        U64 opp_pawns = b->pieces[opp][PAWN];
+        while (opp_pawns)
+        {
+            int sq = lsb_index(opp_pawns);
+            opp_pawns &= opp_pawns - 1;
+            if (opp == WHITE)
+            {
+                enemy_attacks |= shift_north(shift_east(1ULL << sq)) | shift_north(shift_west(1ULL << sq));
+            }
+            else
+            {
+                enemy_attacks |= shift_south(shift_east(1ULL << sq)) | shift_south(shift_west(1ULL << sq));
+            }
+        }
+        U64 opp_knights = b->pieces[opp][KNIGHT];
+        while (opp_knights)
+        {
+            int sq = lsb_index(opp_knights);
+            opp_knights &= opp_knights - 1;
+            enemy_attacks |= knight_attacks[sq];
+        }
+        U64 opp_bishops = b->pieces[opp][BISHOP];
+        U64 occupied = all_pieces(b);
+        while (opp_bishops)
+        {
+            int sq = lsb_index(opp_bishops);
+            opp_bishops &= opp_bishops - 1;
+            enemy_attacks |= sliding_attacks_bishop(sq, occupied);
+        }
+        U64 opp_rooks = b->pieces[opp][ROOK];
+        while (opp_rooks)
+        {
+            int sq = lsb_index(opp_rooks);
+            opp_rooks &= opp_rooks - 1;
+            enemy_attacks |= sliding_attacks_rook(sq, occupied);
+        }
+        U64 opp_queens = b->pieces[opp][QUEEN];
+        while (opp_queens)
+        {
+            int sq = lsb_index(opp_queens);
+            opp_queens &= opp_queens - 1;
+            enemy_attacks |= sliding_attacks_bishop(sq, occupied) | sliding_attacks_rook(sq, occupied);
+        }
+        enemy_attacks |= king_attacks[b->king_sq[opp]];
+
+        U64 own_defended = 0;
+        U64 own_pawns = b->pieces[side][PAWN];
+        while (own_pawns)
+        {
+            int sq = lsb_index(own_pawns);
+            own_pawns &= own_pawns - 1;
+            if (side == WHITE)
+            {
+                own_defended |= shift_north(shift_east(1ULL << sq)) | shift_north(shift_west(1ULL << sq));
+            }
+            else
+            {
+                own_defended |= shift_south(shift_east(1ULL << sq)) | shift_south(shift_west(1ULL << sq));
+            }
+        }
+        own_defended |= king_attacks[b->king_sq[side]];
+
+        U64 hanging = own_pieces_bb & enemy_attacks & ~own_defended;
+        while (hanging)
+        {
+            int sq = lsb_index(hanging);
+            hanging &= hanging - 1;
+            int pt2 = piece_on_square(b, sq);
+            int penalty = 0;
+            if (pt2 == QUEEN)
+                penalty = 60;
+            else if (pt2 == ROOK)
+                penalty = 40;
+            else if (pt2 == BISHOP || pt2 == KNIGHT)
+                penalty = 30;
+            score -= sign * penalty;
+        }
     }
 
     if (is_check(b, b->side_to_move))
@@ -3644,6 +3787,16 @@ evaluate(Board *b)
                 score += (stm == WHITE) ? -penalty : penalty;
             }
         }
+    }
+
+    {
+        int tempo_mg = 12;
+        int tempo_eg = 5;
+        int tempo = (tempo_mg * (256 - phase_weight) + tempo_eg * phase_weight) / 256;
+        if (b->side_to_move == WHITE)
+            score += tempo;
+        else
+            score -= tempo;
     }
 
     assert(score > -MATE_SCORE && score < MATE_SCORE && "Evaluation score out of valid range");
