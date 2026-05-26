@@ -2,6 +2,7 @@
 #define ENGINE_CORE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef unsigned long long U64;
 
@@ -70,18 +71,23 @@ typedef struct
 typedef struct
 {
     U64 key;
-    int depth;
-    int score;
-    int flag;
+    int16_t depth;
+    int16_t score;
+    int16_t flag;
     Move best_move;
-    int generation;
+    uint8_t generation;
 } TT_Entry;
 
 typedef struct
 {
+    TT_Entry entries[4];
+} TT_Cluster;
+
+typedef struct
+{
     Board board;
-    TT_Entry *tt;
-    int tt_size;
+    TT_Cluster *tt;
+    int tt_cluster_count;
     int tt_generation;
     Move killers[64][2];
     int history[64][64];

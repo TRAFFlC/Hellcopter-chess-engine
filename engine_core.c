@@ -117,6 +117,16 @@ static const int king_danger_table[128] = {
     19600, 20045, 20495, 20950, 21410, 21875, 22345, 22820, 23300, 23785, 24275, 24770, 25270, 25775, 26285, 26800,
     27320, 27845, 28375, 28910, 29450, 29995, 30545, 31100, 31660, 32225, 32795, 33370, 33950, 34535, 35125, 35720};
 
+static int lmr_table[64][64];
+
+static void init_lmr_table(void)
+{
+    int d, m;
+    for (d = 1; d < 64; d++)
+        for (m = 1; m < 64; m++)
+            lmr_table[d][m] = (int)(0.75 + log((double)d) * log((double)m) / 2.25);
+}
+
 typedef struct
 {
     U64 key;
@@ -152,6 +162,7 @@ void set_engine_info_callback(EngineInfoCallback cb)
 
 static void init_zobrist(void);
 static U64 compute_hash(const Board *b);
+static void tt_init(SearchState *s, int hash_mb);
 
 static int rank_of(int sq) { return sq >> 3; }
 static int file_of(int sq) { return sq & 7; }
@@ -392,6 +403,7 @@ static void ensure_engine_tables_initialized(void)
     {
         init_knight_attacks();
         init_king_attacks();
+        init_lmr_table();
         attacks_initialized = 1;
     }
     if (!magics_initialized)
@@ -1372,67 +1384,40 @@ static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
     if (depth < g_runtime_params.lmr_min_depth)
         return 0;
 
-    int threshold = g_runtime_params.lmr_move_threshold;
-    if (is_endgame)
-        threshold += 1;
-    if (move_num < threshold)
-        return 0;
-
-    if (in_check)
-        return 0;
-
-    if (move->capture)
-        return 0;
-
-    if (move->promotion)
-        return 0;
-
-    if (move_gives_check(&s->board, move))
-        return 0;
-
-    if (is_killer_move(s, move, depth))
+    if (move_num < g_runtime_params.lmr_move_threshold)
         return 0;
 
     return 1;
 }
 
-static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_endgame)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check)
 {
     if (depth < 1 || move_num < 1)
         return 0;
 
-    if (move_num < g_runtime_params.lmr_move_threshold)
-        return 0;
+    int reduction = lmr_table[depth < 63 ? depth : 63][move_num < 63 ? move_num : 63];
 
-    double log_depth = log((double)depth);
-    double log_move_num = log((double)move_num);
-    int reduction = 1 + (int)(log_depth * log_move_num / 2.5);
-
-    if (move->capture)
-    {
-        int see_score = mvv_lva(&s->board, move) - 100;
-        if (see_score >= 0)
-            reduction = reduction > 1 ? reduction - 1 : 0;
-    }
-
+    if (is_pv_node)
+        reduction -= 1;
+    if (in_check)
+        reduction -= 1;
+    if (move_num <= 3)
+        reduction -= 1;
+    if (move->capture && move->capture >= 0)
+        reduction -= 1;
     if (move->promotion)
-        reduction = reduction > 1 ? reduction - 1 : 0;
+        reduction -= 1;
 
-    if (move_gives_check(&s->board, move))
-        reduction = reduction > 1 ? reduction - 1 : 0;
-
-    int history_value = s->history[move->from][move->to];
-    if (history_value > 500)
-        reduction = reduction > 1 ? reduction - 1 : 0;
-
-    if (is_endgame)
-        reduction = (reduction > 1) ? reduction - 1 : 0;
-
-    if (reduction >= depth)
-        reduction = depth - 1;
+    int hist_val = s->history[move->from][move->to];
+    if (hist_val > 500)
+        reduction -= 1;
+    if (hist_val < -500)
+        reduction += 1;
 
     if (reduction < 0)
         reduction = 0;
+    if (reduction >= depth)
+        reduction = depth - 1;
 
     return reduction;
 }
@@ -1977,9 +1962,7 @@ eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int 
     s.game_history_count = 0;
     memset(s.killers, 0, sizeof(s.killers));
     memset(s.history, 0, sizeof(s.history));
-    s.tt_size = 1 << 20;
-    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
-    s.tt_generation = 1;
+    tt_init(&s, 16);
 
     Board old = s.board;
     int side = s.board.side_to_move;
@@ -3873,38 +3856,77 @@ static void sort_moves(Move *moves, int n)
     qsort(moves, n, sizeof(Move), compare_moves_desc);
 }
 
+static int next_power_of_2(int v)
+{
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v++;
+    return v;
+}
+
+static void tt_init(SearchState *s, int hash_mb)
+{
+    int raw_count = hash_mb * 1024 * 1024 / (int)sizeof(TT_Cluster);
+    s->tt_cluster_count = next_power_of_2(raw_count);
+    if (s->tt_cluster_count < 16)
+        s->tt_cluster_count = 16;
+    s->tt = (TT_Cluster *)calloc(s->tt_cluster_count, sizeof(TT_Cluster));
+    s->tt_generation = 1;
+}
+
 static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score)
 {
-    int idx = (int)(key % s->tt_size);
-    TT_Entry *e = &s->tt[idx];
-    if (e->key == key && e->depth >= depth)
+    int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
+    TT_Cluster *cluster = &s->tt[idx];
+    int i;
+    for (i = 0; i < 4; i++)
     {
-        *out_move = e->best_move;
-        int score = e->score;
-        if (score > MATE_SCORE - 100)
-            score -= ply;
-        else if (score < -MATE_SCORE + 100)
-            score += ply;
-        if (out_tt_score)
-            *out_tt_score = score;
-        if (e->flag == 0)
-            return score;
-        if (e->flag == 1 && score <= alpha)
-            return score;
-        if (e->flag == 2 && score >= beta)
-            return score;
-    }
-    else if (e->key != 0)
-    {
-        *out_move = e->best_move;
-        if (e->key == key && out_tt_score)
+        TT_Entry *e = &cluster->entries[i];
+        if (e->key == key)
         {
-            int score = e->score;
-            if (score > MATE_SCORE - 100)
-                score -= ply;
-            else if (score < -MATE_SCORE + 100)
-                score += ply;
-            *out_tt_score = score;
+            *out_move = e->best_move;
+            if (e->depth >= depth)
+            {
+                int score = e->score;
+                if (score > MATE_SCORE - 100)
+                    score -= ply;
+                else if (score < -MATE_SCORE + 100)
+                    score += ply;
+                if (out_tt_score)
+                    *out_tt_score = score;
+                if (e->flag == 0)
+                    return score;
+                if (e->flag == 1 && score <= alpha)
+                    return score;
+                if (e->flag == 2 && score >= beta)
+                    return score;
+            }
+            else
+            {
+                if (out_tt_score)
+                {
+                    int score = e->score;
+                    if (score > MATE_SCORE - 100)
+                        score -= ply;
+                    else if (score < -MATE_SCORE + 100)
+                        score += ply;
+                    *out_tt_score = score;
+                }
+            }
+            return INF + 1;
+        }
+    }
+    for (i = 0; i < 4; i++)
+    {
+        TT_Entry *e = &cluster->entries[i];
+        if (e->key != 0)
+        {
+            *out_move = e->best_move;
+            break;
         }
     }
     return INF + 1;
@@ -3912,37 +3934,56 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
 
 static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Move best_move, int ply)
 {
-    int idx = (int)(key % s->tt_size);
-    TT_Entry *e = &s->tt[idx];
-    int should_replace = 0;
-    if (e->key == 0)
+    int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
+    TT_Cluster *cluster = &s->tt[idx];
+    int i;
+    for (i = 0; i < 4; i++)
     {
-        should_replace = 1;
+        TT_Entry *e = &cluster->entries[i];
+        if (e->key == key)
+        {
+            if (depth >= e->depth)
+            {
+                int adj_score = score;
+                if (adj_score > MATE_SCORE - 100)
+                    adj_score += ply;
+                else if (adj_score < -MATE_SCORE + 100)
+                    adj_score -= ply;
+                e->key = key;
+                e->depth = (int16_t)depth;
+                e->score = (int16_t)adj_score;
+                e->flag = (int16_t)flag;
+                e->best_move = best_move;
+                e->generation = (uint8_t)(s->tt_generation & 0xFF);
+            }
+            return;
+        }
     }
-    else if (e->key == key)
+    int replace_idx = 0;
+    int worst_val = 0x7FFFFFFF;
+    for (i = 0; i < 4; i++)
     {
-        if (depth >= e->depth)
-            should_replace = 1;
+        TT_Entry *e = &cluster->entries[i];
+        int val = ((int)(s->tt_generation & 0xFF) - (int)e->generation) * 256 - (int)e->depth;
+        if (val > worst_val)
+        {
+            worst_val = val;
+            replace_idx = i;
+        }
     }
-    else
     {
-        int age_diff = s->tt_generation - e->generation;
-        if (age_diff > 0 || depth > e->depth)
-            should_replace = 1;
-    }
-    if (should_replace)
-    {
+        TT_Entry *e = &cluster->entries[replace_idx];
         int adj_score = score;
         if (adj_score > MATE_SCORE - 100)
             adj_score += ply;
         else if (adj_score < -MATE_SCORE + 100)
             adj_score -= ply;
         e->key = key;
-        e->depth = depth;
-        e->score = adj_score;
-        e->flag = flag;
+        e->depth = (int16_t)depth;
+        e->score = (int16_t)adj_score;
+        e->flag = (int16_t)flag;
         e->best_move = best_move;
-        e->generation = s->tt_generation;
+        e->generation = (uint8_t)(s->tt_generation & 0xFF);
     }
 }
 
@@ -4843,7 +4884,15 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         else if (moves[i].capture)
         {
-            moves[i].score = mvv_lva(b, &moves[i]) + 50000;
+            int see_val = see(b, moves[i].from, moves[i].to);
+            if (see_val >= 0)
+            {
+                moves[i].score = 1000000 + see_val * 10 + mvv_lva(b, &moves[i]);
+            }
+            else
+            {
+                moves[i].score = 200000 + see_val;
+            }
         }
         else
         {
@@ -4905,15 +4954,42 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     Move best_move = {0};
     int flag = 1;
 
+    {
+        int is_pv_node_rfp = (beta - alpha > 1);
+        if (!in_check && !is_pv_node_rfp && depth <= 8 && abs(beta) < MATE_SCORE - 100)
+        {
+            int static_eval_rfp = evaluate(&s->board);
+            if (s->board.side_to_move == BLACK)
+                static_eval_rfp = -static_eval_rfp;
+            int margin_rfp = depth * 80;
+            if (b->phase < 10)
+                margin_rfp = margin_rfp * 3 / 2;
+            if (static_eval_rfp - margin_rfp >= beta)
+            {
+                s->search_history_count = saved_history_count;
+                return static_eval_rfp - margin_rfp;
+            }
+        }
+    }
+
     if (depth >= NULL_MOVE_MIN_DEPTH && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move))
     {
         Board saved = *b;
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
-        int nmr = NULL_MOVE_REDUCTION;
-        if (is_endgame)
-            nmr += ENDGAME_NMR_BONUS;
-        int null_score = -negamax(s, depth - (nmr + 1), -beta, -beta + 1, 0, ply + 1);
+        int R = 3 + depth / 6;
+        int static_eval_nm = evaluate(&s->board);
+        if (s->board.side_to_move == BLACK)
+            static_eval_nm = -static_eval_nm;
+        if (static_eval_nm - beta > 200)
+            R += 1;
+        if (b->phase < 10)
+            R = (R > 1) ? R - 1 : 1;
+        if (R >= depth)
+            R = depth - 1;
+        if (R < 1)
+            R = 1;
+        int null_score = -negamax(s, depth - (R + 1), -beta, -beta + 1, 0, ply + 1);
         *b = saved;
         if (s->aborted)
         {
@@ -4982,11 +5058,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         else
         {
+            int is_pv_node = (beta - alpha > 1);
             int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame);
 
             if (apply_lmr)
             {
-                int reduction = calculate_reduction(s, &moves[i], depth, i, is_endgame);
+                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check);
 
                 int estimated_nodes_saved = (1 << reduction) - 1;
 
@@ -5279,9 +5356,7 @@ debug_root_moves(const char *fen, int depth, int *out_scores, int *out_from, int
     s.time_limit = 300.0;
     s.aborted = 0;
     s.nodes = 0;
-    s.tt_size = 1 << 20;
-    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
-    s.tt_generation = 1;
+    tt_init(&s, 16);
     s.search_history_count = 0;
     s.game_history_count = 0;
     int i;
@@ -5333,9 +5408,7 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
     s.time_limit = 30.0;
     s.aborted = 0;
     s.nodes = 0;
-    s.tt_size = 1 << 20;
-    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
-    s.tt_generation = 1;
+    tt_init(&s, 16);
     s.search_history_count = 0;
     s.game_history_count = 0;
     int i;
@@ -5450,9 +5523,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     s.time_limit = time_limit;
     s.aborted = 0;
     s.nodes = 0;
-    s.tt_size = 1 << 20;
-    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
-    s.tt_generation = 1;
+    tt_init(&s, 128);
     s.search_history_count = 0;
     s.game_history_count = 0;
     if (game_history && game_history_count > 0)
@@ -5479,8 +5550,6 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     int best_score = -INF;
     int depth;
     int i;
-    int aspiration_alpha = -INF, aspiration_beta = INF;
-
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
     for (i = 0; i < MAX_MOVES; i++)
@@ -5590,6 +5659,8 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         depth_bonus = 1;
     int effective_max_depth = max_depth + depth_bonus;
 
+    int window = 25;
+
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
         double elapsed = get_time() - s.start_time;
@@ -5603,64 +5674,16 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         Move current_best = {0};
         int current_score = -INF;
         int alpha, beta;
-        Move empty_move = {0};
 
-        if (depth == 1)
+        if (depth <= 1)
         {
             alpha = -INF;
             beta = INF;
-        }
-        else
-        {
-            alpha = aspiration_alpha;
-            beta = aspiration_beta;
-        }
 
-        for (i = 0; i < legal_moves_count; i++)
-        {
-            UndoInfo undo;
-            make_move(b, &root_moves[i], &undo);
-            int score;
-            if (i == 0)
-            {
-                score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
-            }
-            else
-            {
-                score = -negamax(&s, depth - 1, -alpha - 1, -alpha, 0, 1);
-                if (!s.aborted && score > alpha && score < beta)
-                {
-                    score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
-                }
-            }
-            unmake_move(b, &root_moves[i], &undo);
-
-            if (s.aborted)
-                break;
-
-            root_scores[i] = score;
-
-            if (score > current_score)
-            {
-                current_score = score;
-                current_best = root_moves[i];
-                if (score > alpha)
-                {
-                    alpha = score;
-                }
-            }
-        }
-
-        if (!s.aborted && depth >= 2 && (current_score <= aspiration_alpha || current_score >= aspiration_beta))
-        {
-            alpha = -INF;
-            beta = INF;
-            current_score = -INF;
-            current_best = empty_move;
             for (i = 0; i < legal_moves_count; i++)
             {
-                UndoInfo undo2;
-                make_move(b, &root_moves[i], &undo2);
+                UndoInfo undo;
+                make_move(b, &root_moves[i], &undo);
                 int score;
                 if (i == 0)
                 {
@@ -5674,10 +5697,13 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                         score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
                     }
                 }
-                unmake_move(b, &root_moves[i], &undo2);
+                unmake_move(b, &root_moves[i], &undo);
+
                 if (s.aborted)
                     break;
+
                 root_scores[i] = score;
+
                 if (score > current_score)
                 {
                     current_score = score;
@@ -5686,6 +5712,85 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                     {
                         alpha = score;
                     }
+                }
+            }
+        }
+        else
+        {
+            alpha = best_score - window;
+            beta = best_score + window;
+
+            while (1)
+            {
+                if (alpha < -INF)
+                    alpha = -INF;
+                if (beta > INF)
+                    beta = INF;
+
+                current_score = -INF;
+                current_best = (Move){0};
+
+                for (i = 0; i < legal_moves_count; i++)
+                {
+                    UndoInfo undo;
+                    make_move(b, &root_moves[i], &undo);
+                    int score;
+                    if (i == 0)
+                    {
+                        score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+                    }
+                    else
+                    {
+                        score = -negamax(&s, depth - 1, -alpha - 1, -alpha, 0, 1);
+                        if (!s.aborted && score > alpha && score < beta)
+                        {
+                            score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+                        }
+                    }
+                    unmake_move(b, &root_moves[i], &undo);
+
+                    if (s.aborted)
+                        break;
+
+                    root_scores[i] = score;
+
+                    if (score > current_score)
+                    {
+                        current_score = score;
+                        current_best = root_moves[i];
+                        if (score > alpha)
+                        {
+                            alpha = score;
+                        }
+                    }
+                }
+
+                if (s.aborted)
+                    break;
+
+                if (current_score <= alpha)
+                {
+                    window *= 2;
+                    alpha = best_score - window;
+                    if (alpha < -INF)
+                        alpha = -INF;
+                }
+                else if (current_score >= beta)
+                {
+                    window *= 2;
+                    beta = best_score + window;
+                    if (beta > INF)
+                        beta = INF;
+                }
+                else
+                {
+                    break;
+                }
+
+                if (window > 500)
+                {
+                    alpha = -INF;
+                    beta = INF;
                 }
             }
         }
@@ -5727,8 +5832,8 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
 
             if (g_info_callback)
             {
-                double elapsed = get_time() - s.start_time;
-                int time_ms = (int)(elapsed * 1000);
+                double elapsed2 = get_time() - s.start_time;
+                int time_ms = (int)(elapsed2 * 1000);
                 char pv_buf[256];
                 int pv_pos = 0;
                 pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",
@@ -5765,8 +5870,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                     }
                 }
             }
-            aspiration_alpha = current_score - 25;
-            aspiration_beta = current_score + 25;
+            window = 25;
             s.tt_generation++;
         }
 
@@ -5835,9 +5939,7 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
     s.time_limit = time_limit;
     s.aborted = 0;
     s.nodes = 0;
-    s.tt_size = 1 << 20;
-    s.tt = (TT_Entry *)calloc(s.tt_size, sizeof(TT_Entry));
-    s.tt_generation = 1;
+    tt_init(&s, 16);
     s.search_history_count = 0;
     s.game_history_count = 0;
 
@@ -5920,8 +6022,8 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
 typedef struct
 {
     Board board;
-    TT_Entry *shared_tt;
-    int tt_size;
+    TT_Cluster *shared_tt;
+    int tt_cluster_count;
     double start_time;
     double time_limit;
     int max_depth;
@@ -5953,7 +6055,7 @@ static void smp_worker_search(LazySMPWorker *w)
     s.aborted = 0;
     s.nodes = 0;
     s.tt = w->shared_tt;
-    s.tt_size = w->tt_size;
+    s.tt_cluster_count = w->tt_cluster_count;
     s.tt_generation = 1;
     s.search_history_count = 0;
     s.game_history_count = w->game_history_count;
@@ -6129,8 +6231,12 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
                                 game_history, game_history_count);
     }
 
-    int tt_size = 1 << 20;
-    TT_Entry *shared_tt = (TT_Entry *)calloc(tt_size, sizeof(TT_Entry));
+    int tt_cluster_count_smp;
+    int raw_count_smp = 128 * 1024 * 1024 / (int)sizeof(TT_Cluster);
+    tt_cluster_count_smp = next_power_of_2(raw_count_smp);
+    if (tt_cluster_count_smp < 16)
+        tt_cluster_count_smp = 16;
+    TT_Cluster *shared_tt = (TT_Cluster *)calloc(tt_cluster_count_smp, sizeof(TT_Cluster));
     if (!shared_tt)
     {
         return find_best_move_c(fen, time_limit, max_depth, out_nodes,
@@ -6152,7 +6258,7 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
     {
         board_from_fen(&workers[i].board, fen);
         workers[i].shared_tt = shared_tt;
-        workers[i].tt_size = tt_size;
+        workers[i].tt_cluster_count = tt_cluster_count_smp;
         workers[i].start_time = start_time;
         workers[i].time_limit = time_limit;
         workers[i].max_depth = max_depth;
