@@ -472,6 +472,43 @@ def save_json(analyses: list, output_path: str):
     print(f"\n详细报告已保存到: {output_path}")
 
 
+def generate_blunder_memory(analysis_results: list, output_path: str):
+    new_entries = []
+    for game_analysis in analysis_results:
+        for move in game_analysis.moves:
+            if move.is_hellcopter_move and abs(move.score_diff) >= 300:
+                if move.velvet_best_move and move.uci_move != move.velvet_best_move:
+                    new_entries.append({
+                        "fen": move.fen_before,
+                        "bad_move": move.uci_move,
+                        "good_move": move.velvet_best_move,
+                        "score_loss": abs(move.score_diff),
+                    })
+    existing_entries = []
+    if Path(output_path).exists():
+        try:
+            with open(output_path, "r", encoding="utf-8") as f:
+                existing_data = json.load(f)
+            if isinstance(existing_data, dict) and "entries" in existing_data:
+                existing_entries = existing_data["entries"]
+        except (json.JSONDecodeError, IOError):
+            existing_entries = []
+    existing_keys = {(e["fen"], e["bad_move"]) for e in existing_entries}
+    merged_entries = list(existing_entries)
+    for entry in new_entries:
+        key = (entry["fen"], entry["bad_move"])
+        if key not in existing_keys:
+            merged_entries.append(entry)
+            existing_keys.add(key)
+    output_data = {
+        "version": 1,
+        "entries": merged_entries,
+    }
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    print(f"\n败着记忆已保存到: {output_path} (共{len(merged_entries)}条记录，新增{len(merged_entries) - len(existing_entries)}条)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="使用Velvet引擎分析Hellcopter的对局败着"
@@ -507,6 +544,11 @@ def main():
         "--debug",
         action="store_true",
         help="显示UCI通信调试信息"
+    )
+    parser.add_argument(
+        "--blunder-memory",
+        default=None,
+        help="败着记忆文件路径（如指定，分析完成后自动输出败着记忆）"
     )
     args = parser.parse_args()
     pgn_path = Path(args.pgn)
@@ -550,6 +592,8 @@ def main():
             return
         print_summary(analyses)
         save_json(analyses, args.output)
+        if args.blunder_memory:
+            generate_blunder_memory(analyses, args.blunder_memory)
     finally:
         print("\n关闭引擎...")
         velvet.stop()

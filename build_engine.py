@@ -373,6 +373,7 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
             cmd = [
                 "gcc",
                 "-shared",
+                "-std=c99",
                 "-o", output_file,
                 src_file,
                 "-lm",
@@ -415,6 +416,7 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
         cmd = [
             compiler,
             "-shared",
+            "-std=c99",
             "-fPIC",
             "-o", output_file,
             src_file,
@@ -443,6 +445,7 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
         cmd = [
             compiler,
             "-dynamiclib",
+            "-std=c99",
             "-o", output_file,
             src_file,
         ]
@@ -490,6 +493,143 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
         return False
 
 
+def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: bool = True) -> bool:
+    """
+    编译 uci_main.c 和 engine_core.c 为独立的 UCI 可执行文件。
+    """
+    system = platform.system()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    engine_src = os.path.join(script_dir, "engine_core.c")
+    uci_src = os.path.join(script_dir, "uci_main.c")
+    params_header = os.path.join(script_dir, "engine_params.h")
+
+    if not os.path.exists(engine_src):
+        print(f"错误: 源文件未找到: {engine_src}", file=sys.stderr)
+        return False
+    if not os.path.exists(uci_src):
+        print(f"错误: 源文件未找到: {uci_src}", file=sys.stderr)
+        return False
+
+    if config_path:
+        config = _load_config(config_path)
+        if config is None:
+            print("错误: 无法加载配置文件", file=sys.stderr)
+            return False
+        if not _generate_params_header(config, params_header):
+            print("错误: 无法生成参数头文件", file=sys.stderr)
+            return False
+
+    dist_dir = os.path.join(script_dir, "dist")
+    os.makedirs(dist_dir, exist_ok=True)
+
+    if system == "Windows":
+        output_file = os.path.join(dist_dir, "Hellcopter.exe")
+    else:
+        output_file = os.path.join(dist_dir, "Hellcopter")
+
+    if not force and not _needs_rebuild(engine_src, output_file, params_header):
+        if not _needs_rebuild(uci_src, output_file, params_header):
+            print(f"编译已是最新: {output_file}")
+            return True
+
+    if system == "Windows":
+        compiler_info = _find_compiler_windows()
+        if compiler_info is None:
+            print("错误: 未找到可用的 C 编译器。", file=sys.stderr)
+            return False
+
+        compiler, _ = compiler_info
+        if compiler == "gcc":
+            cmd = [
+                "gcc", "-std=c99",
+                "-o", output_file,
+                engine_src, uci_src,
+                "-lm",
+            ]
+            if optimize:
+                cmd.insert(2, "-O3")
+                cmd.insert(3, "-march=native")
+                cmd.insert(4, "-fomit-frame-pointer")
+                cmd.insert(5, "-DNDEBUG")
+        else:
+            obj_engine = os.path.join(script_dir, "engine_core.obj")
+            obj_uci = os.path.join(script_dir, "uci_main.obj")
+            cmd = [
+                "cl",
+                f"/Fe{output_file}",
+                f"/Fo{obj_engine}",
+                engine_src, uci_src,
+            ]
+            if optimize:
+                cmd.insert(1, "/O2")
+                cmd.insert(2, "/GL")
+                cmd.insert(3, "/DNDEBUG")
+    elif system in ("Linux", "Darwin"):
+        compiler_info = _find_compiler_unix()
+        if compiler_info is None:
+            print("错误: 未找到可用的 C 编译器。", file=sys.stderr)
+            return False
+
+        compiler, _ = compiler_info
+        cmd = [
+            compiler, "-std=c99",
+            "-o", output_file,
+            engine_src, uci_src,
+            "-lm", "-lpthread",
+        ]
+        if optimize:
+            cmd.insert(2, "-O3")
+            cmd.insert(3, "-march=native")
+            cmd.insert(4, "-fomit-frame-pointer")
+            cmd.insert(5, "-DNDEBUG")
+    else:
+        print(f"错误: 不支持的操作系统: {system}", file=sys.stderr)
+        return False
+
+    print(f"\n{'='*60}")
+    print(f"编译 UCI 可执行文件")
+    print(f"检测到平台: {system}")
+    print(f"使用编译器: {compiler}")
+    print(f"优化选项: {'启用' if optimize else '禁用'}")
+    print(f"输出文件: {output_file}")
+    print(f"执行命令: {' '.join(cmd)}")
+    print(f"{'='*60}\n")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=script_dir)
+
+    if result.returncode != 0:
+        print("编译失败！", file=sys.stderr)
+        if result.stdout:
+            print("stdout:\n" + result.stdout, file=sys.stderr)
+        if result.stderr:
+            print("stderr:\n" + result.stderr, file=sys.stderr)
+        return False
+
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    if os.path.exists(output_file):
+        file_size = os.path.getsize(output_file)
+        book_src = os.path.join(script_dir, "dist", "book.bin")
+        if os.path.exists(book_src):
+            print(f"  开局库已存在: {book_src}")
+        else:
+            gen_script = os.path.join(script_dir, "generate_book.py")
+            if os.path.exists(gen_script):
+                print("  生成开局库...")
+                subprocess.run([sys.executable, gen_script], cwd=script_dir, check=True)
+        print(f"\n{'='*60}")
+        print(f"[SUCCESS] 编译成功: {output_file}")
+        print(f"  文件大小: {file_size:,} 字节 ({file_size / 1024:.1f} KB)")
+        print(f"{'='*60}\n")
+        return True
+    else:
+        print("错误: 编译命令返回 0，但输出文件未生成。", file=sys.stderr)
+        return False
+
+
 def clean():
     """删除生成的共享库和中间文件。"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -524,7 +664,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python build_engine.py                    # 使用默认参数编译
+  python build_engine.py                    # 使用默认参数编译共享库
+  python build_engine.py exe                # 编译为独立 UCI 可执行文件
   python build_engine.py --config v1.0.0    # 使用指定配置编译
   python build_engine.py --force            # 强制重新编译
   python build_engine.py --no-optimize      # 禁用优化
@@ -536,8 +677,8 @@ def main():
         'action',
         nargs='?',
         default='build',
-        choices=['build', 'clean'],
-        help='执行的操作：build（编译）或 clean（清理）'
+        choices=['build', 'exe', 'clean'],
+        help='执行的操作：build（编译共享库）、exe（编译可执行文件）或 clean（清理）'
     )
     
     parser.add_argument(
@@ -563,6 +704,13 @@ def main():
     if args.action == 'clean':
         clean()
         sys.exit(0)
+    elif args.action == 'exe':
+        success = build_exe(
+            config_path=args.config,
+            force=args.force,
+            optimize=not args.no_optimize
+        )
+        sys.exit(0 if success else 1)
     else:
         success = build(
             config_path=args.config,
@@ -573,9 +721,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 兼容旧的命令行接口
-    if len(sys.argv) > 1 and sys.argv[1] == "clean" and '--' not in sys.argv[1]:
-        clean()
-        sys.exit(0)
-    else:
-        main()
+    main()

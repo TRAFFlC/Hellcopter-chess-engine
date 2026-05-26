@@ -20,6 +20,7 @@ Texel Tuning 是一种基于逻辑回归的评估参数优化方法：
 import argparse
 import json
 import math
+import random
 import time
 import chess
 from datetime import datetime

@@ -1,0 +1,92 @@
+{
+  "version": "spsa_20260522_024247",
+  "release_date": "2026-05-21",
+  "description": "SPSA tuning test - spsa_20260522_024247",
+  "improvements": [
+    {
+      "id": "P0",
+      "name": "Lazy SMP 效率修复",
+      "description": "修复多线程深度偏移策略，提升 NPS",
+      "effect": "NPS 从 1.6M 提升至 4.65M"
+    },
+    {
+      "id": "P1",
+      "name": "王车易位奖励",
+      "description": "鼓励王车易位，特别是短易位",
+      "params": {
+        "CASTLE_SHORT_BONUS": 30,
+        "CASTLE_LONG_BONUS": 15
+      }
+    },
+    {
+      "id": "P2",
+      "name": "随机走法选择",
+      "description": "启用随机走法选择，仅对完全相同分数的走法随机选择",
+      "params": {
+        "random_move_enabled": true,
+        "random_move_margin": 0
+      },
+      "effect": "相同分数走法等概率随机选择"
+    }
+  ],
+  "parameters": {
+    "piece_values": {
+      "pawn": 100,
+      "knight": 320,
+      "bishop": 340,
+      "rook": 480,
+      "queen": 900,
+      "king": 20000
+    },
+    "eval_weights": {
+      "bishop_pair_bonus": 40,
+      "doubled_pawn_penalty": -15,
+      "isolated_pawn_penalty": -15,
+      "passed_pawn_bonus": [
+        0,
+        10,
+        20,
+        30,
+        50,
+        80,
+        120,
+        0
+      ],
+      "open_file_bonus": 20,
+      "semi_open_file_bonus": 10,
+      "king_activity_weight": 10,
+      "simplify_threshold": 200,
+      "simplify_bonus": 15,
+      "castle_short_bonus": 30,
+      "castle_long_bonus": 15
+    },
+    "search_params": {
+      "null_move_reduction": 2,
+      "null_move_min_depth": 4,
+      "endgame_nmr_bonus": 1,
+      "endgame_depth_bonus": 3,
+      "qs_max_depth_mg": 8,
+      "qs_max_depth_eg": 16,
+      "lmr_enabled": true,
+      "lmr_min_depth": 2,
+      "lmr_move_threshold": 2,
+      "futility_enabled": true,
+      "futility_margin_base": 100,
+      "razoring_enabled": true,
+      "razoring_margin": 400,
+      "random_move_enabled": true,
+      "random_move_margin": 0
+    },
+    "constants": {
+      "mate_score": 900000,
+      "delta": 250,
+      "endgame_phase_threshold": 1500
+    },
+    "threading": {
+      "enabled": true,
+      "num_threads": 4
+    }
+  },
+  "base_version": "v1.7.1",
+  "created_at": "2026-05-22T02:42:47.480673"
+}

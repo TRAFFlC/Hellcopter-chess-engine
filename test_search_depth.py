@@ -15,7 +15,8 @@ class Move(ctypes.Structure):
     ]
 
 engine.find_best_move_c.argtypes = [
-    ctypes.c_char_p, ctypes.c_double, ctypes.c_int,
+    ctypes.c_char_p, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int,
     ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_uint64),
     ctypes.c_int
 ]
@@ -47,7 +48,7 @@ for name, fen in test_positions:
     game_history = (ctypes.c_uint64 * 256)()
     
     start = time.perf_counter()
-    move = engine.find_best_move_c(fen, 5.0, 100, ctypes.byref(nodes), game_history, 0)
+    move = engine.find_best_move_c(fen, 5.0, 0.0, 0.0, 0, 0, 100, ctypes.byref(nodes), game_history, 0)
     elapsed = time.perf_counter() - start
     
     move_str = sq_to_name(move.from_sq) + sq_to_name(move.to_sq)

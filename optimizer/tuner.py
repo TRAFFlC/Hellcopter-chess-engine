@@ -4,6 +4,7 @@ import math
 import os
 import random
 import time
+from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Callable
 
@@ -66,7 +67,7 @@ class TuningResult:
         }
 
 
-class GradientDescentTuner:
+class BaseTuner(ABC):
     def __init__(self, config_manager: ConfigManager, match_runner: MatchRunner,
                  base_version: str = "1.0.0"):
         self.cm = config_manager
@@ -74,9 +75,13 @@ class GradientDescentTuner:
         self.base_version = base_version
         self.base_config = self.cm.import_config(base_version)
 
+    @abstractmethod
+    def _get_version_prefix(self) -> str:
+        pass
+
     def _evaluate(self, params: Dict, opponent: str = "shallowblue",
                   rounds: int = 11, time_control: str = "9+0.1") -> float:
-        version = f"gd_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        version = f"{self._get_version_prefix()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         try:
             self.cm.export_config(version, parameters=params)
             self.cm.switch_version(version)
@@ -87,6 +92,24 @@ class GradientDescentTuner:
         except Exception as e:
             print(f"Evaluation failed: {e}")
             return -1000.0
+
+    def _save_result(self, result: TuningResult):
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(self.mr.results_dir,
+                            f"tuning_{self._get_version_prefix()}_{ts}.json")
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
+
+    @abstractmethod
+    def tune(self, params_to_tune: Optional[List[str]] = None,
+             opponent: str = "shallowblue", rounds: int = 11,
+             time_control: str = "9+0.1", **kwargs) -> TuningResult:
+        pass
+
+
+class GradientDescentTuner(BaseTuner):
+    def _get_version_prefix(self) -> str:
+        return "gd"
 
     def tune(self, params_to_tune: Optional[List[str]] = None,
              opponent: str = "shallowblue", rounds: int = 11,
@@ -158,34 +181,10 @@ class GradientDescentTuner:
         self._save_result(result)
         return result
 
-    def _save_result(self, result: TuningResult):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(self.mr.results_dir, f"tuning_gd_{ts}.json")
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)
 
-
-class GridSearchTuner:
-    def __init__(self, config_manager: ConfigManager, match_runner: MatchRunner,
-                 base_version: str = "1.0.0"):
-        self.cm = config_manager
-        self.mr = match_runner
-        self.base_version = base_version
-        self.base_config = self.cm.import_config(base_version)
-
-    def _evaluate(self, params: Dict, opponent: str = "shallowblue",
-                  rounds: int = 11, time_control: str = "9+0.1") -> float:
-        version = f"gs_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        try:
-            self.cm.export_config(version, parameters=params)
-            self.cm.switch_version(version)
-            result = self.mr.run_match(opponent=opponent, rounds=rounds,
-                                       time_control=time_control,
-                                       config_version=version)
-            return -result.elo_diff
-        except Exception as e:
-            print(f"Evaluation failed: {e}")
-            return -1000.0
+class GridSearchTuner(BaseTuner):
+    def _get_version_prefix(self) -> str:
+        return "gs"
 
     def tune(self, params_to_tune: Optional[List[str]] = None,
              opponent: str = "shallowblue", rounds: int = 11,
@@ -239,9 +238,3 @@ class GridSearchTuner:
         )
         self._save_result(result)
         return result
-
-    def _save_result(self, result: TuningResult):
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(self.mr.results_dir, f"tuning_gs_{ts}.json")
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(result.to_dict(), f, indent=2, ensure_ascii=False)

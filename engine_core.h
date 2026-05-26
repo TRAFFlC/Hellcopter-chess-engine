@@ -70,6 +70,22 @@ typedef struct
 
 typedef struct
 {
+    double optimal_time;
+    double max_time;
+    double remaining;
+    double increment;
+    int moves_to_go;
+    int move_number;
+    int easy_move_count;
+    int prev_best_move_from;
+    int prev_best_move_to;
+    int stable_count;
+    int panic_flag;
+    double start_time;
+} TimeManager;
+
+typedef struct
+{
     U64 key;
     int16_t depth;
     int16_t score;
@@ -124,9 +140,9 @@ int is_game_over(const Board *b);
 int evaluate(Board *b);
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth);
 int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int ply);
-Move find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nodes,
+Move find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
                       U64 *game_history, int game_history_count);
-Move find_best_move_smp(const char *fen, double time_limit, int max_depth, int *out_nodes,
+Move find_best_move_smp(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
                         U64 *game_history, int game_history_count);
 U64 compute_hash_from_fen(const char *fen);
 int popcount(U64 x);

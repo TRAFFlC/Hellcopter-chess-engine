@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chess Arena — 人机对弈</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-primary: #0d1117; --bg-card: #1c2129; --bg-hover: #21262d;
+  --border: #30363d; --text-primary: #e6edf3; --text-secondary: #8b949e;
+  --text-dim: #484f58; --accent: #58a6ff; --accent-glow: rgba(88,166,255,0.15);
+  --green: #3fb950; --red: #f85149; --yellow: #d29922;
+  --board-light: #ebecd0; --board-dark: #779556; --board-last: #cdd26a;
+  --radius: 10px; --radius-sm: 6px; --shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: var(--bg-primary); color: var(--text-primary);
+  min-height: 100vh; display: flex; justify-content: center;
+  align-items: center; padding: 20px;
+}
+
+.container { display: flex; gap: 28px; max-width: 1000px; width: 100%; }
+
+.board-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
+  display: flex; gap: 0; align-items: flex-start; position: relative;
+}
+
+.coords-col {
+  display: flex; flex-direction: column;
+  justify-content: space-around; padding: 0 4px;
+}
+
+.coords-col span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  width: 14px; text-align: center; line-height: 60px;
+}
+
+.board-wrap { display: flex; flex-direction: column; }
+
+.coords-row {
+  display: flex; justify-content: space-around;
+  padding: 0 18px; margin-top: 2px;
+}
+
+.coords-row span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  width: 60px; text-align: center;
+}
+
+.board {
+  display: grid; grid-template-columns: repeat(8, 60px);
+  grid-template-rows: repeat(8, 60px);
+  border: 2px solid var(--border); border-radius: 4px; overflow: hidden;
+}
+
+.square {
+  width: 60px; height: 60px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 40px; cursor: pointer; position: relative;
+  user-select: none; transition: background 0.15s;
+}
+
+.square.light { background: var(--board-light); }
+.square.dark { background: var(--board-dark); }
+.square.selected { background: #a3c94f !important; }
+.square.legal-dot::after {
+  content: ''; position: absolute; width: 16px; height: 16px;
+  border-radius: 50%; background: rgba(0,0,0,0.25);
+}
+.square.legal-capture { box-shadow: inset 0 0 0 4px rgba(0,0,0,0.35); }
+.square.last-from, .square.last-to { background: var(--board-last) !important; }
+.square.in-check { box-shadow: inset 0 0 0 4px var(--red); animation: pulse 0.8s infinite alternate; }
+@keyframes pulse { from { box-shadow: inset 0 0 0 4px var(--red); } to { box-shadow: inset 0 0 0 6px #f66; } }
+
+.sidebar { width: 280px; display: flex; flex-direction: column; gap: 12px; }
+
+.header { padding-bottom: 4px; }
+.logo { font-size: 20px; font-weight: 700; color: var(--accent); }
+.logo span { color: var(--text-secondary); font-weight: 400; font-size: 14px; margin-left: 4px; }
+
+.status {
+  font-size: 15px; padding: 12px; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  text-align: center; font-weight: 500;
+}
+
+.history-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px;
+}
+
+.history-panel h4 {
+  font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}
+
+.history-moves {
+  max-height: 260px; overflow-y: auto;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px;
+}
+
+.history-moves span {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 2px 0;
+}
+
+.history-moves .move-num { color: var(--text-dim); font-size: 11px; text-align: right; }
+.history-moves .last-move { color: var(--accent); font-weight: 600; }
+
+.controls { display: flex; flex-direction: column; gap: 8px; }
+
+.btn {
+  padding: 10px 16px; border: none; border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+}
+
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-white { background: #e8e8e8; color: #222; }
+.btn-white:hover:not(:disabled) { background: #d0d0d0; }
+.btn-black { background: #333; color: #eee; }
+.btn-black:hover:not(:disabled) { background: #444; }
+.btn-outline {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.result-overlay {
+  display: none; position: absolute; inset: 0;
+  background: rgba(0,0,0,0.7); justify-content: center;
+  align-items: center; flex-direction: column;
+  border-radius: 4px; z-index: 10;
+}
+
+.result-overlay.show { display: flex; }
+.result-overlay .result-text { font-size: 26px; color: #fff; margin-bottom: 12px; }
+.result-overlay button {
+  padding: 8px 24px; font-size: 15px; border: none;
+  border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--accent); color: #fff; font-weight: 600;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="board-panel">
+    <div class="coords-col" id="coordsRank"></div>
+    <div class="board-wrap">
+      <div class="board" id="board"></div>
+      <div class="coords-row" id="coordsFile"></div>
+    </div>
+    <div class="result-overlay" id="resultOverlay">
+      <div class="result-text" id="resultText"></div>
+      <button onclick="location.reload()">新对局</button>
+    </div>
+  </div>
+  <div class="sidebar">
+    <div class="header"><span class="logo">Chess Arena<span>人机对弈</span></span></div>
+    <div class="status" id="status">你的回合 (白方)</div>
+    <div class="history-panel">
+      <h4>走法记录</h4>
+      <div class="history-moves" id="historyMoves"></div>
+    </div>
+    <div class="controls">
+      <button class="btn btn-white" onclick="newGame('w')">新对局 (执白)</button>
+      <button class="btn btn-black" onclick="newGame('b')">新对局 (执黑)</button>
+      <button class="btn btn-outline" onclick="undoMove()">撤销走法</button>
+      <button class="btn btn-outline" onclick="window.location='/match'">引擎对弈</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PIECE_GLYPHS = {
+  K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658', P: '\u2659',
+  k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F'
+};
+
+let state = null, selectedSquare = null, engineThinking = false, pollTimer = null;
+
+function buildCoords() {
+  const re = document.getElementById('coordsRank');
+  re.innerHTML = '';
+  for (let r = 7; r >= 0; r--) re.innerHTML += '<span>' + (r + 1) + '</span>';
+  const fe = document.getElementById('coordsFile');
+  fe.innerHTML = '';
+  for (let c = 0; c < 8; c++) fe.innerHTML += '<span>' + String.fromCharCode(97 + c) + '</span>';
+}
+buildCoords();
+
+function render() {
+  if (!state) return;
+  const board = state.board, el = document.getElementById('board');
+  el.innerHTML = '';
+
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sq = document.createElement('div');
+      sq.className = 'square ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+      sq.dataset.r = r; sq.dataset.c = c;
+
+      const piece = board[r][c];
+      if (piece !== '.') {
+        sq.textContent = PIECE_GLYPHS[piece];
+        const isWhite = piece === piece.toUpperCase();
+        sq.style.color = isWhite ? '#fff' : '#222';
+        if (isWhite) sq.style.textShadow = '-1px -1px 0 #222, 1px -1px 0 #222, -1px 1px 0 #222, 1px 1px 0 #222';
+      }
+
+      if (selectedSquare && selectedSquare.r == r && selectedSquare.c == c)
+        sq.classList.add('selected');
+
+      if (state.lastMove) {
+        const fr = 8 - parseInt(state.lastMove[1]), fc = state.lastMove.charCodeAt(0) - 97;
+        const tr = 8 - parseInt(state.lastMove[3]), tc = state.lastMove.charCodeAt(2) - 97;
+        if ((r === fr && c === fc) || (r === tr && c === tc)) sq.classList.add('last-to');
+      }
+
+      if (selectedSquare && state.legalMoves) {
+        for (const m of state.legalMoves) {
+          const mr1 = 8 - parseInt(m[1]), mc1 = m.charCodeAt(0) - 97;
+          const mr2 = 8 - parseInt(m[3]), mc2 = m.charCodeAt(2) - 97;
+          if (mr1 === selectedSquare.r && mc1 === selectedSquare.c && mr2 === r && mc2 === c) {
+            if (board[r][c] !== '.') sq.classList.add('legal-capture');
+            else sq.classList.add('legal-dot');
+          }
+        }
+      }
+
+      if (state.inCheck) {
+        const kingChar = state.currentTurn === 'w' ? 'K' : 'k';
+        if (board[r][c] === kingChar) sq.classList.add('in-check');
+      }
+
+      sq.onclick = () => onSquareClick(r, c);
+      el.appendChild(sq);
+    }
+  }
+
+  document.getElementById('status').textContent =
+    state.gameOver ? state.gameResult :
+    engineThinking ? '引擎思考中...' :
+    `你的回合 (${state.playerColor === 'w' ? '白方' : '黑方'})`;
+
+  renderHistory();
+
+  const overlay = document.getElementById('resultOverlay');
+  if (state.gameOver) {
+    overlay.classList.add('show');
+    document.getElementById('resultText').textContent = state.gameResult;
+  } else overlay.classList.remove('show');
+}
+
+function renderHistory() {
+  const el = document.getElementById('historyMoves');
+  el.innerHTML = '';
+  const moves = state.moveHistory || [];
+  for (let i = 0; i < moves.length; i++) {
+    const numSpan = document.createElement('span');
+    numSpan.className = 'move-num';
+    numSpan.textContent = (Math.floor(i / 2) + 1) + (i % 2 === 0 ? '.' : '...');
+    el.appendChild(numSpan);
+    const moveSpan = document.createElement('span');
+    moveSpan.textContent = moves[i];
+    if (i === moves.length - 1) moveSpan.classList.add('last-move');
+    el.appendChild(moveSpan);
+  }
+}
+
+function onSquareClick(r, c) {
+  if (state.gameOver || engineThinking) return;
+  if (state.currentTurn !== state.playerColor) return;
+  if (selectedSquare && selectedSquare.r == r && selectedSquare.c == c) {
+    selectedSquare = null; render(); return;
+  }
+
+  const piece = state.board[r][c];
+  if (!selectedSquare) {
+    const isWhite = state.playerColor === 'w';
+    if (piece !== '.' && ((isWhite && piece === piece.toUpperCase()) || (!isWhite && piece === piece.toLowerCase())))
+      { selectedSquare = { r, c }; render(); }
+    return;
+  }
+
+  const from = String.fromCharCode(97 + selectedSquare.c) + (8 - selectedSquare.r);
+  const to = String.fromCharCode(97 + c) + (8 - r);
+  const uci = from + to;
+  const promoMoves = state.legalMoves.filter(m => m.startsWith(uci));
+  const finalUci = promoMoves.length > 0 ? promoMoves[0] : uci;
+
+  if (state.legalMoves.includes(finalUci)) {
+    makeMove(finalUci);
+  } else {
+    const isWhite = state.playerColor === 'w';
+    if (piece !== '.' && ((isWhite && piece === piece.toUpperCase()) || (!isWhite && piece === piece.toLowerCase())))
+      selectedSquare = { r, c };
+    else selectedSquare = null;
+    render();
+  }
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/state');
+    const newState = await res.json();
+    if (JSON.stringify(newState) !== JSON.stringify(state)) {
+      state = newState; engineThinking = state.engineThinking;
+      if (!state.engineThinking) selectedSquare = null;
+      render();
+    }
+  } catch (e) {}
+}
+
+async function makeMove(uci) {
+  engineThinking = true; render();
+  try {
+    const res = await fetch('/api/move', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ move: uci })
+    });
+    state = await res.json();
+    engineThinking = state.engineThinking; selectedSquare = null;
+    render();
+  } catch (e) { engineThinking = false; render(); }
+}
+
+async function newGame(color) {
+  engineThinking = false; selectedSquare = null;
+  try {
+    const res = await fetch('/api/new_game', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerColor: color, moveTime: 3000 })
+    });
+    state = await res.json();
+    engineThinking = state.engineThinking; render();
+  } catch (e) {}
+}
+
+async function undoMove() {
+  try {
+    const res = await fetch('/api/undo', { method: 'POST' });
+    state = await res.json();
+    engineThinking = state.engineThinking; selectedSquare = null;
+    render();
+  } catch (e) {}
+}
+
+(async function init() { await poll(); pollTimer = setInterval(poll, 300); })();
+</script>
+</body>
+</html>

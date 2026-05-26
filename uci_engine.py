@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 import threading
 import time
 import chess
@@ -55,7 +56,11 @@ class UCIEngine:
         print(msg, flush=True)
     
     def _load_opening_book(self):
-        book_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opening_book.json")
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        book_path = os.path.join(base_path, "opening_book.json")
         if self.opening_book.load(book_path):
             pass
 

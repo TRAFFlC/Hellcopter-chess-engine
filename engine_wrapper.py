@@ -46,8 +46,14 @@ def _move_to_uci(move: Move) -> str:
     return uci
 
 
+def _get_base_path() -> str:
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def _get_dll_path() -> str:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base = _get_base_path()
     system = platform.system()
     if system == "Windows":
         dll_name = "engine_core.dll"
@@ -57,7 +63,7 @@ def _get_dll_path() -> str:
         dll_name = "engine_core.dylib"
     else:
         dll_name = "engine_core.so"
-    return os.path.join(script_dir, dll_name)
+    return os.path.join(base, dll_name)
 
 
 def _load_library():
@@ -77,6 +83,10 @@ def _load_library():
     lib.find_best_move_c.argtypes = [
         ctypes.c_char_p,
         ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_int,
+        ctypes.c_int,
         ctypes.c_int,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
@@ -87,6 +97,10 @@ def _load_library():
     lib.find_best_move_smp.argtypes = [
         ctypes.c_char_p,
         ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_double,
+        ctypes.c_int,
+        ctypes.c_int,
         ctypes.c_int,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
@@ -121,6 +135,28 @@ def _load_library():
 
     lib.perft.argtypes = [ctypes.c_char_p, ctypes.c_int]
     lib.perft.restype = ctypes.c_uint64
+
+    lib.add_blunder_entry.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+    ]
+    lib.add_blunder_entry.restype = None
+
+    lib.clear_blunder_memory.argtypes = []
+    lib.clear_blunder_memory.restype = None
+
+    lib.load_blunder_memory.argtypes = [
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.c_int,
+    ]
+    lib.load_blunder_memory.restype = None
 
     try:
         lib.get_engine_version.argtypes = []
@@ -160,7 +196,9 @@ def compute_hash(fen: str) -> int:
 
 
 def search(fen: str, time_limit: float, max_depth: int,
-           position_history: list | None = None, use_smp: bool = False) -> tuple[str, int]:
+           position_history: list | None = None, use_smp: bool = False,
+           time_left: float = 0.0, increment: float = 0.0,
+           moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -174,6 +212,10 @@ def search(fen: str, time_limit: float, max_depth: int,
     move = search_func(
         fen.encode("utf-8"),
         ctypes.c_double(time_limit),
+        ctypes.c_double(time_left),
+        ctypes.c_double(increment),
+        ctypes.c_int(moves_to_go),
+        ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
         ctypes.byref(nodes),
         hist_array,
@@ -190,7 +232,9 @@ def evaluate_fen(fen: str) -> int:
 
 def search_with_score(fen: str, time_limit: float, max_depth: int,
                       position_history: list | None = None,
-                      use_smp: bool = False) -> tuple[str, int, int]:
+                      use_smp: bool = False,
+                      time_left: float = 0.0, increment: float = 0.0,
+                      moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -204,6 +248,10 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
     move = search_func(
         fen.encode("utf-8"),
         ctypes.c_double(time_limit),
+        ctypes.c_double(time_left),
+        ctypes.c_double(increment),
+        ctypes.c_int(moves_to_go),
+        ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
         ctypes.byref(nodes),
         hist_array,
@@ -211,6 +259,15 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
     )
     uci = _move_to_uci(move)
     return uci, move.score, nodes.value
+
+
+def init() -> bool:
+    try:
+        _ensure_loaded()
+        return True
+    except Exception as e:
+        logging.error(f"引擎初始化失败: {e}")
+        return False
 
 
 def is_loaded() -> bool:
@@ -314,6 +371,52 @@ def perft(fen: str, depth: int) -> int:
     """
     _ensure_loaded()
     return _lib.perft(fen.encode("utf-8"), ctypes.c_int(depth))
+
+
+def _algebraic_to_sq(sq_str: str) -> int:
+    file = ord(sq_str[0]) - ord("a")
+    rank = int(sq_str[1]) - 1
+    return rank * 8 + file
+
+
+def add_blunder_entry(fen: str, bad_from: int, bad_to: int,
+                      good_from: int, good_to: int) -> None:
+    _ensure_loaded()
+    _lib.add_blunder_entry(
+        fen.encode("utf-8"),
+        ctypes.c_int(bad_from),
+        ctypes.c_int(bad_to),
+        ctypes.c_int(good_from),
+        ctypes.c_int(good_to),
+    )
+
+
+def clear_blunder_memory() -> None:
+    _ensure_loaded()
+    _lib.clear_blunder_memory()
+
+
+def load_blunder_memory_from_file(blunder_memory_path: str) -> None:
+    import json
+    _ensure_loaded()
+    with open(blunder_memory_path, "r") as f:
+        data = json.load(f)
+    _lib.clear_blunder_memory()
+    for entry in data.get("entries", []):
+        fen = entry["fen"]
+        bad_move = entry["bad_move"]
+        good_move = entry["good_move"]
+        bad_from = _algebraic_to_sq(bad_move[:2])
+        bad_to = _algebraic_to_sq(bad_move[2:4])
+        good_from = _algebraic_to_sq(good_move[:2])
+        good_to = _algebraic_to_sq(good_move[2:4])
+        _lib.add_blunder_entry(
+            fen.encode("utf-8"),
+            ctypes.c_int(bad_from),
+            ctypes.c_int(bad_to),
+            ctypes.c_int(good_from),
+            ctypes.c_int(good_to),
+        )
 
 
 if __name__ == "__main__":

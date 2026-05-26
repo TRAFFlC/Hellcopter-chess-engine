@@ -5493,11 +5493,58 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
     free(s.tt);
 }
 
+static void init_time_manager(TimeManager *tm, double time_left, double inc, int moves_to_go, int move_number, double start_time)
+{
+    tm->remaining = time_left;
+    tm->increment = inc;
+    tm->moves_to_go = moves_to_go;
+    tm->move_number = move_number;
+    tm->start_time = start_time;
+    tm->easy_move_count = 0;
+    tm->prev_best_move_from = -1;
+    tm->prev_best_move_to = -1;
+    tm->stable_count = 0;
+    tm->panic_flag = 0;
+
+    int estimated_moves = 40;
+    if (moves_to_go > 0)
+    {
+        estimated_moves = moves_to_go;
+    }
+    else
+    {
+        if (move_number < 20)
+            estimated_moves = 40 - move_number;
+        else if (move_number < 40)
+            estimated_moves = 30;
+        else if (move_number < 60)
+            estimated_moves = 20;
+        else
+            estimated_moves = 15;
+    }
+
+    tm->optimal_time = time_left / estimated_moves + inc * 0.8;
+    if (tm->optimal_time > time_left * 0.3)
+        tm->optimal_time = time_left * 0.3;
+
+    tm->max_time = time_left * 0.5;
+    if (tm->max_time < tm->optimal_time * 2)
+        tm->max_time = tm->optimal_time * 2;
+    if (tm->max_time > time_left - 0.1)
+        tm->max_time = time_left - 0.1;
+
+    if (move_number <= 10)
+        tm->optimal_time *= 0.7;
+
+    if (tm->optimal_time < 0.05)
+        tm->optimal_time = 0.05;
+}
+
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
 Move
-find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nodes,
+find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
                  U64 *game_history, int game_history_count)
 {
     static int params_loaded = 0;
@@ -5520,9 +5567,30 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     memset(&s, 0, sizeof(SearchState));
     board_from_fen(&s.board, fen);
     s.start_time = get_time();
-    s.time_limit = time_limit;
     s.aborted = 0;
     s.nodes = 0;
+
+    TimeManager tm;
+    if (time_left > 0)
+    {
+        init_time_manager(&tm, time_left, increment, moves_to_go, move_number, s.start_time);
+    }
+    else
+    {
+        tm.optimal_time = time_limit;
+        tm.max_time = time_limit;
+        tm.remaining = time_limit;
+        tm.increment = 0;
+        tm.moves_to_go = 0;
+        tm.move_number = 0;
+        tm.easy_move_count = 0;
+        tm.prev_best_move_from = -1;
+        tm.prev_best_move_to = -1;
+        tm.stable_count = 0;
+        tm.panic_flag = 0;
+        tm.start_time = s.start_time;
+    }
+    s.time_limit = tm.max_time;
     tt_init(&s, 128);
     s.search_history_count = 0;
     s.game_history_count = 0;
@@ -5548,10 +5616,12 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
 
     Move best_move = {0};
     int best_score = -INF;
+    int prev_score = -INF;
     int depth;
     int i;
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
+    int early_terminate = 0;
     for (i = 0; i < MAX_MOVES; i++)
         root_scores[i] = -INF;
 
@@ -5663,8 +5733,8 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
 
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
-        double elapsed = get_time() - s.start_time;
-        if (elapsed >= time_limit * 0.6 && depth > 1)
+        double elapsed = get_time() - tm.start_time;
+        if (elapsed >= tm.optimal_time * 0.6 && depth > 1)
         {
             break;
         }
@@ -5872,13 +5942,49 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
             }
             window = 25;
             s.tt_generation++;
+
+            if (current_best.from == tm.prev_best_move_from && current_best.to == tm.prev_best_move_to)
+            {
+                tm.stable_count++;
+            }
+            else
+            {
+                tm.stable_count = 0;
+            }
+            tm.prev_best_move_from = current_best.from;
+            tm.prev_best_move_to = current_best.to;
+
+            if (tm.stable_count >= 3 && current_score >= prev_score + 10)
+            {
+                double em_elapsed = get_time() - tm.start_time;
+                if (em_elapsed >= tm.optimal_time * 0.3)
+                {
+                    early_terminate = 1;
+                }
+            }
+
+            if (current_score <= prev_score - 20 && depth >= 4)
+            {
+                tm.panic_flag = 1;
+            }
+
+            if (tm.panic_flag)
+            {
+                s.time_limit = tm.max_time;
+            }
+            else
+            {
+                double normal_limit = tm.optimal_time * 1.5;
+                s.time_limit = normal_limit < tm.max_time ? normal_limit : tm.max_time;
+            }
+
+            prev_score = current_score;
         }
 
-        if (s.aborted)
+        if (s.aborted || early_terminate)
             break;
     }
 
-    // Random move selection: among all moves with score within threshold, pick randomly
     if (scores_valid && g_perturb_enabled && legal_moves_count > 1)
     {
         int candidate_count = 0;
@@ -6026,6 +6132,7 @@ typedef struct
     int tt_cluster_count;
     double start_time;
     double time_limit;
+    double time_limit_max;
     int max_depth;
     int thread_id;
     int num_threads;
@@ -6051,7 +6158,7 @@ static void smp_worker_search(LazySMPWorker *w)
     memset(&s, 0, sizeof(SearchState));
     s.board = w->board;
     s.start_time = w->start_time;
-    s.time_limit = w->time_limit;
+    s.time_limit = w->time_limit_max;
     s.aborted = 0;
     s.nodes = 0;
     s.tt = w->shared_tt;
@@ -6200,7 +6307,7 @@ static void *smp_thread_func(void *arg)
 __declspec(dllexport)
 #endif
 Move
-find_best_move_smp(const char *fen, double time_limit, int max_depth,
+find_best_move_smp(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth,
                    int *out_nodes, U64 *game_history, int game_history_count)
 {
     static int params_loaded_smp = 0;
@@ -6227,7 +6334,7 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
 
     if (num_threads == 1)
     {
-        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
                                 game_history, game_history_count);
     }
 
@@ -6239,7 +6346,7 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
     TT_Cluster *shared_tt = (TT_Cluster *)calloc(tt_cluster_count_smp, sizeof(TT_Cluster));
     if (!shared_tt)
     {
-        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
                                 game_history, game_history_count);
     }
 
@@ -6247,12 +6354,27 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
     if (!workers)
     {
         free(shared_tt);
-        return find_best_move_c(fen, time_limit, max_depth, out_nodes,
+        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
                                 game_history, game_history_count);
     }
 
     g_smp_stop_flag = 0;
     double start_time = get_time();
+
+    TimeManager tm_smp;
+    double smp_optimal;
+    double smp_max;
+    if (time_left > 0)
+    {
+        init_time_manager(&tm_smp, time_left, increment, moves_to_go, move_number, start_time);
+        smp_optimal = tm_smp.optimal_time;
+        smp_max = tm_smp.max_time;
+    }
+    else
+    {
+        smp_optimal = time_limit;
+        smp_max = time_limit;
+    }
 
     for (int i = 0; i < num_threads; i++)
     {
@@ -6260,7 +6382,8 @@ find_best_move_smp(const char *fen, double time_limit, int max_depth,
         workers[i].shared_tt = shared_tt;
         workers[i].tt_cluster_count = tt_cluster_count_smp;
         workers[i].start_time = start_time;
-        workers[i].time_limit = time_limit;
+        workers[i].time_limit = smp_optimal;
+        workers[i].time_limit_max = smp_max;
         workers[i].max_depth = max_depth;
         workers[i].thread_id = i;
         workers[i].num_threads = num_threads;

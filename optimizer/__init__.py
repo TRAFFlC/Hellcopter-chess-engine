@@ -8,7 +8,7 @@ __version__ = "1.0.0"
 
 from .config_manager import ConfigManager
 from .match_runner import MatchRunner, MatchResult
-from .tuner import GradientDescentTuner, GridSearchTuner, TUNABLE_PARAMS
+from .tuner import BaseTuner, GradientDescentTuner, GridSearchTuner, TUNABLE_PARAMS
 from .visualizer import Visualizer
 from .build_engine import EngineBuilder
 from .tuning_logger import (
@@ -26,6 +26,7 @@ __all__ = [
     'ConfigManager',
     'MatchRunner',
     'MatchResult',
+    'BaseTuner',
     'GradientDescentTuner',
     'GridSearchTuner',
     'TUNABLE_PARAMS',
