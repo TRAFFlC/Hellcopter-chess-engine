@@ -1339,12 +1339,13 @@ static int has_non_pawn_material(const Board *b, int side)
  * @param move The move to check
  * @return 1 if the move gives check, 0 otherwise
  */
-static int move_gives_check(const Board *b, const Move *move)
+static int move_gives_check(Board *b, const Move *move)
 {
     UndoInfo undo;
-    Board copy = *b;
-    make_move(&copy, move, &undo);
-    return is_check(&copy, b->side_to_move);
+    make_move(b, move, &undo);
+    int result = is_check(b, b->side_to_move);
+    unmake_move(b, move, &undo);
+    return result;
 }
 
 /**
@@ -1373,7 +1374,7 @@ static int is_killer_move(const SearchState *s, const Move *move, int depth)
 }
 
 static int mvv_lva(const Board *b, const Move *m);
-static int move_gives_check(const Board *b, const Move *move);
+static int move_gives_check(Board *b, const Move *move);
 
 static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
                             int move_num, int in_check, int is_endgame)
@@ -2003,6 +2004,8 @@ eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int 
     return score;
 }
 
+#define MAX_SLIDERS 16
+
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
@@ -2280,22 +2283,23 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
     return count;
 }
 
-int generate_legal_moves(const Board *b, Move *moves)
+int generate_legal_moves(Board *b, Move *moves)
 {
     ensure_engine_tables_initialized();
     Move pseudo[MAX_MOVES];
     int n = generate_pseudo_legal_moves(b, pseudo);
     int count = 0;
     int i;
+    int moving_side = b->side_to_move;
     for (i = 0; i < n; i++)
     {
         UndoInfo undo;
-        Board copy = *b;
-        make_move(&copy, &pseudo[i], &undo);
-        if (!is_check(&copy, b->side_to_move))
+        make_move(b, &pseudo[i], &undo);
+        if (!is_check(b, moving_side))
         {
             moves[count++] = pseudo[i];
         }
+        unmake_move(b, &pseudo[i], &undo);
     }
     return count;
 }
@@ -2864,32 +2868,53 @@ evaluate(Board *b)
 
     int score = 0;
     int side, pt;
-    int npm_w = 0, npm_b = 0;
+    int npm_w = b->npm[0], npm_b = b->npm[1];
+
+    int phase = b->phase;
+
+    int phase_weight = phase * 256 / 24;
+
+    U64 occupied = all_pieces(b);
+    U64 bishop_atk[2][MAX_SLIDERS];
+    U64 rook_atk[2][MAX_SLIDERS];
+    U64 queen_batk[2][MAX_SLIDERS];
+    U64 queen_ratk[2][MAX_SLIDERS];
+    int bishop_sqs[2][MAX_SLIDERS];
+    int rook_sqs[2][MAX_SLIDERS];
+    int queen_sqs[2][MAX_SLIDERS];
+    int nb[2] = {0}, nr[2] = {0}, nq[2] = {0};
 
     for (side = 0; side < 2; side++)
     {
-        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        U64 bb = b->pieces[side][BISHOP];
+        while (bb)
         {
-            int c = count_bits(b->pieces[side][pt]);
-            if (side == WHITE)
-                npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                             : pt == ROOK     ? 5
-                                                              : 9);
-            else
-                npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                             : pt == ROOK     ? 5
-                                                              : 9);
+            int sq = lsb_index(bb);
+            bb &= bb - 1;
+            bishop_sqs[side][nb[side]] = sq;
+            bishop_atk[side][nb[side]] = sliding_attacks_bishop(sq, occupied);
+            nb[side]++;
+        }
+        bb = b->pieces[side][ROOK];
+        while (bb)
+        {
+            int sq = lsb_index(bb);
+            bb &= bb - 1;
+            rook_sqs[side][nr[side]] = sq;
+            rook_atk[side][nr[side]] = sliding_attacks_rook(sq, occupied);
+            nr[side]++;
+        }
+        bb = b->pieces[side][QUEEN];
+        while (bb)
+        {
+            int sq = lsb_index(bb);
+            bb &= bb - 1;
+            queen_sqs[side][nq[side]] = sq;
+            queen_batk[side][nq[side]] = sliding_attacks_bishop(sq, occupied);
+            queen_ratk[side][nq[side]] = sliding_attacks_rook(sq, occupied);
+            nq[side]++;
         }
     }
-
-    int phase = (npm_w + npm_b);
-    if (phase > 31)
-        phase = 31;
-    phase = phase * 24 / 31;
-    if (phase > 24)
-        phase = 24;
-
-    int phase_weight = phase * 256 / 24;
 
     for (side = 0; side < 2; side++)
     {
@@ -2920,7 +2945,6 @@ evaluate(Board *b)
     }
 
     {
-        U64 occupied = all_pieces(b);
         for (side = 0; side < 2; side++)
         {
             int sign = (side == WHITE) ? 1 : -1;
@@ -2939,43 +2963,43 @@ evaluate(Board *b)
                 score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
             }
 
-            U64 bishops = b->pieces[side][BISHOP];
-            while (bishops)
             {
-                int sq = lsb_index(bishops);
-                bishops &= bishops - 1;
-                int mob = popcount(sliding_attacks_bishop(sq, occupied) & ~own_pieces);
-                if (mob > 13)
-                    mob = 13;
-                int mg_score = bishop_mob_mg[mob];
-                int eg_score = bishop_mob_eg[mob];
-                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                int bi;
+                for (bi = 0; bi < nb[side]; bi++)
+                {
+                    int mob = popcount(bishop_atk[side][bi] & ~own_pieces);
+                    if (mob > 13)
+                        mob = 13;
+                    int mg_score = bishop_mob_mg[mob];
+                    int eg_score = bishop_mob_eg[mob];
+                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                }
             }
 
-            U64 rooks = b->pieces[side][ROOK];
-            while (rooks)
             {
-                int sq = lsb_index(rooks);
-                rooks &= rooks - 1;
-                int mob = popcount(sliding_attacks_rook(sq, occupied) & ~own_pieces);
-                if (mob > 14)
-                    mob = 14;
-                int mg_score = rook_mob_mg[mob];
-                int eg_score = rook_mob_eg[mob];
-                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                int ri;
+                for (ri = 0; ri < nr[side]; ri++)
+                {
+                    int mob = popcount(rook_atk[side][ri] & ~own_pieces);
+                    if (mob > 14)
+                        mob = 14;
+                    int mg_score = rook_mob_mg[mob];
+                    int eg_score = rook_mob_eg[mob];
+                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                }
             }
 
-            U64 queens = b->pieces[side][QUEEN];
-            while (queens)
             {
-                int sq = lsb_index(queens);
-                queens &= queens - 1;
-                int mob = popcount((sliding_attacks_bishop(sq, occupied) | sliding_attacks_rook(sq, occupied)) & ~own_pieces);
-                if (mob > 27)
-                    mob = 27;
-                int mg_score = queen_mob_mg[mob];
-                int eg_score = queen_mob_eg[mob];
-                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                int qi;
+                for (qi = 0; qi < nq[side]; qi++)
+                {
+                    int mob = popcount((queen_batk[side][qi] | queen_ratk[side][qi]) & ~own_pieces);
+                    if (mob > 27)
+                        mob = 27;
+                    int mg_score = queen_mob_mg[mob];
+                    int eg_score = queen_mob_eg[mob];
+                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                }
             }
         }
     }
@@ -3012,10 +3036,12 @@ evaluate(Board *b)
         U64 rooks = b->pieces[side][ROOK];
         U64 own_pawns = b->pieces[side][PAWN];
         U64 enemy_pawns = b->pieces[1 - side][PAWN];
-        while (rooks)
+
+        U64 temp_rooks = rooks;
+        while (temp_rooks)
         {
-            int sq = lsb_index(rooks);
-            rooks &= rooks - 1;
+            int sq = lsb_index(temp_rooks);
+            temp_rooks &= temp_rooks - 1;
             int f = file_of(sq);
             U64 file_mask = 0x0101010101010101ULL << f;
             int own_pawns_on_file = count_bits(own_pawns & file_mask);
@@ -3030,8 +3056,7 @@ evaluate(Board *b)
             }
         }
 
-        U64 own_rooks = b->pieces[side][ROOK];
-        if (own_rooks)
+        if (rooks)
         {
             int f;
             for (f = 0; f < 8; f++)
@@ -3039,14 +3064,14 @@ evaluate(Board *b)
                 U64 file_mask = 0x0101010101010101ULL << f;
                 if (!(own_pawns & file_mask) && !(enemy_pawns & file_mask))
                 {
-                    if (!(own_rooks & file_mask))
+                    if (!(rooks & file_mask))
                     {
                         score += sign * ROOK_POTENTIAL_OPEN_FILE;
                     }
                 }
                 else if (!(own_pawns & file_mask) && (enemy_pawns & file_mask))
                 {
-                    if (!(own_rooks & file_mask))
+                    if (!(rooks & file_mask))
                     {
                         score += sign * ROOK_POTENTIAL_SEMI_OPEN;
                     }
@@ -3132,39 +3157,39 @@ evaluate(Board *b)
             }
         }
 
-        U64 opp_bishops = b->pieces[opp][BISHOP];
-        while (opp_bishops)
         {
-            int sq = lsb_index(opp_bishops);
-            opp_bishops &= opp_bishops - 1;
-            U64 attacks = sliding_attacks_bishop(sq, all_pieces(b)) & king_zone;
-            if (attacks)
+            int bi;
+            for (bi = 0; bi < nb[opp]; bi++)
             {
-                attack_units += 2 + count_bits(attacks);
+                U64 attacks = bishop_atk[opp][bi] & king_zone;
+                if (attacks)
+                {
+                    attack_units += 2 + count_bits(attacks);
+                }
             }
         }
 
-        U64 opp_rooks = b->pieces[opp][ROOK];
-        while (opp_rooks)
         {
-            int sq = lsb_index(opp_rooks);
-            opp_rooks &= opp_rooks - 1;
-            U64 attacks = sliding_attacks_rook(sq, all_pieces(b)) & king_zone;
-            if (attacks)
+            int ri;
+            for (ri = 0; ri < nr[opp]; ri++)
             {
-                attack_units += 3 + count_bits(attacks) * 2;
+                U64 attacks = rook_atk[opp][ri] & king_zone;
+                if (attacks)
+                {
+                    attack_units += 3 + count_bits(attacks) * 2;
+                }
             }
         }
 
-        U64 opp_queens = b->pieces[opp][QUEEN];
-        while (opp_queens)
         {
-            int sq = lsb_index(opp_queens);
-            opp_queens &= opp_queens - 1;
-            U64 attacks = (sliding_attacks_bishop(sq, all_pieces(b)) | sliding_attacks_rook(sq, all_pieces(b))) & king_zone;
-            if (attacks)
+            int qi;
+            for (qi = 0; qi < nq[opp]; qi++)
             {
-                attack_units += 5 + count_bits(attacks) * 2;
+                U64 attacks = (queen_batk[opp][qi] | queen_ratk[opp][qi]) & king_zone;
+                if (attacks)
+                {
+                    attack_units += 5 + count_bits(attacks) * 2;
+                }
             }
         }
 
@@ -3256,27 +3281,20 @@ evaluate(Board *b)
             opp_knights &= opp_knights - 1;
             enemy_attacks |= knight_attacks[sq];
         }
-        U64 opp_bishops = b->pieces[opp][BISHOP];
-        U64 occupied = all_pieces(b);
-        while (opp_bishops)
         {
-            int sq = lsb_index(opp_bishops);
-            opp_bishops &= opp_bishops - 1;
-            enemy_attacks |= sliding_attacks_bishop(sq, occupied);
+            int bi;
+            for (bi = 0; bi < nb[opp]; bi++)
+                enemy_attacks |= bishop_atk[opp][bi];
         }
-        U64 opp_rooks = b->pieces[opp][ROOK];
-        while (opp_rooks)
         {
-            int sq = lsb_index(opp_rooks);
-            opp_rooks &= opp_rooks - 1;
-            enemy_attacks |= sliding_attacks_rook(sq, occupied);
+            int ri;
+            for (ri = 0; ri < nr[opp]; ri++)
+                enemy_attacks |= rook_atk[opp][ri];
         }
-        U64 opp_queens = b->pieces[opp][QUEEN];
-        while (opp_queens)
         {
-            int sq = lsb_index(opp_queens);
-            opp_queens &= opp_queens - 1;
-            enemy_attacks |= sliding_attacks_bishop(sq, occupied) | sliding_attacks_rook(sq, occupied);
+            int qi;
+            for (qi = 0; qi < nq[opp]; qi++)
+                enemy_attacks |= queen_batk[opp][qi] | queen_ratk[opp][qi];
         }
         enemy_attacks |= king_attacks[b->king_sq[opp]];
 
@@ -3362,22 +3380,33 @@ evaluate(Board *b)
             }
             if (blocked)
             {
-                U64 enemy_rq = b->pieces[opp][ROOK] | b->pieces[opp][QUEEN];
                 U64 back_rank = (side == WHITE) ? rank_masks[0] : rank_masks[7];
                 U64 second_rank = (side == WHITE) ? rank_masks[1] : rank_masks[6];
-                U64 occ = all_pieces(b);
                 U64 rq_on_back = 0;
-                U64 temp = enemy_rq;
-                while (temp)
                 {
-                    int rsq = lsb_index(temp);
-                    temp &= temp - 1;
-                    int rr = rank_of(rsq);
-                    if ((side == WHITE && rr == 7) || (side == BLACK && rr == 0))
+                    int ri;
+                    for (ri = 0; ri < nr[opp]; ri++)
                     {
-                        U64 attacks = sliding_attacks_rook(rsq, occ);
-                        if (attacks & (back_rank | second_rank))
-                            rq_on_back |= (1ULL << rsq);
+                        int rsq = rook_sqs[opp][ri];
+                        int rr = rank_of(rsq);
+                        if ((side == WHITE && rr == 7) || (side == BLACK && rr == 0))
+                        {
+                            if (rook_atk[opp][ri] & (back_rank | second_rank))
+                                rq_on_back |= (1ULL << rsq);
+                        }
+                    }
+                }
+                {
+                    int qi;
+                    for (qi = 0; qi < nq[opp]; qi++)
+                    {
+                        int rsq = queen_sqs[opp][qi];
+                        int rr = rank_of(rsq);
+                        if ((side == WHITE && rr == 7) || (side == BLACK && rr == 0))
+                        {
+                            if (queen_ratk[opp][qi] & (back_rank | second_rank))
+                                rq_on_back |= (1ULL << rsq);
+                        }
                     }
                 }
                 if (rq_on_back)
@@ -3527,13 +3556,32 @@ evaluate(Board *b)
             int sq = lsb_index(queens);
             queens &= queens - 1;
             int attacked_by_lesser = 0;
-            U64 occ = all_pieces(b);
             if (b->pieces[opp][KNIGHT] && (knight_attacks[sq] & b->pieces[opp][KNIGHT]))
                 attacked_by_lesser = 1;
-            if (b->pieces[opp][BISHOP] && (sliding_attacks_bishop(sq, occ) & b->pieces[opp][BISHOP]))
-                attacked_by_lesser = 1;
-            if (b->pieces[opp][ROOK] && (sliding_attacks_rook(sq, occ) & b->pieces[opp][ROOK]))
-                attacked_by_lesser = 1;
+            if (!attacked_by_lesser)
+            {
+                int bi;
+                for (bi = 0; bi < nb[opp]; bi++)
+                {
+                    if (bishop_atk[opp][bi] & (1ULL << sq))
+                    {
+                        attacked_by_lesser = 1;
+                        break;
+                    }
+                }
+            }
+            if (!attacked_by_lesser)
+            {
+                int ri;
+                for (ri = 0; ri < nr[opp]; ri++)
+                {
+                    if (rook_atk[opp][ri] & (1ULL << sq))
+                    {
+                        attacked_by_lesser = 1;
+                        break;
+                    }
+                }
+            }
             if (attacked_by_lesser)
             {
                 if (!defended_by_own_pawn || !(own_pawn_defense & (1ULL << sq)))
@@ -3549,11 +3597,20 @@ evaluate(Board *b)
             int sq = lsb_index(rooks);
             rooks &= rooks - 1;
             int rook_attacked_by_lesser = 0;
-            U64 occ = all_pieces(b);
             if (b->pieces[opp][KNIGHT] && (knight_attacks[sq] & b->pieces[opp][KNIGHT]))
                 rook_attacked_by_lesser = 1;
-            if (b->pieces[opp][BISHOP] && (sliding_attacks_bishop(sq, occ) & b->pieces[opp][BISHOP]))
-                rook_attacked_by_lesser = 1;
+            if (!rook_attacked_by_lesser)
+            {
+                int bi;
+                for (bi = 0; bi < nb[opp]; bi++)
+                {
+                    if (bishop_atk[opp][bi] & (1ULL << sq))
+                    {
+                        rook_attacked_by_lesser = 1;
+                        break;
+                    }
+                }
+            }
             if (rook_attacked_by_lesser)
             {
                 if (!defended_by_own_pawn || !(own_pawn_defense & (1ULL << sq)))
@@ -3740,39 +3797,6 @@ evaluate(Board *b)
     }
 
     {
-        int stm = b->side_to_move;
-        int my_king_sq = -1;
-        U64 my_king_bb = b->pieces[stm][KING];
-        if (my_king_bb)
-            my_king_sq = lsb_index(my_king_bb);
-
-        if (my_king_sq >= 0 && is_check(b, stm))
-        {
-            Move escape_moves[MAX_MOVES];
-            int n_escape = generate_pseudo_legal_moves(b, escape_moves);
-            int legal_escape = 0;
-            int ei;
-            for (ei = 0; ei < n_escape; ei++)
-            {
-                UndoInfo undo;
-                Board copy = *b;
-                make_move(&copy, &escape_moves[ei], &undo);
-                if (!is_check(&copy, stm))
-                    legal_escape++;
-            }
-            if (legal_escape == 0)
-            {
-                score = (stm == WHITE) ? -MATE_SCORE + 100 : MATE_SCORE - 100;
-            }
-            else if (legal_escape <= 2)
-            {
-                int penalty = 200 - legal_escape * 50;
-                score += (stm == WHITE) ? -penalty : penalty;
-            }
-        }
-    }
-
-    {
         int tempo_mg = 12;
         int tempo_eg = 5;
         int tempo = (tempo_mg * (256 - phase_weight) + tempo_eg * phase_weight) / 256;
@@ -3788,7 +3812,7 @@ evaluate(Board *b)
     return score;
 }
 
-int is_game_over(const Board *b)
+int is_game_over(Board *b)
 {
     Move moves[MAX_MOVES];
     int n = generate_legal_moves(b, moves);
@@ -4622,17 +4646,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
 
     int is_endgame_qs = 0;
     {
-        int npm = 0;
-        int pt;
-        for (pt = KNIGHT; pt <= QUEEN; pt++)
-        {
-            npm += count_bits(s->board.pieces[WHITE][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                                                            : pt == ROOK     ? 5
-                                                                                             : 9);
-            npm += count_bits(s->board.pieces[BLACK][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                                                            : pt == ROOK     ? 5
-                                                                                             : 9);
-        }
+        int npm = s->board.npm[0] + s->board.npm[1];
         if (npm <= ENDGAME_PHASE_THRESHOLD)
             is_endgame_qs = 1;
     }
@@ -4793,21 +4807,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     int is_endgame = 0;
     {
-        int npm_w = 0, npm_b = 0;
-        int pt;
-        for (pt = KNIGHT; pt <= QUEEN; pt++)
-        {
-            int c = count_bits(s->board.pieces[WHITE][pt]);
-            npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                         : pt == ROOK     ? 5
-                                                          : 9);
-            c = count_bits(s->board.pieces[BLACK][pt]);
-            npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
-                                         : pt == ROOK     ? 5
-                                                          : 9);
-        }
-        int phase = npm_w + npm_b;
-        if (phase <= ENDGAME_PHASE_THRESHOLD)
+        int npm = s->board.npm[0] + s->board.npm[1];
+        if (npm <= ENDGAME_PHASE_THRESHOLD)
             is_endgame = 1;
     }
     /*
@@ -4974,9 +4975,18 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     if (depth >= NULL_MOVE_MIN_DEPTH && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move))
     {
-        Board saved = *b;
+        int saved_side = b->side_to_move;
+        int saved_ep = b->en_passant;
+        U64 saved_hash = b->hash;
+        U64 saved_pawn_hash = b->pawn_hash;
+        int saved_eval_score = b->eval_score;
+        int saved_halfmove = b->halfmove_clock;
+        if (saved_ep >= 0 && saved_ep < 64)
+            b->hash ^= zobrist_table[12 * 64 + 1 + 4 + saved_ep];
+        b->hash ^= zobrist_table[12 * 64];
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
+        b->eval_score = EVAL_SCORE_INVALID;
         int R = 3 + depth / 6;
         int static_eval_nm = evaluate(&s->board);
         if (s->board.side_to_move == BLACK)
@@ -4990,7 +5000,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (R < 1)
             R = 1;
         int null_score = -negamax(s, depth - (R + 1), -beta, -beta + 1, 0, ply + 1);
-        *b = saved;
+        b->side_to_move = saved_side;
+        b->en_passant = saved_ep;
+        b->hash = saved_hash;
+        b->pawn_hash = saved_pawn_hash;
+        b->eval_score = saved_eval_score;
+        b->halfmove_clock = saved_halfmove;
         if (s->aborted)
         {
             s->search_history_count = saved_history_count;
@@ -5506,35 +5521,37 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
     tm->stable_count = 0;
     tm->panic_flag = 0;
 
-    int estimated_moves = 40;
+    int estimated_moves = 25;
     if (moves_to_go > 0)
     {
-        estimated_moves = moves_to_go;
+        estimated_moves = moves_to_go + 5;
     }
     else
     {
-        if (move_number < 20)
-            estimated_moves = 40 - move_number;
+        if (move_number < 10)
+            estimated_moves = 30 - move_number / 2;
+        else if (move_number < 20)
+            estimated_moves = 25;
         else if (move_number < 40)
-            estimated_moves = 30;
-        else if (move_number < 60)
             estimated_moves = 20;
-        else
+        else if (move_number < 60)
             estimated_moves = 15;
+        else
+            estimated_moves = 10;
     }
 
-    tm->optimal_time = time_left / estimated_moves + inc * 0.8;
-    if (tm->optimal_time > time_left * 0.3)
-        tm->optimal_time = time_left * 0.3;
+    tm->optimal_time = time_left / estimated_moves + inc * 0.85;
+    if (tm->optimal_time > time_left * 0.4)
+        tm->optimal_time = time_left * 0.4;
 
-    tm->max_time = time_left * 0.5;
-    if (tm->max_time < tm->optimal_time * 2)
-        tm->max_time = tm->optimal_time * 2;
+    tm->max_time = time_left * 0.6;
+    if (tm->max_time < tm->optimal_time * 3)
+        tm->max_time = tm->optimal_time * 3;
     if (tm->max_time > time_left - 0.1)
         tm->max_time = time_left - 0.1;
 
     if (move_number <= 10)
-        tm->optimal_time *= 0.7;
+        tm->optimal_time *= 0.85;
 
     if (tm->optimal_time < 0.05)
         tm->optimal_time = 0.05;
@@ -5573,7 +5590,18 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     TimeManager tm;
     if (time_left > 0)
     {
-        init_time_manager(&tm, time_left, increment, moves_to_go, move_number, s.start_time);
+        tm.optimal_time = time_limit;
+        tm.max_time = time_left;
+        tm.remaining = time_left;
+        tm.increment = 0;
+        tm.moves_to_go = 0;
+        tm.move_number = 0;
+        tm.easy_move_count = 0;
+        tm.prev_best_move_from = -1;
+        tm.prev_best_move_to = -1;
+        tm.stable_count = 0;
+        tm.panic_flag = 0;
+        tm.start_time = s.start_time;
     }
     else
     {
@@ -5734,7 +5762,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
         double elapsed = get_time() - tm.start_time;
-        if (elapsed >= tm.optimal_time * 0.6 && depth > 1)
+        if (elapsed >= tm.optimal_time * 0.85 && depth > 1)
         {
             break;
         }
@@ -5861,6 +5889,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 {
                     alpha = -INF;
                     beta = INF;
+                    break;
                 }
             }
         }
@@ -5974,8 +6003,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
             }
             else
             {
-                double normal_limit = tm.optimal_time * 1.5;
-                s.time_limit = normal_limit < tm.max_time ? normal_limit : tm.max_time;
+                s.time_limit = tm.optimal_time * 1.5 < tm.max_time ? tm.optimal_time * 1.5 : tm.max_time;
             }
 
             prev_score = current_score;
@@ -6366,9 +6394,8 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     double smp_max;
     if (time_left > 0)
     {
-        init_time_manager(&tm_smp, time_left, increment, moves_to_go, move_number, start_time);
-        smp_optimal = tm_smp.optimal_time;
-        smp_max = tm_smp.max_time;
+        smp_optimal = time_limit;
+        smp_max = time_left;
     }
     else
     {

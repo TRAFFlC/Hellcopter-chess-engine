@@ -132,11 +132,11 @@ typedef struct
 
 void board_from_fen(Board *b, const char *fen);
 void board_to_fen(const Board *b, char *fen, size_t fen_size);
-int generate_legal_moves(const Board *b, Move *moves);
+int generate_legal_moves(Board *b, Move *moves);
 void make_move(Board *b, const Move *m, UndoInfo *undo);
 void unmake_move(Board *b, const Move *m, const UndoInfo *undo);
 int is_check(const Board *b, int side);
-int is_game_over(const Board *b);
+int is_game_over(Board *b);
 int evaluate(Board *b);
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth);
 int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int ply);

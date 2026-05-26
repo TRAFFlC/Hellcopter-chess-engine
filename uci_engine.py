@@ -142,22 +142,32 @@ class UCIEngine:
         while i < len(tokens):
             t = tokens[i]
             if t in ("wtime", "btime", "winc", "binc", "depth",
-                     "movetime", "movestime") and i + 1 < len(tokens):
+                     "movetime", "movestime", "movestogo") and i + 1 < len(tokens):
                 params[t] = int(tokens[i + 1])
                 i += 2
             else:
                 i += 1
 
         infinite = "infinite" in tokens
-        time_limit = self._compute_time(params)
+        optimal_time, max_time = self._compute_time(params)
         max_depth = params.get("depth", 100)
+
+        time_left_for_engine = 0.0
+        increment_for_engine = 0.0
+        moves_to_go_for_engine = 0
+        move_number_for_engine = 0
+
+        if not infinite and "movetime" not in params and "movestime" not in params:
+            time_left_for_engine = max_time
 
         board_copy = self.board.copy()
         hist_copy = list(self.position_history)
 
         self.search_thread = threading.Thread(
             target=self._search_worker,
-            args=(board_copy, hist_copy, time_limit, max_depth, infinite),
+            args=(board_copy, hist_copy, optimal_time, max_depth, infinite,
+                  time_left_for_engine, increment_for_engine,
+                  moves_to_go_for_engine, move_number_for_engine),
             daemon=True,
         )
         self.search_thread.start()
@@ -165,7 +175,8 @@ class UCIEngine:
     def _compute_time(self, params):
         movetime = params.get("movetime") or params.get("movestime")
         if movetime is not None:
-            return movetime / 1000.0
+            optimal = movetime / 1000.0
+            return optimal, optimal
 
         wtime = params.get("wtime")
         btime = params.get("btime")
@@ -179,7 +190,7 @@ class UCIEngine:
             inc = binc / 1000.0
             remaining = btime / 1000.0
         else:
-            return 2.0
+            return 2.0, 2.0
 
         move_num = self.board.fullmove_number
         
@@ -196,19 +207,22 @@ class UCIEngine:
             estimated_moves_left = max(10, 60 - move_num)
             time_fraction = 1.2
 
-        time_limit = remaining / estimated_moves_left + inc * 0.85
-        time_limit = min(time_limit, remaining * 0.5)
-        time_limit *= time_fraction
+        optimal = remaining / estimated_moves_left + inc * 0.85
+        optimal = min(optimal, remaining * 0.5)
+        optimal *= time_fraction
 
         if inc > 0:
-            time_limit = max(time_limit, inc * 0.9)
+            optimal = max(optimal, inc * 0.9)
 
         if remaining < inc * 3 and inc > 0:
-            time_limit = min(time_limit, inc * 0.95)
+            optimal = min(optimal, inc * 0.95)
 
-        return max(0.05, time_limit)
+        optimal = max(0.05, optimal)
+        max_time = min(remaining * 0.6, optimal * 5)
+        return optimal, max_time
 
-    def _search_worker(self, board, pos_hist, time_limit, max_depth, infinite):
+    def _search_worker(self, board, pos_hist, time_limit, max_depth, infinite,
+                        time_left=0.0, increment=0.0, moves_to_go=0, move_number=0):
         if infinite:
             search_time = 2.0
         else:
@@ -218,7 +232,9 @@ class UCIEngine:
         fen = board.fen()
         try:
             uci_move, score, nodes = engine_wrapper.search_with_score(
-                fen, search_time, max_depth, position_history=pos_hist
+                fen, search_time, max_depth, position_history=pos_hist,
+                time_left=time_left, increment=increment,
+                moves_to_go=moves_to_go, move_number=move_number
             )
         except Exception:
             uci_move, score, nodes = None, 0, 0
