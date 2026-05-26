@@ -40,7 +40,32 @@ typedef struct
     int halfmove_clock;
     int fullmove_number;
     int eval_score;
+    int mailbox[64];
+    U64 hash;
+    U64 pawn_hash;
+    int king_sq[2];
+    int phase;
+    int npm[2];
 } Board;
+
+typedef struct
+{
+    int captured_piece;
+    int castling_rights;
+    int en_passant;
+    int halfmove_clock;
+    U64 hash;
+    U64 pawn_hash;
+    int eval_score;
+    int phase;
+    int king_sq[2];
+    int npm[2];
+    int mailbox_from;
+    int mailbox_to;
+    int mailbox_ep;
+    int ep_capture_sq;
+    int fullmove_number;
+} UndoInfo;
 
 typedef struct
 {
@@ -86,8 +111,8 @@ typedef struct
 void board_from_fen(Board *b, const char *fen);
 void board_to_fen(const Board *b, char *fen, size_t fen_size);
 int generate_legal_moves(const Board *b, Move *moves);
-void make_move(Board *b, const Move *m);
-void unmake_move(Board *b, const Move *m, const Board *old);
+void make_move(Board *b, const Move *m, UndoInfo *undo);
+void unmake_move(Board *b, const Move *m, const UndoInfo *undo);
 int is_check(const Board *b, int side);
 int is_game_over(const Board *b);
 int evaluate(Board *b);
@@ -97,7 +122,6 @@ Move find_best_move_c(const char *fen, double time_limit, int max_depth, int *ou
                       U64 *game_history, int game_history_count);
 Move find_best_move_smp(const char *fen, double time_limit, int max_depth, int *out_nodes,
                         U64 *game_history, int game_history_count);
-U64 compute_hash(const Board *b);
 U64 compute_hash_from_fen(const char *fen);
 int popcount(U64 x);
 U64 get_attacks(const Board *b, int sq, int side);
@@ -136,7 +160,18 @@ typedef struct
 /* Get Razoring statistics from last search */
 Razoring_Stats get_razoring_stats(void);
 
+/* Get last search info (0=depth, 1=nodes, 2=score) */
+int get_last_search_info(int what);
+
 /* Perft function for move generation testing */
 U64 perft(const char *fen, int depth);
+
+/* Global abort flag for stopping search externally */
+void set_engine_abort(int flag);
+int get_engine_abort(void);
+
+/* Info callback for iterative deepening output */
+typedef void (*EngineInfoCallback)(int depth, int score, int nodes, int time_ms, const char *pv_str);
+void set_engine_info_callback(EngineInfoCallback cb);
 
 #endif

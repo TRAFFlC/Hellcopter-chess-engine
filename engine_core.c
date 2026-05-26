@@ -97,7 +97,33 @@ static U64 king_attacks[64];
 static U64 zobrist_table[12 * 64 + 1 + 4 + 64];
 static int zobrist_initialized = 0;
 static int attacks_initialized = 0;
+
+#define MAX_BLUNDER_ENTRIES 10000
+
+typedef struct
+{
+    U64 zobrist_key;
+    int bad_from;
+    int bad_to;
+    int good_from;
+    int good_to;
+} BlunderEntry;
+
+static BlunderEntry g_blunder_memory[MAX_BLUNDER_ENTRIES];
+static int g_blunder_count = 0;
+static int g_blunder_memory_loaded = 0;
+
+volatile int g_engine_abort_flag = 0;
+
+static EngineInfoCallback g_info_callback = NULL;
+
+void set_engine_info_callback(EngineInfoCallback cb)
+{
+    g_info_callback = cb;
+}
+
 static void init_zobrist(void);
+static U64 compute_hash(const Board *b);
 
 static int rank_of(int sq) { return sq >> 3; }
 static int file_of(int sq) { return sq & 7; }
@@ -179,7 +205,8 @@ static U64 slow_bishop_attacks(int sq, U64 occupied)
     return attacks;
 }
 
-typedef struct {
+typedef struct
+{
     U64 mask;
     U64 magic;
     int shift;
@@ -1197,24 +1224,24 @@ load_params_from_file(const char *filename)
     g_runtime_params.loaded = 1;
     free(json);
 
-    printf("\n=== PARAMETERS LOADED SUCCESSFULLY ===\n");
-    printf("Configuration file: %s\n", filename);
-    printf("Piece values: P=%d N=%d B=%d R=%d Q=%d K=%d\n",
-           g_runtime_params.piece_values[1],
-           g_runtime_params.piece_values[2],
-           g_runtime_params.piece_values[3],
-           g_runtime_params.piece_values[4],
-           g_runtime_params.piece_values[5],
-           g_runtime_params.piece_values[6]);
-    printf("Search params: LMR=%s Futility=%s Razoring=%s\n",
-           g_runtime_params.lmr_enabled ? "enabled" : "disabled",
-           g_runtime_params.futility_enabled ? "enabled" : "disabled",
-           g_runtime_params.razoring_enabled ? "enabled" : "disabled");
-    printf("Threading: %s (%d threads)\n",
-           g_runtime_params.threading_enabled ? "enabled" : "disabled",
-           g_runtime_params.num_threads);
-    printf("Validation: %d error(s), %d warning(s)\n",
-           validation_errors, validation_warnings);
+    fprintf(stderr, "\n=== PARAMETERS LOADED SUCCESSFULLY ===\n");
+    fprintf(stderr, "Configuration file: %s\n", filename);
+    fprintf(stderr, "Piece values: P=%d N=%d B=%d R=%d Q=%d K=%d\n",
+            g_runtime_params.piece_values[1],
+            g_runtime_params.piece_values[2],
+            g_runtime_params.piece_values[3],
+            g_runtime_params.piece_values[4],
+            g_runtime_params.piece_values[5],
+            g_runtime_params.piece_values[6]);
+    fprintf(stderr, "Search params: LMR=%s Futility=%s Razoring=%s\n",
+            g_runtime_params.lmr_enabled ? "enabled" : "disabled",
+            g_runtime_params.futility_enabled ? "enabled" : "disabled",
+            g_runtime_params.razoring_enabled ? "enabled" : "disabled");
+    fprintf(stderr, "Threading: %s (%d threads)\n",
+            g_runtime_params.threading_enabled ? "enabled" : "disabled",
+            g_runtime_params.num_threads);
+    fprintf(stderr, "Validation: %d error(s), %d warning(s)\n",
+            validation_errors, validation_warnings);
 
     return 1;
 }
@@ -1274,8 +1301,9 @@ static int has_non_pawn_material(const Board *b, int side)
  */
 static int move_gives_check(const Board *b, const Move *move)
 {
+    UndoInfo undo;
     Board copy = *b;
-    make_move(&copy, move);
+    make_move(&copy, move, &undo);
     return is_check(&copy, b->side_to_move);
 }
 
@@ -1308,7 +1336,7 @@ static int mvv_lva(const Board *b, const Move *m);
 static int move_gives_check(const Board *b, const Move *move);
 
 static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
-                            int move_num, int in_check)
+                            int move_num, int in_check, int is_endgame)
 {
     if (!g_runtime_params.lmr_enabled)
         return 0;
@@ -1316,7 +1344,10 @@ static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
     if (depth < g_runtime_params.lmr_min_depth)
         return 0;
 
-    if (move_num < g_runtime_params.lmr_move_threshold)
+    int threshold = g_runtime_params.lmr_move_threshold;
+    if (is_endgame)
+        threshold += 1;
+    if (move_num < threshold)
         return 0;
 
     if (in_check)
@@ -1337,7 +1368,7 @@ static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
     return 1;
 }
 
-static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_endgame)
 {
     if (depth < 1 || move_num < 1)
         return 0;
@@ -1365,6 +1396,9 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
     int history_value = s->history[move->from][move->to];
     if (history_value > 500)
         reduction = reduction > 1 ? reduction - 1 : 0;
+
+    if (is_endgame)
+        reduction = (reduction > 1) ? reduction - 1 : 0;
 
     if (reduction >= depth)
         reduction = depth - 1;
@@ -1403,7 +1437,7 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
  */
 static int should_apply_futility_pruning(SearchState *s, const Move *move,
                                          int depth, int move_num, int in_check,
-                                         int alpha)
+                                         int alpha, int is_endgame)
 {
     if (!g_runtime_params.futility_enabled)
         return 0;
@@ -1427,6 +1461,8 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
         return 0;
 
     int margin = g_runtime_params.futility_margin_base * depth;
+    if (is_endgame)
+        margin = margin * 3 / 2;
 
     int eval = evaluate(&s->board);
 
@@ -1467,82 +1503,33 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
 static int should_apply_razoring(SearchState *s, int depth, int alpha,
                                  int in_check)
 {
-    /* Razoring must be enabled in configuration */
-    if (!g_runtime_params.razoring_enabled)
-        return 0;
-
-    /* Only apply at very shallow depths (typically depth <= 3)
-     * Razoring is most effective at shallow depths where the static
-     * evaluation is more reliable
-     */
-    if (depth > 3 || depth <= 0)
-        return 0;
-
-    /* Don't apply Razoring when in check (tactical position)
-     * Check positions are tactical and require full search
-     */
-    if (in_check)
-        return 0;
-
-    /* Calculate the razor margin based on depth
-     * Formula: razor_margin = razoring_margin + (depth - 1) * 150
-     *
-     * Example with razoring_margin = 300:
-     * - depth 1: margin = 300 (about 3 pawns)
-     * - depth 2: margin = 450 (about 4.5 pawns)
-     * - depth 3: margin = 600 (about 6 pawns)
-     */
-    int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 150;
-
-    /* Get static evaluation of current position
-     * This is from the perspective of the side to move
-     */
-    int eval = evaluate(&s->board);
-
-    /* Check if position is very bad even with the razor margin
-     * If eval + razor_margin < alpha, then even in an optimistic scenario
-     * (gaining 'razor_margin' centipawns), we still can't reach alpha.
-     * Therefore, we can apply Razoring.
-     *
-     * Note: We use < instead of <= to be conservative
-     */
-    if (eval + razor_margin < alpha)
-    {
-        /* All conditions met - Razoring can be applied */
-        return 1;
-    }
-
-    /* Don't apply Razoring - at least one condition is not met */
     return 0;
 }
 
 static int piece_on_square(const Board *b, int sq)
 {
-    U64 bb = 1ULL << sq;
-    int side, pt;
-    for (side = 0; side < 2; side++)
-    {
-        for (pt = PAWN; pt <= KING; pt++)
-        {
-            if (b->pieces[side][pt] & bb)
-                return pt;
-        }
-    }
-    return EMPTY;
+    int code = b->mailbox[sq];
+    if (code == 0)
+        return EMPTY;
+    return ((code - 1) % 6) + 1;
 }
 
 static int side_on_square(const Board *b, int sq)
 {
-    U64 bb = 1ULL << sq;
-    int pt;
-    for (pt = PAWN; pt <= KING; pt++)
-    {
-        if (b->pieces[WHITE][pt] & bb)
-            return WHITE;
-        if (b->pieces[BLACK][pt] & bb)
-            return BLACK;
-    }
-    return -1;
+    int code = b->mailbox[sq];
+    if (code == 0)
+        return -1;
+    return (code - 1) / 6;
+}
+
+static int count_bits(U64 bb)
+{
+    return POPCNT64(bb);
+}
+
+static int lsb_index(U64 bb)
+{
+    return __builtin_ctzll(bb);
 }
 
 #ifdef _WIN32
@@ -1658,6 +1645,78 @@ board_from_fen(Board *b, const char *fen)
     while (*p == ' ')
         p++;
     b->fullmove_number = atoi(p);
+
+    {
+        int sq;
+        for (sq = 0; sq < 64; sq++)
+            b->mailbox[sq] = 0;
+        for (sq = 0; sq < 64; sq++)
+        {
+            int side, pt;
+            for (side = 0; side < 2; side++)
+            {
+                for (pt = PAWN; pt <= KING; pt++)
+                {
+                    if (b->pieces[side][pt] & (1ULL << sq))
+                    {
+                        b->mailbox[sq] = side * 6 + pt;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    {
+        U64 bb;
+        bb = b->pieces[WHITE][KING];
+        b->king_sq[WHITE] = bb ? lsb_index(bb) : 0;
+        bb = b->pieces[BLACK][KING];
+        b->king_sq[BLACK] = bb ? lsb_index(bb) : 0;
+    }
+
+    b->hash = compute_hash(b);
+
+    {
+        U64 h = 0;
+        int side;
+        for (side = 0; side < 2; side++)
+        {
+            U64 bb = b->pieces[side][PAWN];
+            while (bb)
+            {
+                int sq = lsb_index(bb);
+                bb &= bb - 1;
+                h ^= zobrist_table[((side * 6 + 0) * 64 + sq)];
+            }
+        }
+        b->pawn_hash = h;
+    }
+
+    {
+        int npm_w = 0, npm_b = 0;
+        int pt;
+        for (pt = KNIGHT; pt <= QUEEN; pt++)
+        {
+            int c = count_bits(b->pieces[WHITE][pt]);
+            npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                         : pt == ROOK     ? 5
+                                                          : 9);
+            c = count_bits(b->pieces[BLACK][pt]);
+            npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                         : pt == ROOK     ? 5
+                                                          : 9);
+        }
+        b->npm[WHITE] = npm_w;
+        b->npm[BLACK] = npm_b;
+        int phase = npm_w + npm_b;
+        if (phase > 31)
+            phase = 31;
+        phase = phase * 24 / 31;
+        if (phase > 24)
+            phase = 24;
+        b->phase = phase;
+    }
 }
 
 void board_to_fen(const Board *b, char *fen, size_t fen_size)
@@ -1827,9 +1886,9 @@ static int g_last_razoring_nodes_saved = 0;
  * to allow the engine to make different choices, adding variety to play.
  */
 static U64 g_perturb_rng_state = 0;
-static int g_perturb_threshold = 15;  /* Score difference threshold in centipawns - RANDOM_MOVE_MARGIN */
+static int g_perturb_threshold = 0;    /* Score difference threshold in centipawns - 0 means only exact same scores */
 static int g_perturb_probability = 30; /* Probability to choose second best (0-100) */
-static int g_perturb_enabled = 0;      /* Enable/disable perturbation - DISABLED for better play */
+static int g_perturb_enabled = 0;      /* Enable/disable perturbation - DISABLED for tuning */
 
 static U64 perturb_xorshift64(void)
 {
@@ -1851,7 +1910,8 @@ static void perturb_rng_seed(void)
 
 static int perturb_rand_int(int max)
 {
-    if (max <= 0) return 0;
+    if (max <= 0)
+        return 0;
     return (int)(perturb_xorshift64() % (U64)max);
 }
 
@@ -1918,14 +1978,16 @@ eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int 
             promotion = QUEEN;
     }
     Move m = {from_sq, to_sq, promotion, cap, 0};
-    make_move(&s.board, &m);
-    if (is_check(&s.board, old.side_to_move))
+    UndoInfo undo;
+    make_move(&s.board, &m, &undo);
+    if (is_check(&s.board, side))
     {
+        unmake_move(&s.board, &m, &undo);
         free(s.tt);
         return -INF - 1;
     }
     int score = -negamax(&s, max_depth - 1, -INF, INF, 0, 1);
-    s.board = old;
+    unmake_move(&s.board, &m, &undo);
     free(s.tt);
     return score;
 }
@@ -2209,14 +2271,16 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
 
 int generate_legal_moves(const Board *b, Move *moves)
 {
+    ensure_engine_tables_initialized();
     Move pseudo[MAX_MOVES];
     int n = generate_pseudo_legal_moves(b, pseudo);
     int count = 0;
     int i;
     for (i = 0; i < n; i++)
     {
+        UndoInfo undo;
         Board copy = *b;
-        make_move(&copy, &pseudo[i]);
+        make_move(&copy, &pseudo[i], &undo);
         if (!is_check(&copy, b->side_to_move))
         {
             moves[count++] = pseudo[i];
@@ -2225,7 +2289,20 @@ int generate_legal_moves(const Board *b, Move *moves)
     return count;
 }
 
-void make_move(Board *b, const Move *m)
+static int npm_piece_value(int pt)
+{
+    if (pt == KNIGHT)
+        return 3;
+    if (pt == BISHOP)
+        return 3;
+    if (pt == ROOK)
+        return 5;
+    if (pt == QUEEN)
+        return 9;
+    return 0;
+}
+
+void make_move(Board *b, const Move *m, UndoInfo *undo)
 {
     int side = b->side_to_move;
     int opp = 1 - side;
@@ -2235,34 +2312,104 @@ void make_move(Board *b, const Move *m)
     if (pt == EMPTY)
         return;
 
+    undo->castling_rights = b->castling_rights;
+    undo->en_passant = b->en_passant;
+    undo->halfmove_clock = b->halfmove_clock;
+    undo->fullmove_number = b->fullmove_number;
+    undo->hash = b->hash;
+    undo->pawn_hash = b->pawn_hash;
+    undo->eval_score = b->eval_score;
+    undo->phase = b->phase;
+    undo->king_sq[0] = b->king_sq[0];
+    undo->king_sq[1] = b->king_sq[1];
+    undo->npm[0] = b->npm[0];
+    undo->npm[1] = b->npm[1];
+    undo->mailbox_from = b->mailbox[m->from];
+    undo->mailbox_to = b->mailbox[m->to];
+    undo->mailbox_ep = 0;
+    undo->ep_capture_sq = -1;
+    undo->captured_piece = 0;
+
+    int old_castling = b->castling_rights;
+    int old_ep = b->en_passant;
+
+    b->hash ^= zobrist_table[12 * 64];
+
+    if (old_ep >= 0 && old_ep < 64)
+    {
+        int castling_base = 12 * 64 + 1;
+        b->hash ^= zobrist_table[castling_base + 4 + old_ep];
+    }
+
     b->pieces[side][pt] &= ~from_bb;
     b->pieces[side][pt] |= to_bb;
+    b->mailbox[m->from] = 0;
+    b->mailbox[m->to] = side * 6 + pt;
+
+    b->hash ^= zobrist_table[((side * 6 + (pt - 1)) * 64 + m->from)];
+    b->hash ^= zobrist_table[((side * 6 + (pt - 1)) * 64 + m->to)];
+
+    if (pt == PAWN)
+    {
+        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->from)];
+        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
+    }
 
     if (m->capture)
     {
         int cap_pt = m->capture;
         b->pieces[opp][cap_pt] &= ~to_bb;
+        undo->captured_piece = cap_pt;
+
+        b->hash ^= zobrist_table[((opp * 6 + (cap_pt - 1)) * 64 + m->to)];
+
+        if (cap_pt == PAWN)
+        {
+            b->pawn_hash ^= zobrist_table[((opp * 6 + 0) * 64 + m->to)];
+        }
+        else
+        {
+            b->npm[opp] -= npm_piece_value(cap_pt);
+        }
     }
 
     if (m->promotion)
     {
         b->pieces[side][PAWN] &= ~to_bb;
         b->pieces[side][m->promotion] |= to_bb;
+        b->mailbox[m->to] = side * 6 + m->promotion;
+
+        b->hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
+        b->hash ^= zobrist_table[((side * 6 + (m->promotion - 1)) * 64 + m->to)];
+
+        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
+
+        b->npm[side] += npm_piece_value(m->promotion);
     }
 
     if (pt == KING)
     {
+        b->king_sq[side] = m->to;
+
         if (side == WHITE)
         {
             if (m->from == 4 && m->to == 6)
             {
                 b->pieces[WHITE][ROOK] &= ~(1ULL << 7);
                 b->pieces[WHITE][ROOK] |= (1ULL << 5);
+                b->mailbox[7] = 0;
+                b->mailbox[5] = WHITE * 6 + ROOK;
+                b->hash ^= zobrist_table[((0 * 6 + 3) * 64 + 7)];
+                b->hash ^= zobrist_table[((0 * 6 + 3) * 64 + 5)];
             }
             else if (m->from == 4 && m->to == 2)
             {
                 b->pieces[WHITE][ROOK] &= ~(1ULL << 0);
                 b->pieces[WHITE][ROOK] |= (1ULL << 3);
+                b->mailbox[0] = 0;
+                b->mailbox[3] = WHITE * 6 + ROOK;
+                b->hash ^= zobrist_table[((0 * 6 + 3) * 64 + 0)];
+                b->hash ^= zobrist_table[((0 * 6 + 3) * 64 + 3)];
             }
             b->castling_rights &= ~3;
         }
@@ -2272,11 +2419,19 @@ void make_move(Board *b, const Move *m)
             {
                 b->pieces[BLACK][ROOK] &= ~(1ULL << 63);
                 b->pieces[BLACK][ROOK] |= (1ULL << 61);
+                b->mailbox[63] = 0;
+                b->mailbox[61] = BLACK * 6 + ROOK;
+                b->hash ^= zobrist_table[((1 * 6 + 3) * 64 + 63)];
+                b->hash ^= zobrist_table[((1 * 6 + 3) * 64 + 61)];
             }
             else if (m->from == 60 && m->to == 58)
             {
                 b->pieces[BLACK][ROOK] &= ~(1ULL << 56);
                 b->pieces[BLACK][ROOK] |= (1ULL << 59);
+                b->mailbox[56] = 0;
+                b->mailbox[59] = BLACK * 6 + ROOK;
+                b->hash ^= zobrist_table[((1 * 6 + 3) * 64 + 56)];
+                b->hash ^= zobrist_table[((1 * 6 + 3) * 64 + 59)];
             }
             b->castling_rights &= ~12;
         }
@@ -2318,7 +2473,16 @@ void make_move(Board *b, const Move *m)
         }
     }
 
-    int old_ep = b->en_passant;
+    if (b->castling_rights != old_castling)
+    {
+        int castling_base = 12 * 64 + 1;
+        int cr;
+        for (cr = 0; cr < 4; cr++)
+        {
+            if ((old_castling ^ b->castling_rights) & (1 << cr))
+                b->hash ^= zobrist_table[castling_base + cr];
+        }
+    }
 
     if (pt == PAWN && abs(m->to - m->from) == 16)
     {
@@ -2329,12 +2493,24 @@ void make_move(Board *b, const Move *m)
         b->en_passant = -1;
     }
 
+    if (b->en_passant >= 0 && b->en_passant < 64)
+    {
+        int castling_base = 12 * 64 + 1;
+        b->hash ^= zobrist_table[castling_base + 4 + b->en_passant];
+    }
+
     if (pt == PAWN && old_ep >= 0 && m->to == old_ep && (abs(m->to - m->from) == 7 || abs(m->to - m->from) == 9))
     {
         int ep_cap_sq = (side == WHITE) ? (m->to - 8) : (m->to + 8);
         if (ep_cap_sq >= 0 && ep_cap_sq < 64)
         {
             b->pieces[opp][PAWN] &= ~(1ULL << ep_cap_sq);
+            undo->mailbox_ep = b->mailbox[ep_cap_sq];
+            undo->ep_capture_sq = ep_cap_sq;
+            b->mailbox[ep_cap_sq] = 0;
+
+            b->hash ^= zobrist_table[((opp * 6 + 0) * 64 + ep_cap_sq)];
+            b->pawn_hash ^= zobrist_table[((opp * 6 + 0) * 64 + ep_cap_sq)];
         }
     }
 
@@ -2352,13 +2528,131 @@ void make_move(Board *b, const Move *m)
         b->fullmove_number++;
     }
 
+    {
+        int phase_raw = b->npm[0] + b->npm[1];
+        if (phase_raw > 31)
+            phase_raw = 31;
+        b->phase = phase_raw * 24 / 31;
+        if (b->phase > 24)
+            b->phase = 24;
+    }
+
     b->side_to_move = opp;
     b->eval_score = EVAL_SCORE_INVALID;
 }
 
-void unmake_move(Board *b, const Move *m, const Board *old)
+void unmake_move(Board *b, const Move *m, const UndoInfo *undo)
 {
-    *b = *old;
+    int side = 1 - b->side_to_move;
+    int opp = 1 - side;
+    U64 from_bb = 1ULL << m->from;
+    U64 to_bb = 1ULL << m->to;
+
+    int moved_code = undo->mailbox_from;
+    int moved_pt = ((moved_code - 1) % 6) + 1;
+
+    if (m->promotion)
+    {
+        b->pieces[side][m->promotion] &= ~to_bb;
+        b->pieces[side][PAWN] |= from_bb;
+    }
+    else
+    {
+        b->pieces[side][moved_pt] &= ~to_bb;
+        b->pieces[side][moved_pt] |= from_bb;
+    }
+
+    if (m->capture && undo->ep_capture_sq < 0)
+    {
+        b->pieces[opp][m->capture] |= to_bb;
+    }
+
+    if (undo->ep_capture_sq >= 0)
+    {
+        b->pieces[opp][PAWN] |= (1ULL << undo->ep_capture_sq);
+    }
+
+    if (moved_pt == KING)
+    {
+        if (side == WHITE)
+        {
+            if (m->from == 4 && m->to == 6)
+            {
+                b->pieces[WHITE][ROOK] &= ~(1ULL << 5);
+                b->pieces[WHITE][ROOK] |= (1ULL << 7);
+            }
+            else if (m->from == 4 && m->to == 2)
+            {
+                b->pieces[WHITE][ROOK] &= ~(1ULL << 3);
+                b->pieces[WHITE][ROOK] |= (1ULL << 0);
+            }
+        }
+        else
+        {
+            if (m->from == 60 && m->to == 62)
+            {
+                b->pieces[BLACK][ROOK] &= ~(1ULL << 61);
+                b->pieces[BLACK][ROOK] |= (1ULL << 63);
+            }
+            else if (m->from == 60 && m->to == 58)
+            {
+                b->pieces[BLACK][ROOK] &= ~(1ULL << 59);
+                b->pieces[BLACK][ROOK] |= (1ULL << 56);
+            }
+        }
+    }
+
+    b->castling_rights = undo->castling_rights;
+    b->en_passant = undo->en_passant;
+    b->halfmove_clock = undo->halfmove_clock;
+    b->fullmove_number = undo->fullmove_number;
+    b->hash = undo->hash;
+    b->pawn_hash = undo->pawn_hash;
+    b->eval_score = undo->eval_score;
+    b->phase = undo->phase;
+    b->king_sq[0] = undo->king_sq[0];
+    b->king_sq[1] = undo->king_sq[1];
+    b->npm[0] = undo->npm[0];
+    b->npm[1] = undo->npm[1];
+    b->side_to_move = side;
+
+    b->mailbox[m->from] = undo->mailbox_from;
+    b->mailbox[m->to] = undo->mailbox_to;
+
+    if (undo->ep_capture_sq >= 0)
+    {
+        b->mailbox[undo->ep_capture_sq] = undo->mailbox_ep;
+    }
+
+    if (moved_pt == KING)
+    {
+        if (side == WHITE)
+        {
+            if (m->from == 4 && m->to == 6)
+            {
+                b->mailbox[5] = 0;
+                b->mailbox[7] = WHITE * 6 + ROOK;
+            }
+            else if (m->from == 4 && m->to == 2)
+            {
+                b->mailbox[3] = 0;
+                b->mailbox[0] = WHITE * 6 + ROOK;
+            }
+        }
+        else
+        {
+            if (m->from == 60 && m->to == 62)
+            {
+                b->mailbox[61] = 0;
+                b->mailbox[63] = BLACK * 6 + ROOK;
+            }
+            else if (m->from == 60 && m->to == 58)
+            {
+                b->mailbox[59] = 0;
+                b->mailbox[56] = BLACK * 6 + ROOK;
+            }
+        }
+    }
 }
 
 U64 get_attacks(const Board *b, int sq, int side)
@@ -2395,11 +2689,6 @@ U64 get_attacks(const Board *b, int sq, int side)
     return 0;
 }
 
-static int count_bits(U64 bb)
-{
-    return POPCNT64(bb);
-}
-
 static int count_total_material(Board *b)
 {
     int count = 0;
@@ -2412,11 +2701,6 @@ static int count_total_material(Board *b)
         }
     }
     return count;
-}
-
-static int lsb_index(U64 bb)
-{
-    return __builtin_ctzll(bb);
 }
 
 #ifdef _WIN32
@@ -2467,10 +2751,13 @@ evaluate(Board *b)
                 bb &= bb - 1;
                 int psq = (side == WHITE) ? sq : (sq ^ 56);
                 int mg, eg;
-                if (g_runtime_params.loaded) {
+                if (g_runtime_params.loaded)
+                {
                     mg = g_runtime_params.mg_pst[pt - 1][psq];
                     eg = g_runtime_params.eg_pst[pt - 1][psq];
-                } else {
+                }
+                else
+                {
                     mg = mg_pst[pt][psq];
                     eg = eg_pst[pt][psq];
                 }
@@ -2485,6 +2772,7 @@ evaluate(Board *b)
         int sign = (side == WHITE) ? 1 : -1;
         U64 pawns = b->pieces[side][PAWN];
         int files[8] = {0};
+        int passed_files[8] = {0};
         U64 temp = pawns;
         while (temp)
         {
@@ -2541,15 +2829,31 @@ evaluate(Board *b)
                 int bonus_rank = (side == WHITE) ? r : (7 - r);
                 int bonus = passed_pawn_bonus[bonus_rank];
                 int eg_scale = (24 - phase) / 6;
+                int eg_bonus;
+                int promotion_threat = 0;
+                int promo_sq;
+                int promo_sq_attacked;
                 if (eg_scale > 3)
                     eg_scale = 3;
-                int eg_bonus = bonus * eg_scale / 6;
+                eg_bonus = bonus * eg_scale / 6;
                 score += sign * (bonus + eg_bonus);
                 if (bonus_rank >= 5)
                 {
-                    int promotion_threat = (bonus_rank == 6) ? 150 : 50;
+                    promotion_threat = (bonus_rank == 6) ? 150 : 50;
                     score += sign * promotion_threat;
                 }
+                if (side == WHITE)
+                    promo_sq = 56 + f;
+                else
+                    promo_sq = f;
+                promo_sq_attacked = is_square_attacked(b, promo_sq, 1 - side);
+                if (promo_sq_attacked)
+                {
+                    score -= sign * (bonus + eg_bonus) / 2;
+                    if (bonus_rank >= 5)
+                        score -= sign * promotion_threat / 2;
+                }
+                passed_files[f] = 1;
             }
 
             int chain = 0;
@@ -2582,6 +2886,16 @@ evaluate(Board *b)
                     score += sign * 10;
                 else if (side == BLACK && (sq == 35 || sq == 36))
                     score += sign * 10;
+            }
+        }
+        {
+            int cf;
+            for (cf = 0; cf < 7; cf++)
+            {
+                if (passed_files[cf] && passed_files[cf + 1])
+                {
+                    score += sign * 30;
+                }
             }
         }
     }
@@ -2746,7 +3060,25 @@ evaluate(Board *b)
                     attack_weight += 1;
             }
         }
-        score += sign * (-5 * attack_weight);
+        score += sign * (-5 * attack_weight * (phase < 8 ? 3 : 10) / 10);
+
+        {
+            int defenders = 0;
+            U64 around_king = king_attacks[king_sq] | (1ULL << king_sq);
+            U64 own_pieces = side_pieces(b, side);
+            U64 own_defenders = around_king & own_pieces;
+            defenders = count_bits(own_defenders);
+
+            U64 enemy_heavy = b->pieces[1 - side][QUEEN] | b->pieces[1 - side][ROOK];
+            if (enemy_heavy && defenders < 3)
+            {
+                int exposure_penalty = (3 - defenders) * 30;
+                if (phase >= 8)
+                {
+                    score += sign * (-exposure_penalty);
+                }
+            }
+        }
 
         int kf = file_of(king_sq);
         int f;
@@ -3218,7 +3550,8 @@ evaluate(Board *b)
                 int kf = file_of(king_sq);
                 int kr = rank_of(king_sq);
                 int center_dist = (kf > 3 ? kf - 3 : 3 - kf) + (kr > 3 ? kr - 3 : 3 - kr);
-                int activity_bonus = (6 - center_dist) * KING_ACTIVITY_WEIGHT;
+                int activity_weight = (phase < 8) ? 25 : KING_ACTIVITY_WEIGHT;
+                int activity_bonus = (6 - center_dist) * activity_weight;
                 score += sign * activity_bonus;
             }
         }
@@ -3252,8 +3585,69 @@ evaluate(Board *b)
         }
     }
 
+    // 王车易位奖励 - 鼓励王车易位，特别是短易位
+    // 只在开局和中局阶段给予奖励（phase > 12 表示非残局）
+    if (phase > 12)
+    {
+        int white_king_sq = lsb_index(b->pieces[WHITE][KING]);
+        int black_king_sq = lsb_index(b->pieces[BLACK][KING]);
+
+        // 白方易位奖励
+        if (white_king_sq == 6) // g1 - 短易位
+        {
+            score += 30;
+        }
+        else if (white_king_sq == 2) // c1 - 长易位
+        {
+            score += 15;
+        }
+
+        // 黑方易位奖励
+        if (black_king_sq == 62) // g8 - 短易位
+        {
+            score -= 30;
+        }
+        else if (black_king_sq == 58) // c8 - 长易位
+        {
+            score -= 15;
+        }
+    }
+
+    {
+        int stm = b->side_to_move;
+        int my_king_sq = -1;
+        U64 my_king_bb = b->pieces[stm][KING];
+        if (my_king_bb)
+            my_king_sq = lsb_index(my_king_bb);
+
+        if (my_king_sq >= 0 && is_check(b, stm))
+        {
+            Move escape_moves[MAX_MOVES];
+            int n_escape = generate_pseudo_legal_moves(b, escape_moves);
+            int legal_escape = 0;
+            int ei;
+            for (ei = 0; ei < n_escape; ei++)
+            {
+                UndoInfo undo;
+                Board copy = *b;
+                make_move(&copy, &escape_moves[ei], &undo);
+                if (!is_check(&copy, stm))
+                    legal_escape++;
+            }
+            if (legal_escape == 0)
+            {
+                score = (stm == WHITE) ? -MATE_SCORE + 100 : MATE_SCORE - 100;
+            }
+            else if (legal_escape <= 2)
+            {
+                int penalty = 200 - legal_escape * 50;
+                score += (stm == WHITE) ? -penalty : penalty;
+            }
+        }
+    }
+
     assert(score > -MATE_SCORE && score < MATE_SCORE && "Evaluation score out of valid range");
-    
+
     b->eval_score = score;
     return score;
 }
@@ -3265,7 +3659,7 @@ int is_game_over(const Board *b)
     return n == 0;
 }
 
-U64 compute_hash(const Board *b)
+static U64 compute_hash(const Board *b)
 {
     if (!zobrist_initialized)
         init_zobrist();
@@ -3326,7 +3720,7 @@ static void sort_moves(Move *moves, int n)
     qsort(moves, n, sizeof(Move), compare_moves_desc);
 }
 
-static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply)
+static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score)
 {
     int idx = (int)(key % s->tt_size);
     TT_Entry *e = &s->tt[idx];
@@ -3338,6 +3732,8 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
             score -= ply;
         else if (score < -MATE_SCORE + 100)
             score += ply;
+        if (out_tt_score)
+            *out_tt_score = score;
         if (e->flag == 0)
             return score;
         if (e->flag == 1 && score <= alpha)
@@ -3348,6 +3744,15 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
     else if (e->key != 0)
     {
         *out_move = e->best_move;
+        if (e->key == key && out_tt_score)
+        {
+            int score = e->score;
+            if (score > MATE_SCORE - 100)
+                score -= ply;
+            else if (score < -MATE_SCORE + 100)
+                score += ply;
+            *out_tt_score = score;
+        }
     }
     return INF + 1;
 }
@@ -4016,7 +4421,7 @@ static int generate_checking_moves(const Board *b, Move *moves, int start_count)
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth)
 {
     assert(alpha < beta && "Alpha must be less than beta in quiescence_search");
-    
+
     if (s->aborted)
         return 0;
     s->nodes++;
@@ -4027,8 +4432,12 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         int pt;
         for (pt = KNIGHT; pt <= QUEEN; pt++)
         {
-            npm += count_bits(s->board.pieces[WHITE][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
-            npm += count_bits(s->board.pieces[BLACK][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+            npm += count_bits(s->board.pieces[WHITE][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                                                            : pt == ROOK     ? 5
+                                                                                             : 9);
+            npm += count_bits(s->board.pieces[BLACK][pt]) * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                                                            : pt == ROOK     ? 5
+                                                                                             : 9);
         }
         if (npm <= ENDGAME_PHASE_THRESHOLD)
             is_endgame_qs = 1;
@@ -4071,10 +4480,6 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     else
     {
         n = qsearch_generate_moves(&s->board, moves);
-        if (ply < 60 && qs_depth == 0)
-        {
-            n = generate_checking_moves(&s->board, moves, n);
-        }
     }
     int i;
     for (i = 0; i < n; i++)
@@ -4094,9 +4499,9 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
                 continue;
         }
 
-        Board copy = s->board;
-        make_move(&s->board, &moves[i]);
-        if (!is_check(&s->board, copy.side_to_move))
+        UndoInfo undo;
+        make_move(&s->board, &moves[i], &undo);
+        if (!is_check(&s->board, 1 - s->board.side_to_move))
         {
             legal_count++;
             int score = -quiescence_search(s, -beta, -alpha, next_ply, qs_depth + 1);
@@ -4105,12 +4510,12 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
                 alpha = score;
                 if (alpha >= beta)
                 {
-                    s->board = copy;
+                    unmake_move(&s->board, &moves[i], &undo);
                     return beta;
                 }
             }
         }
-        s->board = copy;
+        unmake_move(&s->board, &moves[i], &undo);
     }
 
     if (in_check && legal_count == 0)
@@ -4124,7 +4529,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
 int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int ply)
 {
     assert(alpha < beta && "Alpha must be less than beta in negamax");
-    
+
     if (s->aborted)
         return 0;
     s->nodes++;
@@ -4135,16 +4540,17 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     if ((s->nodes & 511) == 0)
     {
         double elapsed = get_time() - s->start_time;
-        if (elapsed >= s->time_limit)
+        if (elapsed >= s->time_limit || g_engine_abort_flag)
         {
             s->aborted = 1;
             return 0;
         }
     }
 
-    U64 key = compute_hash(&s->board);
+    U64 key = s->board.hash;
     Move tt_move = {0};
-    int tt_val = tt_probe(s, key, depth, alpha, beta, &tt_move, ply);
+    int tt_score = -INF;
+    int tt_val = tt_probe(s, key, depth, alpha, beta, &tt_move, ply, &tt_score);
     if (tt_val != INF + 1)
         return tt_val;
 
@@ -4183,11 +4589,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     }
 
     int in_check = is_check(&s->board, s->board.side_to_move);
+    /*
     if (in_check && ext_count < 4)
     {
         depth++;
         ext_count++;
     }
+    */
 
     int is_endgame = 0;
     {
@@ -4196,17 +4604,32 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         for (pt = KNIGHT; pt <= QUEEN; pt++)
         {
             int c = count_bits(s->board.pieces[WHITE][pt]);
-            npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+            npm_w += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                         : pt == ROOK     ? 5
+                                                          : 9);
             c = count_bits(s->board.pieces[BLACK][pt]);
-            npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3 : pt == ROOK ? 5 : 9);
+            npm_b += c * (pt == KNIGHT ? 3 : pt == BISHOP ? 3
+                                         : pt == ROOK     ? 5
+                                                          : 9);
         }
         int phase = npm_w + npm_b;
         if (phase <= ENDGAME_PHASE_THRESHOLD)
             is_endgame = 1;
     }
+    /*
     if (is_endgame && depth >= 2 && depth < 8)
     {
         depth += ENDGAME_DEPTH_BONUS;
+    }
+    */
+
+    if (tt_move.from == 0 && tt_move.to == 0 && depth >= 4 && alpha > -INF + 1000 && beta < INF - 1000)
+    {
+        int iid_score = negamax(s, depth - 2, alpha, beta, ext_count, ply);
+        if (!s->aborted)
+        {
+            tt_probe(s, key, depth - 2, alpha, beta, &tt_move, ply, NULL);
+        }
     }
 
     if (depth <= 0)
@@ -4226,7 +4649,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
         /* Calculate razor margin */
         int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 150;
-        if (is_endgame) razor_margin = razor_margin * 3 / 2;
+        if (is_endgame)
+            razor_margin = razor_margin * 3 / 2;
 
         /* If eval + margin is still below alpha, do a quiescence search
          * to verify the position is really bad */
@@ -4303,6 +4727,24 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 moves[i].score = s->history[moves[i].from][moves[i].to];
             }
         }
+        if (g_blunder_memory_loaded)
+        {
+            int bi;
+            for (bi = 0; bi < g_blunder_count; bi++)
+            {
+                if (g_blunder_memory[bi].zobrist_key == key)
+                {
+                    if (moves[i].from == g_blunder_memory[bi].bad_from && moves[i].to == g_blunder_memory[bi].bad_to)
+                    {
+                        moves[i].score -= 5000;
+                    }
+                    if (moves[i].from == g_blunder_memory[bi].good_from && moves[i].to == g_blunder_memory[bi].good_to)
+                    {
+                        moves[i].score += 5000;
+                    }
+                }
+            }
+        }
     }
     sort_moves(moves, n);
 
@@ -4316,7 +4758,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
         int nmr = NULL_MOVE_REDUCTION;
-        if (is_endgame) nmr += ENDGAME_NMR_BONUS;
+        if (is_endgame)
+            nmr += ENDGAME_NMR_BONUS;
         int null_score = -negamax(s, depth - (nmr + 1), -beta, -beta + 1, 0, ply + 1);
         *b = saved;
         if (s->aborted)
@@ -4353,7 +4796,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     for (i = 0; i < n; i++)
     {
-        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha))
+        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame))
         {
             int estimated_nodes_saved = (1 << depth) - 1;
             s->futility_prunes++;
@@ -4361,11 +4804,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
-        Board old = *b;
-        make_move(b, &moves[i]);
-        if (is_check(b, old.side_to_move))
+        UndoInfo undo;
+        make_move(b, &moves[i], &undo);
+        if (is_check(b, 1 - b->side_to_move))
         {
-            *b = old;
+            unmake_move(b, &moves[i], &undo);
             continue;
         }
         legal_count++;
@@ -4376,16 +4819,21 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int score;
         if (i == 0)
         {
-            score = -negamax(s, depth - 1, -beta, -alpha, ext_count, ply + 1);
+            int se_depth = depth - 1;
+            if (depth >= 8 && tt_score >= beta + 30 &&
+                moves[i].from == tt_move.from && moves[i].to == tt_move.to)
+            {
+                se_depth = depth;
+            }
+            score = -negamax(s, se_depth, -beta, -alpha, ext_count, ply + 1);
         }
         else
         {
-            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check);
+            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame);
 
             if (apply_lmr)
             {
-                int reduction = calculate_reduction(s, &moves[i], depth, i);
-                if (is_endgame && reduction > 0) reduction -= 1;
+                int reduction = calculate_reduction(s, &moves[i], depth, i, is_endgame);
 
                 int estimated_nodes_saved = (1 << reduction) - 1;
 
@@ -4415,7 +4863,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 }
             }
         }
-        *b = old;
+        unmake_move(b, &moves[i], &undo);
 
         if (s->aborted)
         {
@@ -4491,11 +4939,11 @@ count_legal_moves(const char *fen)
     int i;
     for (i = 0; i < n; i++)
     {
-        Board copy = b;
-        make_move(&b, &moves[i]);
+        UndoInfo undo;
+        make_move(&b, &moves[i], &undo);
         if (!is_check(&b, b.side_to_move ^ 1))
             legal++;
-        b = copy;
+        unmake_move(&b, &moves[i], &undo);
     }
     return n * 10000 + legal;
 }
@@ -4509,6 +4957,58 @@ compute_hash_from_fen(const char *fen)
     Board b;
     board_from_fen(&b, fen);
     return compute_hash(&b);
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+add_blunder_entry(const char *fen, int bad_from, int bad_to, int good_from, int good_to)
+{
+    Board b;
+    U64 key;
+    if (g_blunder_count >= MAX_BLUNDER_ENTRIES)
+        return;
+    ensure_engine_tables_initialized();
+    board_from_fen(&b, fen);
+    key = compute_hash(&b);
+    g_blunder_memory[g_blunder_count].zobrist_key = key;
+    g_blunder_memory[g_blunder_count].bad_from = bad_from;
+    g_blunder_memory[g_blunder_count].bad_to = bad_to;
+    g_blunder_memory[g_blunder_count].good_from = good_from;
+    g_blunder_memory[g_blunder_count].good_to = good_to;
+    g_blunder_count++;
+    g_blunder_memory_loaded = 1;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+clear_blunder_memory(void)
+{
+    g_blunder_count = 0;
+    g_blunder_memory_loaded = 0;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+load_blunder_memory(U64 *keys, int *bad_froms, int *bad_tos, int *good_froms, int *good_tos, int count)
+{
+    int i;
+    int limit = count < MAX_BLUNDER_ENTRIES ? count : MAX_BLUNDER_ENTRIES;
+    for (i = 0; i < limit; i++)
+    {
+        g_blunder_memory[i].zobrist_key = keys[i];
+        g_blunder_memory[i].bad_from = bad_froms[i];
+        g_blunder_memory[i].bad_to = bad_tos[i];
+        g_blunder_memory[i].good_from = good_froms[i];
+        g_blunder_memory[i].good_to = good_tos[i];
+    }
+    g_blunder_count = limit;
+    g_blunder_memory_loaded = 1;
 }
 
 #ifdef _WIN32
@@ -4532,22 +5032,30 @@ debug_print_board(const char *fen)
     ensure_engine_tables_initialized();
     Board b;
     board_from_fen(&b, fen);
-    
+
     printf("Board from FEN: %s\n", fen);
     printf("Side to move: %s\n", b.side_to_move == 0 ? "White" : "Black");
     printf("Castling rights: %d\n", b.castling_rights);
     printf("En passant: %d\n", b.en_passant);
     printf("Halfmove clock: %d\n", b.halfmove_clock);
-    
+
     printf("\nPieces:\n");
     int side, pt;
-    for (side = 0; side < 2; side++) {
+    for (side = 0; side < 2; side++)
+    {
         printf("%s:\n", side == 0 ? "White" : "Black");
-        for (pt = 0; pt < 6; pt++) {
+        for (pt = 0; pt < 6; pt++)
+        {
             U64 bb = b.pieces[side][pt];
-            if (bb) {
-                printf("  %s: ", pt == 0 ? "Pawn" : pt == 1 ? "Knight" : pt == 2 ? "Bishop" : pt == 3 ? "Rook" : pt == 4 ? "Queen" : "King");
-                while (bb) {
+            if (bb)
+            {
+                printf("  %s: ", pt == 0 ? "Pawn" : pt == 1 ? "Knight"
+                                                : pt == 2   ? "Bishop"
+                                                : pt == 3   ? "Rook"
+                                                : pt == 4   ? "Queen"
+                                                            : "King");
+                while (bb)
+                {
                     int sq = __builtin_ctzll(bb);
                     bb &= bb - 1;
                     printf("%c%d ", 'a' + (sq % 8), 1 + (sq / 8));
@@ -4556,17 +5064,22 @@ debug_print_board(const char *fen)
             }
         }
     }
-    
+
     printf("\nBoard display:\n");
     int rank, file;
-    for (rank = 7; rank >= 0; rank--) {
+    for (rank = 7; rank >= 0; rank--)
+    {
         printf("%d ", rank + 1);
-        for (file = 0; file < 8; file++) {
+        for (file = 0; file < 8; file++)
+        {
             int sq = rank * 8 + file;
             char c = '.';
-            for (side = 0; side < 2; side++) {
-                for (pt = 0; pt < 6; pt++) {
-                    if (b.pieces[side][pt] & (1ULL << sq)) {
+            for (side = 0; side < 2; side++)
+            {
+                for (pt = 0; pt < 6; pt++)
+                {
+                    if (b.pieces[side][pt] & (1ULL << sq))
+                    {
                         static const char white_chars[] = "PNBRQK";
                         static const char black_chars[] = "pnbrqk";
                         c = side == 0 ? white_chars[pt] : black_chars[pt];
@@ -4579,20 +5092,22 @@ debug_print_board(const char *fen)
         printf("\n");
     }
     printf("  a b c d e f g h\n");
-    
+
     Move moves[MAX_MOVES];
     int n = generate_pseudo_legal_moves(&b, moves);
     printf("\nPseudo-legal moves: %d\n", n);
-    
+
     int legal = 0;
     int i;
-    for (i = 0; i < n; i++) {
-        Board copy = b;
-        make_move(&b, &moves[i]);
-        if (!is_check(&b, b.side_to_move ^ 1)) {
+    for (i = 0; i < n; i++)
+    {
+        UndoInfo undo;
+        make_move(&b, &moves[i], &undo);
+        if (!is_check(&b, b.side_to_move ^ 1))
+        {
             legal++;
         }
-        b = copy;
+        unmake_move(&b, &moves[i], &undo);
     }
     printf("Legal moves: %d\n", legal);
 }
@@ -4624,22 +5139,22 @@ debug_root_moves(const char *fen, int depth, int *out_scores, int *out_from, int
     int legal_moves_count = 0;
     for (i = 0; i < n_moves; i++)
     {
-        Board copy = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         if (!is_check(b, b->side_to_move ^ 1))
         {
             root_moves[legal_moves_count++] = root_moves[i];
         }
-        *b = copy;
+        unmake_move(b, &root_moves[i], &undo);
     }
 
     int count = 0;
     for (i = 0; i < legal_moves_count && count < 64; i++)
     {
-        Board old = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         int score = -negamax(&s, depth - 1, -INF, INF, 0, 1);
-        *b = old;
+        unmake_move(b, &root_moves[i], &undo);
         if (s.aborted)
             break;
         out_scores[count] = score;
@@ -4678,13 +5193,13 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
     int legal_moves_count = 0;
     for (i = 0; i < n_moves; i++)
     {
-        Board copy = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         if (!is_check(b, b->side_to_move ^ 1))
         {
             root_moves[legal_moves_count++] = root_moves[i];
         }
-        *b = copy;
+        unmake_move(b, &root_moves[i], &undo);
     }
 
     int depth;
@@ -4693,8 +5208,8 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
         int alpha = -INF, beta = INF;
         for (i = 0; i < legal_moves_count; i++)
         {
-            Board old = *b;
-            make_move(b, &root_moves[i]);
+            UndoInfo undo;
+            make_move(b, &root_moves[i], &undo);
             int score;
             if (i == 0)
             {
@@ -4708,7 +5223,7 @@ debug_id_scores(const char *fen, int max_depth, int *out_scores, int *out_from, 
                     score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
                 }
             }
-            *b = old;
+            unmake_move(b, &root_moves[i], &undo);
             if (s.aborted)
                 break;
             if (i < 64)
@@ -4799,7 +5314,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     }
 
     {
-        U64 root_key = compute_hash(&s.board);
+        U64 root_key = s.board.hash;
         if (s.search_history_count < 256)
         {
             s.search_history[s.search_history_count] = root_key;
@@ -4811,6 +5326,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     int best_score = -INF;
     int depth;
     int i;
+    int aspiration_alpha = -INF, aspiration_beta = INF;
 
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
@@ -4826,18 +5342,17 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     int legal_moves_count = 0;
     for (i = 0; i < n_moves; i++)
     {
-        Board copy = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         if (!is_check(b, b->side_to_move ^ 1))
         {
             root_moves[legal_moves_count++] = root_moves[i];
         }
-        *b = copy;
+        unmake_move(b, &root_moves[i], &undo);
     }
 
-    // Check for threefold repetition at root position
     {
-        U64 root_key = compute_hash(&s.board);
+        U64 root_key = s.board.hash;
         int root_reps = 0;
         int rep_i;
         for (rep_i = 0; rep_i < s.game_history_count; rep_i++)
@@ -4847,7 +5362,6 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         }
         if (root_reps >= 3)
         {
-            // Position has appeared 3+ times - draw by threefold repetition
             if (out_nodes)
                 *out_nodes = 0;
             free(s.tt);
@@ -4870,7 +5384,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
     {
         Move *m = &root_moves[i];
         int priority = 0;
-        
+
         // Captures get high priority (MVV-LVA: Most Valuable Victim - Least Valuable Attacker)
         if (m->capture)
         {
@@ -4879,22 +5393,22 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
             int attacker = piece_on_square(b, m->from);
             priority += 10000 + victim_values[m->capture] - attacker_values[attacker];
         }
-        
+
         // Promotions
         if (m->promotion)
             priority += 5000;
-            
+
         // Center squares (d4, e4, d5, e5 = index 27,28,35,36)
         int to_r = rank_of(m->to), to_f = file_of(m->to);
         if ((to_f >= 2 && to_f <= 5) && (to_r >= 2 && to_r <= 5))
             priority += 100;
-            
+
         // Just to make sure order is deterministic
         priority += 63 - m->to;
-        
+
         move_priorities[i] = priority;
     }
-    
+
     // Simple selection sort by priority descending
     for (i = 0; i < legal_moves_count - 1; i++)
     {
@@ -4925,25 +5439,34 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
 
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
-        if (depth >= 5)
+        double elapsed = get_time() - s.start_time;
+        if (elapsed >= time_limit * 0.6 && depth > 1)
         {
-            double elapsed = get_time() - s.start_time;
-            if (elapsed >= time_limit * 0.8)
-            {
-                break;
-            }
+            break;
         }
 
         int nodes_before = s.nodes;
 
         Move current_best = {0};
         int current_score = -INF;
-        int alpha = -INF, beta = INF;
+        int alpha, beta;
+        Move empty_move = {0};
+
+        if (depth == 1)
+        {
+            alpha = -INF;
+            beta = INF;
+        }
+        else
+        {
+            alpha = aspiration_alpha;
+            beta = aspiration_beta;
+        }
 
         for (i = 0; i < legal_moves_count; i++)
         {
-            Board old = *b;
-            make_move(b, &root_moves[i]);
+            UndoInfo undo;
+            make_move(b, &root_moves[i], &undo);
             int score;
             if (i == 0)
             {
@@ -4957,7 +5480,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                     score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
                 }
             }
-            *b = old;
+            unmake_move(b, &root_moves[i], &undo);
 
             if (s.aborted)
                 break;
@@ -4971,6 +5494,45 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                 if (score > alpha)
                 {
                     alpha = score;
+                }
+            }
+        }
+
+        if (!s.aborted && depth >= 2 && (current_score <= aspiration_alpha || current_score >= aspiration_beta))
+        {
+            alpha = -INF;
+            beta = INF;
+            current_score = -INF;
+            current_best = empty_move;
+            for (i = 0; i < legal_moves_count; i++)
+            {
+                UndoInfo undo2;
+                make_move(b, &root_moves[i], &undo2);
+                int score;
+                if (i == 0)
+                {
+                    score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+                }
+                else
+                {
+                    score = -negamax(&s, depth - 1, -alpha - 1, -alpha, 0, 1);
+                    if (!s.aborted && score > alpha && score < beta)
+                    {
+                        score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
+                    }
+                }
+                unmake_move(b, &root_moves[i], &undo2);
+                if (s.aborted)
+                    break;
+                root_scores[i] = score;
+                if (score > current_score)
+                {
+                    current_score = score;
+                    current_best = root_moves[i];
+                    if (score > alpha)
+                    {
+                        alpha = score;
+                    }
                 }
             }
         }
@@ -5010,6 +5572,36 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                 }
             }
 
+            if (g_info_callback)
+            {
+                double elapsed = get_time() - s.start_time;
+                int time_ms = (int)(elapsed * 1000);
+                char pv_buf[256];
+                int pv_pos = 0;
+                pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",
+                                  'a' + (current_best.from & 7), '1' + (current_best.from >> 3),
+                                  'a' + (current_best.to & 7), '1' + (current_best.to >> 3));
+                if (current_best.promotion)
+                {
+                    char pc = 'q';
+                    switch (current_best.promotion)
+                    {
+                    case KNIGHT:
+                        pc = 'n';
+                        break;
+                    case BISHOP:
+                        pc = 'b';
+                        break;
+                    case ROOK:
+                        pc = 'r';
+                        break;
+                    }
+                    pv_pos += sprintf(pv_buf + pv_pos, "%c", pc);
+                }
+                pv_buf[pv_pos] = '\0';
+                g_info_callback(depth, current_score, s.nodes, time_ms, pv_buf);
+            }
+
             {
                 int hi, hj;
                 for (hi = 0; hi < 64; hi++)
@@ -5020,6 +5612,8 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                     }
                 }
             }
+            aspiration_alpha = current_score - 25;
+            aspiration_beta = current_score + 25;
             s.tt_generation++;
         }
 
@@ -5033,7 +5627,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
         int candidate_count = 0;
         int candidate_indices[MAX_MOVES];
         int min_acceptable_score = best_score - g_perturb_threshold;
-        
+
         for (i = 0; i < legal_moves_count; i++)
         {
             if (root_scores[i] >= min_acceptable_score)
@@ -5041,7 +5635,7 @@ find_best_move_c(const char *fen, double time_limit, int max_depth, int *out_nod
                 candidate_indices[candidate_count++] = i;
             }
         }
-        
+
         if (candidate_count > 1)
         {
             int chosen_idx = perturb_rand_int(candidate_count);
@@ -5065,7 +5659,7 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
                      int *out_scores, int *out_from, int *out_to, int *out_count)
 {
     ensure_engine_tables_initialized();
-    
+
     static int params_loaded_scores = 0;
     if (!params_loaded_scores)
     {
@@ -5080,7 +5674,7 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
         }
         params_loaded_scores = 1;
     }
-    
+
     SearchState s;
     memset(&s, 0, sizeof(SearchState));
     board_from_fen(&s.board, fen);
@@ -5101,13 +5695,13 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
     int i;
     for (i = 0; i < n_moves; i++)
     {
-        Board copy = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         if (!is_check(b, b->side_to_move ^ 1))
         {
             root_moves[legal_moves_count++] = root_moves[i];
         }
-        *b = copy;
+        unmake_move(b, &root_moves[i], &undo);
     }
 
     int depth;
@@ -5118,8 +5712,8 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
         beta = INF;
         for (i = 0; i < legal_moves_count; i++)
         {
-            Board old = *b;
-            make_move(b, &root_moves[i]);
+            UndoInfo undo;
+            make_move(b, &root_moves[i], &undo);
             int score;
             if (i == 0)
                 score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
@@ -5129,7 +5723,7 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
                 if (!s.aborted && score > alpha && score < beta)
                     score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
             }
-            *b = old;
+            unmake_move(b, &root_moves[i], &undo);
             if (s.aborted)
                 break;
             if (i < 256)
@@ -5218,7 +5812,7 @@ static void smp_worker_search(LazySMPWorker *w)
     }
 
     {
-        U64 root_key = compute_hash(&s.board);
+        U64 root_key = s.board.hash;
         if (s.search_history_count < 256)
         {
             s.search_history[s.search_history_count] = root_key;
@@ -5233,11 +5827,11 @@ static void smp_worker_search(LazySMPWorker *w)
     int i;
     for (i = 0; i < n_moves; i++)
     {
-        Board copy = *b;
-        make_move(b, &root_moves[i]);
+        UndoInfo undo;
+        make_move(b, &root_moves[i], &undo);
         if (!is_check(b, b->side_to_move ^ 1))
             root_moves[legal_count++] = root_moves[i];
-        *b = copy;
+        unmake_move(b, &root_moves[i], &undo);
     }
 
     if (legal_count == 0)
@@ -5247,8 +5841,8 @@ static void smp_worker_search(LazySMPWorker *w)
         return;
     }
 
-    int start_depth = 1 + (w->thread_id % 2);
-    int depth_step = w->num_threads > 1 ? 1 : 1;
+    int start_depth = 1;
+    int depth_step = 1;
 
     Move best_move = root_moves[0];
     int best_score = -INF;
@@ -5273,8 +5867,8 @@ static void smp_worker_search(LazySMPWorker *w)
         {
             if (g_smp_stop_flag)
                 break;
-            Board old = *b;
-            make_move(b, &root_moves[i]);
+            UndoInfo undo;
+            make_move(b, &root_moves[i], &undo);
             int score;
             if (i == 0)
             {
@@ -5288,7 +5882,7 @@ static void smp_worker_search(LazySMPWorker *w)
                     score = -negamax(&s, depth - 1, -beta, -alpha, 0, 1);
                 }
             }
-            *b = old;
+            unmake_move(b, &root_moves[i], &undo);
 
             if (s.aborted || g_smp_stop_flag)
                 break;
@@ -5350,8 +5944,9 @@ static void *smp_thread_func(void *arg)
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
-Move find_best_move_smp(const char *fen, double time_limit, int max_depth,
-                        int *out_nodes, U64 *game_history, int game_history_count)
+Move
+find_best_move_smp(const char *fen, double time_limit, int max_depth,
+                   int *out_nodes, U64 *game_history, int game_history_count)
 {
     static int params_loaded_smp = 0;
     ensure_engine_tables_initialized();
@@ -5541,10 +6136,10 @@ static U64 perft_internal(Board *b, int depth)
     U64 nodes = 0;
     for (int i = 0; i < n; i++)
     {
-        Board old = *b;
-        make_move(b, &moves[i]);
+        UndoInfo undo;
+        make_move(b, &moves[i], &undo);
         nodes += perft_internal(b, depth - 1);
-        unmake_move(b, &moves[i], &old);
+        unmake_move(b, &moves[i], &undo);
     }
 
     return nodes;
@@ -5562,4 +6157,14 @@ perft(const char *fen, int depth)
     board_from_fen(&b, fen);
 
     return perft_internal(&b, depth);
+}
+
+void set_engine_abort(int flag)
+{
+    g_engine_abort_flag = flag;
+}
+
+int get_engine_abort(void)
+{
+    return g_engine_abort_flag;
 }
