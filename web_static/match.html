@@ -393,6 +393,17 @@ body {
       <span class="status-text" id="statusText">就绪</span>
     </div>
 
+    <div class="clock-row">
+      <div class="clock-card" id="clock1">
+        <div class="clock-name" id="clock1Name">白方 ⚪</div>
+        <div class="clock-time" id="clock1Time">1:36.0</div>
+      </div>
+      <div class="clock-card" id="clock2">
+        <div class="clock-name" id="clock2Name">黑方 ⚫</div>
+        <div class="clock-time" id="clock2Time">1:36.0</div>
+      </div>
+    </div>
+
     <div class="move-panel">
       <h4 id="moveHeader">走法记录</h4>
       <div class="move-scroll" id="moveScroll">
@@ -410,6 +421,9 @@ const PIECE_GLYPHS = {
 };
 
 let state = null, evtSource = null, engines = [];
+let clockInterval = null;
+let localTime1 = 0, localTime2 = 0;
+let lastServerTime = 0;
 
 function formatTime(ms) {
   if (ms <= 0) return '0:00.0';
@@ -465,10 +479,33 @@ function render() {
   const wName = state.whiteName || '白方', bName = state.blackName || '黑方';
   document.getElementById('clock1Name').textContent = wName + ' ⚪';
   document.getElementById('clock2Name').textContent = bName + ' ⚫';
-  document.getElementById('clock1Time').textContent = formatTime(state.engine1Time || 0);
-  document.getElementById('clock2Time').textContent = formatTime(state.engine2Time || 0);
-  document.getElementById('clock1Time').classList.toggle('low', (state.engine1Time || 0) < 10000);
-  document.getElementById('clock2Time').classList.toggle('low', (state.engine2Time || 0) < 10000);
+
+  localTime1 = state.engine1Time || 0;
+  localTime2 = state.engine2Time || 0;
+  lastServerTime = Date.now();
+
+  function updateClockDisplay() {
+    document.getElementById('clock1Time').textContent = formatTime(localTime1);
+    document.getElementById('clock2Time').textContent = formatTime(localTime2);
+    document.getElementById('clock1Time').classList.toggle('low', localTime1 < 10000);
+    document.getElementById('clock2Time').classList.toggle('low', localTime2 < 10000);
+  }
+  updateClockDisplay();
+
+  if (clockInterval) { clearInterval(clockInterval); clockInterval = null; }
+  if (state.active && !state.gameOver) {
+    clockInterval = setInterval(() => {
+      const now = Date.now();
+      const elapsed = now - lastServerTime;
+      lastServerTime = now;
+      if (activeSide === 'w') {
+        localTime1 = Math.max(0, localTime1 - elapsed);
+      } else {
+        localTime2 = Math.max(0, localTime2 - elapsed);
+      }
+      updateClockDisplay();
+    }, 100);
+  }
 
   const s1 = document.getElementById('score1'), s2 = document.getElementById('score2');
   s1.textContent = state.score1 || 0; s2.textContent = state.score2 || 0;

@@ -41,6 +41,15 @@ test_engines/
 # Match records
 match_records/
 
+# PyInstaller build artifacts
+build_pyinstaller/
+
+# Temp UCI adapter (generated at runtime)
+temp_hellcopter_uci/
+
+# Tuning result files (one-time products)
+tuning_result_*.json
+
 # Temporary files
 *.tmp
 *.temp
