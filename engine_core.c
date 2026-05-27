@@ -2783,18 +2783,17 @@ static int evaluate_pawns(Board *b, int phase)
             {
                 int bonus_rank = (side == WHITE) ? r : (7 - r);
                 int bonus = passed_pawn_bonus[bonus_rank];
-                int eg_scale = (24 - phase) / 6;
-                int eg_bonus;
+                int eg_phase = 24 - phase;
+                int eg_multiplier = eg_phase * 100 / 24;
+                int total_bonus = bonus + bonus * eg_multiplier / 150;
                 int promotion_threat = 0;
                 int promo_sq;
                 int promo_sq_attacked;
-                if (eg_scale > 3)
-                    eg_scale = 3;
-                eg_bonus = bonus * eg_scale / 6;
-                score += sign * (bonus + eg_bonus);
+                score += sign * total_bonus;
                 if (bonus_rank >= 5)
                 {
                     promotion_threat = (bonus_rank == 6) ? 100 : 35;
+                    promotion_threat += promotion_threat * eg_multiplier / 200;
                     score += sign * promotion_threat;
                 }
 
@@ -2847,7 +2846,7 @@ static int evaluate_pawns(Board *b, int phase)
                 promo_sq_attacked = is_square_attacked(b, promo_sq, 1 - side);
                 if (promo_sq_attacked)
                 {
-                    score -= sign * (bonus + eg_bonus) / 2;
+                    score -= sign * total_bonus / 2;
                     if (bonus_rank >= 5)
                         score -= sign * promotion_threat / 2;
                 }
@@ -3811,6 +3810,32 @@ evaluate(Board *b)
             if (bonus > SIMPLIFY_BONUS * 3)
                 bonus = SIMPLIFY_BONUS * 3;
             score -= bonus;
+        }
+
+        if (phase < 16 && (material_balance > 500 || material_balance < -500))
+        {
+            int strong_side = (material_balance > 0) ? WHITE : BLACK;
+            int weak_king_sq = b->king_sq[1 - strong_side];
+            int strong_king_sq = b->king_sq[strong_side];
+
+            int weak_file = weak_king_sq % 8;
+            int weak_rank = weak_king_sq / 8;
+            int edge_dist_f = (weak_file < (7 - weak_file)) ? weak_file : (7 - weak_file);
+            int edge_dist_r = (weak_rank < (7 - weak_rank)) ? weak_rank : (7 - weak_rank);
+            int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+            if (edge_dist > 3)
+                edge_dist = 3;
+            int corner_bonus = (3 - edge_dist) * 20;
+
+            int strong_file = strong_king_sq % 8;
+            int strong_rank = strong_king_sq / 8;
+            int file_dist = (weak_file > strong_file) ? (weak_file - strong_file) : (strong_file - weak_file);
+            int rank_dist = (weak_rank > strong_rank) ? (weak_rank - strong_rank) : (strong_rank - weak_rank);
+            int king_dist = (file_dist > rank_dist) ? file_dist : rank_dist;
+            int proximity_bonus = (7 - king_dist) * 10;
+
+            int mop_up = corner_bonus + proximity_bonus;
+            score += (strong_side == WHITE) ? mop_up : -mop_up;
         }
     }
 
