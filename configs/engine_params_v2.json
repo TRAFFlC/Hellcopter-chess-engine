@@ -1,0 +1,45 @@
+{
+  "version": "2.0",
+  "description": "Hellcopter 引擎参数配置文件",
+  
+  "book": {
+    "own_book": true,
+    "path": "",
+    "mode": "internal",
+    "max_ply": 20,
+    "randomness": 0.0,
+    "min_score": -9999,
+    "exit_bonus_time": 0.1
+  },
+  
+  "ponder": {
+    "enabled": false
+  },
+  
+  "endgame": {
+    "mode": "auto",
+    "depth_bonus": 2,
+    "use_tablebase": false,
+    "tablebase_path": ""
+  },
+  
+  "search": {
+    "tt_size": 1000000,
+    "context_cache_size": 100,
+    "context_expire_time": 30.0
+  },
+  
+  "regression": {
+    "edge_pawn_threshold": 2,
+    "early_queen_threshold": 1,
+    "early_rook_threshold": 1,
+    "development_threshold": 0.6,
+    "health_score_min": 50.0
+  },
+  
+  "tournament": {
+    "mode": false,
+    "force_generic_book": true,
+    "disable_private_learning": true
+  }
+}

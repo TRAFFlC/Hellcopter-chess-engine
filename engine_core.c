@@ -1298,8 +1298,22 @@ static int get_piece_value(int piece_type)
 
 static double get_time(void)
 {
-    clock_t c = clock();
-    return (double)c / (double)CLOCKS_PER_SEC;
+#ifdef _WIN32
+    static LARGE_INTEGER freq = {0};
+    static int freq_init = 0;
+    if (!freq_init)
+    {
+        QueryPerformanceFrequency(&freq);
+        freq_init = 1;
+    }
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+#endif
 }
 
 int popcount(U64 x)
@@ -1405,9 +1419,27 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
     if (move_num <= 3)
         reduction -= 1;
     if (move->capture && move->capture >= 0)
+    {
         reduction -= 1;
+        {
+            int my_npm = s->board.npm[s->board.side_to_move];
+            int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
+            if (my_npm < opp_npm - 100)
+                reduction -= 1;
+        }
+    }
     if (move->promotion)
         reduction -= 1;
+
+    {
+        int npm = s->board.npm[0] + s->board.npm[1];
+        if (npm <= ENDGAME_PHASE_THRESHOLD)
+        {
+            reduction -= 1;
+            if (move->promotion)
+                reduction -= 1;
+        }
+    }
 
     int hist_val = s->history[move->from][move->to];
     if (hist_val > 500)
@@ -1451,7 +1483,7 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
  */
 static int should_apply_futility_pruning(SearchState *s, const Move *move,
                                          int depth, int move_num, int in_check,
-                                         int alpha, int is_endgame)
+                                         int alpha, int is_endgame, int static_eval)
 {
     if (!g_runtime_params.futility_enabled)
         return 0;
@@ -1478,9 +1510,7 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
     if (is_endgame)
         margin = margin * 3 / 2;
 
-    int eval = evaluate(&s->board);
-
-    if (eval + margin <= alpha)
+    if (static_eval + margin <= alpha)
     {
         return 1;
     }
@@ -1517,7 +1547,11 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
 static int should_apply_razoring(SearchState *s, int depth, int alpha,
                                  int in_check)
 {
-    return 0;
+    if (depth > 3)
+        return 0;
+    if (in_check)
+        return 0;
+    return 1;
 }
 
 static int piece_on_square(const Board *b, int sq)
@@ -1900,9 +1934,9 @@ static int g_last_razoring_nodes_saved = 0;
  * to allow the engine to make different choices, adding variety to play.
  */
 static U64 g_perturb_rng_state = 0;
-static int g_perturb_threshold = 0;    /* Score difference threshold in centipawns - 0 means only exact same scores */
-static int g_perturb_probability = 30; /* Probability to choose second best (0-100) */
-static int g_perturb_enabled = 0;      /* Enable/disable perturbation - DISABLED for tuning */
+static int g_perturb_threshold = 0;
+static int g_perturb_probability = 10;
+static int g_perturb_enabled = 0;
 
 static U64 perturb_xorshift64(void)
 {
@@ -2785,15 +2819,15 @@ static int evaluate_pawns(Board *b, int phase)
                 int bonus = passed_pawn_bonus[bonus_rank];
                 int eg_phase = 24 - phase;
                 int eg_multiplier = eg_phase * 100 / 24;
-                int total_bonus = bonus + bonus * eg_multiplier / 150;
+                int total_bonus = bonus + bonus * eg_multiplier / 100;
                 int promotion_threat = 0;
                 int promo_sq;
                 int promo_sq_attacked;
                 score += sign * total_bonus;
                 if (bonus_rank >= 5)
                 {
-                    promotion_threat = (bonus_rank == 6) ? 100 : 35;
-                    promotion_threat += promotion_threat * eg_multiplier / 200;
+                    promotion_threat = (bonus_rank == 6) ? 150 : 50;
+                    promotion_threat += promotion_threat * eg_multiplier / 150;
                     score += sign * promotion_threat;
                 }
 
@@ -2880,9 +2914,9 @@ static int evaluate_pawns(Board *b, int phase)
             if (phase >= 20)
             {
                 if (side == WHITE && (sq == 27 || sq == 28))
-                    score += sign * 10;
+                    score += sign * 20;
                 else if (side == BLACK && (sq == 35 || sq == 36))
-                    score += sign * 10;
+                    score += sign * 20;
             }
         }
         {
@@ -2895,8 +2929,103 @@ static int evaluate_pawns(Board *b, int phase)
                 }
             }
         }
+        {
+            int rank_pawns[8][8] = {{0}};
+            U64 tmp = pawns;
+            while (tmp)
+            {
+                int sq2 = lsb_index(tmp);
+                tmp &= tmp - 1;
+                rank_pawns[rank_of(sq2)][file_of(sq2)] = 1;
+            }
+            int rr;
+            for (rr = 2; rr <= 5; rr++)
+            {
+                int ff;
+                for (ff = 2; ff <= 5; ff++)
+                {
+                    if (rank_pawns[rr][ff] && rank_pawns[rr][ff + 1])
+                    {
+                        score += sign * 15;
+                    }
+                }
+            }
+            if (side == WHITE && rank_pawns[3][3] && rank_pawns[3][4])
+                score += sign * 20;
+            else if (side == BLACK && rank_pawns[4][3] && rank_pawns[4][4])
+                score += sign * 20;
+        }
     }
     return score;
+}
+
+static int tb_wdl_simple(Board *b)
+{
+    int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
+    int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
+    int w_knights = count_bits(b->pieces[WHITE][KNIGHT]);
+    int b_knights = count_bits(b->pieces[BLACK][KNIGHT]);
+    int w_bishops = count_bits(b->pieces[WHITE][BISHOP]);
+    int b_bishops = count_bits(b->pieces[BLACK][BISHOP]);
+    int w_rooks = count_bits(b->pieces[WHITE][ROOK]);
+    int b_rooks = count_bits(b->pieces[BLACK][ROOK]);
+    int w_queens = count_bits(b->pieces[WHITE][QUEEN]);
+    int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
+
+    int w_pieces = w_pawns + w_knights + w_bishops + w_rooks + w_queens;
+    int b_pieces = b_pawns + b_knights + b_bishops + b_rooks + b_queens;
+    int total = w_pieces + b_pieces;
+
+    if (total > 3)
+        return -2;
+
+    if (total == 0)
+        return 0;
+
+    if (total == 1)
+    {
+        if (w_queens == 1 || w_rooks == 1)
+            return 1;
+        if (b_queens == 1 || b_rooks == 1)
+            return -1;
+        return 0;
+    }
+
+    if (total == 2)
+    {
+        if (w_pieces == 2)
+        {
+            if (w_queens == 2 || w_rooks == 2 || (w_queens == 1 && w_rooks == 1))
+                return 1;
+            if (w_bishops == 2)
+                return 1;
+        }
+        if (b_pieces == 2)
+        {
+            if (b_queens == 2 || b_rooks == 2 || (b_queens == 1 && b_rooks == 1))
+                return -1;
+            if (b_bishops == 2)
+                return -1;
+        }
+        return 0;
+    }
+
+    if (total == 3)
+    {
+        if (w_pieces == 3)
+        {
+            if (w_queens >= 1 || w_rooks >= 2)
+                return 1;
+        }
+        if (b_pieces == 3)
+        {
+            if (b_queens >= 1 || b_rooks >= 2)
+                return -1;
+        }
+        return 0;
+    }
+
+    return -2;
 }
 
 #ifdef _WIN32
@@ -2968,7 +3097,7 @@ evaluate(Board *b)
             {
                 int sq = lsb_index(bb);
                 bb &= bb - 1;
-                int psq = (side == WHITE) ? sq : (sq ^ 56);
+                int psq = (side == WHITE) ? (sq ^ 56) : sq;
                 int mg, eg;
                 if (g_runtime_params.loaded)
                 {
@@ -3002,7 +3131,7 @@ evaluate(Board *b)
                     mob = 8;
                 int mg_score = knight_mob_mg[mob];
                 int eg_score = knight_mob_eg[mob];
-                score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                score += sign * ((mg_score * phase_weight + eg_score * (256 - phase_weight)) / 256);
             }
 
             {
@@ -3014,7 +3143,7 @@ evaluate(Board *b)
                         mob = 13;
                     int mg_score = bishop_mob_mg[mob];
                     int eg_score = bishop_mob_eg[mob];
-                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                    score += sign * ((mg_score * phase_weight + eg_score * (256 - phase_weight)) / 256);
                 }
             }
 
@@ -3027,7 +3156,7 @@ evaluate(Board *b)
                         mob = 14;
                     int mg_score = rook_mob_mg[mob];
                     int eg_score = rook_mob_eg[mob];
-                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                    score += sign * ((mg_score * phase_weight + eg_score * (256 - phase_weight)) / 256);
                 }
             }
 
@@ -3040,7 +3169,7 @@ evaluate(Board *b)
                         mob = 27;
                     int mg_score = queen_mob_mg[mob];
                     int eg_score = queen_mob_eg[mob];
-                    score += sign * ((mg_score * (256 - phase_weight) + eg_score * phase_weight) / 256);
+                    score += sign * ((mg_score * phase_weight + eg_score * (256 - phase_weight)) / 256);
                 }
             }
         }
@@ -3157,13 +3286,12 @@ evaluate(Board *b)
         int rooks_on_7th = count_bits(rooks & target_rank);
         if (rooks_on_7th > 0)
         {
-            U64 enemy_king = b->pieces[1 - side][KING];
-            int ek_sq = -1;
-            if (enemy_king)
-                ek_sq = lsb_index(enemy_king);
-            int ek_rank = (ek_sq >= 0) ? ek_sq / 8 : -1;
-            int enemy_king_on_8th = (side == WHITE) ? (ek_rank == 7) : (ek_rank == 0);
-            score += sign * (ROOK_ON_7TH_BONUS + (enemy_king_on_8th ? ROOK_ON_7TH_WITH_KING : 0)) * rooks_on_7th;
+            int mg_bonus = 20;
+            int eg_bonus = 30;
+            int bonus = (mg_bonus * phase + eg_bonus * (24 - phase)) / 24;
+            score += sign * bonus * rooks_on_7th;
+            if (rooks_on_7th >= 2)
+                score += sign * 20;
         }
     }
 
@@ -3246,17 +3374,64 @@ evaluate(Board *b)
             U64 shield_pawns;
             if (side == WHITE)
             {
-                shield_pawns = file_mask & own_pawns & (rank_masks[1] | rank_masks[2]);
+                U64 rank2_pawns = file_mask & own_pawns & rank_masks[2];
+                U64 rank3_pawns = file_mask & own_pawns & rank_masks[3];
+                if (rank2_pawns)
+                    attack_units += 0;
+                else if (rank3_pawns)
+                    attack_units += 4;
+                else
+                    attack_units += 10;
             }
             else
             {
-                shield_pawns = file_mask & own_pawns & (rank_masks[6] | rank_masks[5]);
-            }
-            if (!shield_pawns)
-            {
-                attack_units += 8;
+                U64 rank7_pawns = file_mask & own_pawns & rank_masks[5];
+                U64 rank6_pawns = file_mask & own_pawns & rank_masks[4];
+                if (rank7_pawns)
+                    attack_units += 0;
+                else if (rank6_pawns)
+                    attack_units += 4;
+                else
+                    attack_units += 10;
             }
         }
+
+        {
+            U64 king_file_mask = file_masks[kf];
+            U64 adj_file_mask = 0;
+            if (kf > 0) adj_file_mask |= file_masks[kf - 1];
+            if (kf < 7) adj_file_mask |= file_masks[kf + 1];
+            U64 own_pawns_on_king_files = own_pawns & (king_file_mask | adj_file_mask);
+            U64 enemy_pawns_on_king_files = b->pieces[opp][PAWN] & (king_file_mask | adj_file_mask);
+            U64 open_files = (king_file_mask | adj_file_mask) & ~own_pawns_on_king_files & ~enemy_pawns_on_king_files;
+            U64 semi_open_files = (king_file_mask | adj_file_mask) & ~own_pawns_on_king_files & enemy_pawns_on_king_files;
+            attack_units += count_bits(open_files) * 6;
+            attack_units += count_bits(semi_open_files) * 3;
+        }
+
+        int attacker_count = 0;
+        if (b->pieces[opp][KNIGHT] && (knight_attacks[king_square] & b->pieces[opp][KNIGHT]))
+            attacker_count++;
+        {
+            int bi;
+            for (bi = 0; bi < nb[opp]; bi++)
+            {
+                if (bishop_atk[opp][bi] & king_zone)
+                { attacker_count++; break; }
+            }
+        }
+        {
+            int ri;
+            for (ri = 0; ri < nr[opp]; ri++)
+            {
+                if (rook_atk[opp][ri] & king_zone)
+                { attacker_count++; break; }
+            }
+        }
+        if (nq[opp] > 0)
+            attacker_count++;
+        if (attacker_count >= 2)
+            attack_units += (attacker_count - 1) * 6;
 
         int danger_index = (attack_units < 128) ? attack_units : 127;
         int danger = king_danger_table[danger_index];
@@ -3264,9 +3439,9 @@ evaluate(Board *b)
         if (danger > 2000)
             danger = 2000;
 
-        if (phase_weight > 128)
+        if (phase_weight <= 128)
         {
-            danger = danger * 20 / 100;
+            danger = danger * (20 + phase_weight * 50 / 128) / 100;
         }
 
         score -= sign * danger;
@@ -3539,21 +3714,41 @@ evaluate(Board *b)
             int can_be_attacked_by_pawn = (enemy_pawn_attacks >> sq) & 1;
             int defended_by_pawn = (own_pawn_defense >> sq) & 1;
 
-            int is_outpost = 0;
-            if ((r >= 3 && r <= 5) && (f >= 2 && f <= 5))
-            {
-                if (defended_by_pawn && !can_be_attacked_by_pawn)
-                    is_outpost = 1;
-            }
-
-            if (is_outpost)
-                score += sign * 45; /* TODO: Add KNIGHT_OUTPOST_BONUS to engine_params.h */
-
             if (f == 0 || f == 7)
             {
                 if (r >= 2 && r <= 5)
                     score += sign * (-30);
             }
+
+            if (phase >= 16)
+            {
+                if (side == WHITE)
+                {
+                    if (sq == 18 && (b->pieces[WHITE][PAWN] & (1ULL << 10)))
+                        score += sign * (-25);
+                    if (sq == 21 && (b->pieces[WHITE][PAWN] & (1ULL << 13)))
+                        score += sign * (-25);
+                }
+                else
+                {
+                    if (sq == 42 && (b->pieces[BLACK][PAWN] & (1ULL << 50)))
+                        score += sign * (-25);
+                    if (sq == 45 && (b->pieces[BLACK][PAWN] & (1ULL << 53)))
+                        score += sign * (-25);
+                }
+            }
+        }
+
+        U64 bishops_bb = b->pieces[side][BISHOP];
+        while (bishops_bb)
+        {
+            int sq = lsb_index(bishops_bb);
+            bishops_bb &= bishops_bb - 1;
+            int r = rank_of(sq);
+            int f = file_of(sq);
+
+            int can_be_attacked_by_pawn_b = (enemy_pawn_attacks >> sq) & 1;
+            int defended_by_pawn_b = (own_pawn_defense >> sq) & 1;
         }
 
         U64 own_minor_major = b->pieces[side][KNIGHT] | b->pieces[side][BISHOP] |
@@ -3672,15 +3867,30 @@ evaluate(Board *b)
         {
             int sign = (side == WHITE) ? 1 : -1;
             if (b->pieces[side][KNIGHT] & (1ULL << (side == WHITE ? 1 : 57)))
-                score += sign * (-35);
-            if (b->pieces[side][KNIGHT] & (1ULL << (side == WHITE ? 6 : 62)))
-                score += sign * (-35);
-            if (b->pieces[side][BISHOP] & (1ULL << (side == WHITE ? 2 : 58)))
-                score += sign * (-35);
-            if (b->pieces[side][BISHOP] & (1ULL << (side == WHITE ? 5 : 61)))
-                score += sign * (-35);
-            if (b->pieces[side][QUEEN] & (1ULL << (side == WHITE ? 3 : 59)))
                 score += sign * (-20);
+            if (b->pieces[side][KNIGHT] & (1ULL << (side == WHITE ? 6 : 62)))
+                score += sign * (-20);
+            if (b->pieces[side][BISHOP] & (1ULL << (side == WHITE ? 2 : 58)))
+                score += sign * (-20);
+            if (b->pieces[side][BISHOP] & (1ULL << (side == WHITE ? 5 : 61)))
+                score += sign * (-20);
+            {
+                U64 queen_pos = b->pieces[side][QUEEN];
+                U64 start_sq = (1ULL << (side == WHITE ? 3 : 59));
+                U64 minor = b->pieces[side][KNIGHT] | b->pieces[side][BISHOP];
+                int dev = 0;
+                U64 t = minor;
+                while (t) { int sq = lsb_index(t); t &= t - 1;
+                    if (side == WHITE && (sq < 8 || sq == 9 || sq == 14)) continue;
+                    if (side == BLACK && (sq >= 56 || sq == 49 || sq == 54)) continue;
+                    dev++; }
+                if (!(queen_pos & start_sq) && dev < 3)
+                {
+                    int penalty = 40 - dev * 10;
+                    if (penalty < 10) penalty = 10;
+                    score += sign * (-penalty);
+                }
+            }
 
             U64 minor = b->pieces[side][KNIGHT] | b->pieces[side][BISHOP];
             int developed = 0;
@@ -3710,6 +3920,46 @@ evaluate(Board *b)
                     score += sign * (-25);
                 if (side == BLACK && king_sq == 60 && b->fullmove_number >= 6)
                     score += sign * (-25);
+            }
+            {
+                U64 queens = b->pieces[side][QUEEN];
+                U64 rooks = b->pieces[side][ROOK];
+                U64 minor = b->pieces[side][KNIGHT] | b->pieces[side][BISHOP];
+                int developed = 0;
+                U64 temp = minor;
+                while (temp)
+                {
+                    int sq = lsb_index(temp);
+                    temp &= temp - 1;
+                    if (side == WHITE && (sq < 8 || sq == 9 || sq == 14))
+                        continue;
+                    if (side == BLACK && (sq >= 56 || sq == 49 || sq == 54))
+                        continue;
+                    developed++;
+                }
+                if (developed < 3)
+                {
+                    U64 enemy_half = (side == WHITE) ? 0xFFFFFFFF00000000ULL : 0x00000000FFFFFFFFULL;
+                    if (queens & enemy_half)
+                    {
+                        int penalty = 50 - developed * 10;
+                        if (penalty < 20) penalty = 20;
+                        score += sign * (-penalty);
+                    }
+                    if (rooks & enemy_half)
+                        score += sign * (-15);
+                }
+            }
+            {
+                U64 own_center;
+                if (side == WHITE)
+                    own_center = b->pieces[WHITE][PAWN] & ((1ULL << 27) | (1ULL << 28));
+                else
+                    own_center = b->pieces[BLACK][PAWN] & ((1ULL << 35) | (1ULL << 36));
+                if (own_center)
+                    score += sign * (10 * count_bits(own_center));
+                else
+                    score += sign * (-35);
             }
         }
     }
@@ -3766,35 +4016,54 @@ evaluate(Board *b)
         }
     }
 
-    if (phase <= ENDGAME_PHASE_THRESHOLD)
-    {
-        for (side = 0; side < 2; side++)
-        {
-            int sign = (side == WHITE) ? 1 : -1;
-            U64 king_bb = b->pieces[side][KING];
-            if (king_bb)
-            {
-                int king_sq = lsb_index(king_bb);
-                int kf = file_of(king_sq);
-                int kr = rank_of(king_sq);
-                int center_dist = (kf > 3 ? kf - 3 : 3 - kf) + (kr > 3 ? kr - 3 : 3 - kr);
-                int activity_weight = (phase < 8) ? 25 : KING_ACTIVITY_WEIGHT;
-                int activity_bonus = (6 - center_dist) * activity_weight;
-                score += sign * activity_bonus;
-            }
-        }
-    }
-
-    /* Simplification bonus: encourage side with material advantage to exchange pieces */
     {
         int white_non_pawn_material = 0;
         int black_non_pawn_material = 0;
+        int mop_up_active = 0;
+        int mop_up_strong_side = -1;
         for (pt = KNIGHT; pt <= QUEEN; pt++)
         {
             white_non_pawn_material += count_bits(b->pieces[WHITE][pt]) * piece_values[pt];
             black_non_pawn_material += count_bits(b->pieces[BLACK][pt]) * piece_values[pt];
         }
         int material_balance = white_non_pawn_material - black_non_pawn_material;
+
+        if (material_balance > 500)
+        {
+            mop_up_active = 1;
+            mop_up_strong_side = WHITE;
+        }
+        else if (material_balance < -500)
+        {
+            mop_up_active = 1;
+            mop_up_strong_side = BLACK;
+        }
+
+        if (phase <= 6)
+        {
+            for (side = 0; side < 2; side++)
+            {
+                int sign = (side == WHITE) ? 1 : -1;
+                U64 king_bb = b->pieces[side][KING];
+                if (king_bb)
+                {
+                    int king_sq = lsb_index(king_bb);
+                    int kf = file_of(king_sq);
+                    int kr = rank_of(king_sq);
+                    int center_dist = (kf > 3 ? kf - 3 : 3 - kf) + (kr > 3 ? kr - 3 : 3 - kr);
+                    int activity_weight;
+                    if (mop_up_active && mop_up_strong_side == side)
+                        activity_weight = 5;
+                    else if (mop_up_active && mop_up_strong_side == (1 - side))
+                        activity_weight = 3;
+                    else
+                        activity_weight = (phase < 8) ? 25 : KING_ACTIVITY_WEIGHT;
+                    int activity_bonus = (6 - center_dist) * activity_weight;
+                    score += sign * activity_bonus;
+                }
+            }
+        }
+
         if (material_balance > SIMPLIFY_THRESHOLD)
         {
             int advantage = material_balance - SIMPLIFY_THRESHOLD;
@@ -3825,7 +4094,7 @@ evaluate(Board *b)
             int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
             if (edge_dist > 3)
                 edge_dist = 3;
-            int corner_bonus = (3 - edge_dist) * 20;
+            int corner_bonus = (3 - edge_dist) * 15;
 
             int strong_file = strong_king_sq % 8;
             int strong_rank = strong_king_sq / 8;
@@ -3870,11 +4139,139 @@ evaluate(Board *b)
     {
         int tempo_mg = 15;
         int tempo_eg = 8;
-        int tempo = (tempo_mg * (256 - phase_weight) + tempo_eg * phase_weight) / 256;
+        int tempo = (tempo_mg * phase_weight + tempo_eg * (256 - phase_weight)) / 256;
         if (b->side_to_move == WHITE)
             score += tempo;
         else
             score -= tempo;
+    }
+
+    {
+        int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
+        int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
+        int w_knights = count_bits(b->pieces[WHITE][KNIGHT]);
+        int b_knights = count_bits(b->pieces[BLACK][KNIGHT]);
+        int w_bishops = count_bits(b->pieces[WHITE][BISHOP]);
+        int b_bishops = count_bits(b->pieces[BLACK][BISHOP]);
+        int w_rooks = count_bits(b->pieces[WHITE][ROOK]);
+        int b_rooks = count_bits(b->pieces[BLACK][ROOK]);
+        int w_queens = count_bits(b->pieces[WHITE][QUEEN]);
+        int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
+        int total_pawns = w_pawns + b_pawns;
+
+        if (total_pawns == 0 && (w_queens + b_queens + w_rooks + b_rooks + w_bishops + b_bishops + w_knights + b_knights) <= 3)
+        {
+            if (w_queens == 1 && b_queens == 0 && w_rooks == 0 && b_rooks == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+            {
+                int w_king = b->king_sq[WHITE];
+                int b_king = b->king_sq[BLACK];
+                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+                int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
+                int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
+                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+                int king_dist = file_dist + rank_dist;
+                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+                int corner_bonus = (3 - edge_dist) * 30;
+                int proximity_bonus = (7 - chebyshev) * 10;
+                int opposition_bonus = 0;
+                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
+                    opposition_bonus = 15;
+                score += corner_bonus + proximity_bonus + opposition_bonus;
+            }
+            else if (b_queens == 1 && w_queens == 0 && w_rooks == 0 && b_rooks == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+            {
+                int w_king = b->king_sq[WHITE];
+                int b_king = b->king_sq[BLACK];
+                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+                int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
+                int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
+                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+                int corner_bonus = (3 - edge_dist) * 30;
+                int proximity_bonus = (7 - chebyshev) * 10;
+                int opposition_bonus = 0;
+                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
+                    opposition_bonus = 20;
+                score -= corner_bonus + proximity_bonus + opposition_bonus;
+            }
+            else if (w_rooks == 1 && b_rooks == 0 && w_queens == 0 && b_queens == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+            {
+                int w_king = b->king_sq[WHITE];
+                int b_king = b->king_sq[BLACK];
+                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+                int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
+                int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
+                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+                int corner_bonus = (3 - edge_dist) * 30;
+                int proximity_bonus = (7 - chebyshev) * 10;
+                int opposition_bonus = 0;
+                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
+                    opposition_bonus = 30;
+                score += corner_bonus + proximity_bonus + opposition_bonus;
+            }
+            else if (b_rooks == 1 && w_rooks == 0 && w_queens == 0 && b_queens == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+            {
+                int w_king = b->king_sq[WHITE];
+                int b_king = b->king_sq[BLACK];
+                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+                int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
+                int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
+                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+                int corner_bonus = (3 - edge_dist) * 30;
+                int proximity_bonus = (7 - chebyshev) * 10;
+                int opposition_bonus = 0;
+                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
+                    opposition_bonus = 30;
+                score -= corner_bonus + proximity_bonus + opposition_bonus;
+            }
+        }
+
+    }
+
+    {
+        int w_bishops = count_bits(b->pieces[WHITE][BISHOP]);
+        int b_bishops = count_bits(b->pieces[BLACK][BISHOP]);
+        int w_knights = count_bits(b->pieces[WHITE][KNIGHT]);
+        int b_knights = count_bits(b->pieces[BLACK][KNIGHT]);
+        int w_rooks = count_bits(b->pieces[WHITE][ROOK]);
+        int b_rooks = count_bits(b->pieces[BLACK][ROOK]);
+        int w_queens = count_bits(b->pieces[WHITE][QUEEN]);
+        int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
+        int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
+        int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
+        
+        if (w_bishops == 1 && b_bishops == 1 && w_knights == 0 && b_knights == 0 
+            && w_rooks == 0 && b_rooks == 0 && w_queens == 0 && b_queens == 0)
+        {
+            U64 w_bishop_bb = b->pieces[WHITE][BISHOP];
+            U64 b_bishop_bb = b->pieces[BLACK][BISHOP];
+            int w_sq = lsb_index(w_bishop_bb);
+            int b_sq = lsb_index(b_bishop_bb);
+            int w_color = ((w_sq >> 3) ^ (w_sq & 7)) & 1;
+            int b_color = ((b_sq >> 3) ^ (b_sq & 7)) & 1;
+            
+            if (w_color != b_color)
+            {
+                int draw_factor = 8;
+                if (w_pawns > 0 || b_pawns > 0)
+                    draw_factor = 12;
+                score = score * draw_factor / 16;
+            }
+        }
     }
 
     assert(score > -MATE_SCORE && score < MATE_SCORE && "Evaluation score out of valid range");
@@ -3963,6 +4360,29 @@ static int next_power_of_2(int v)
     return v;
 }
 
+static void pick_next_move(Move *moves, int count, int current_idx)
+{
+    int best_idx = current_idx;
+    int best_score = moves[current_idx].score;
+    int i;
+    for (i = current_idx + 1; i < count; i++)
+    {
+        if (moves[i].score > best_score)
+        {
+            best_score = moves[i].score;
+            best_idx = i;
+        }
+    }
+    if (best_idx != current_idx)
+    {
+        Move tmp = moves[current_idx];
+        moves[current_idx] = moves[best_idx];
+        moves[best_idx] = tmp;
+    }
+}
+
+static void tt_init_global(int hash_mb);
+
 static void tt_init(SearchState *s, int hash_mb)
 {
     int raw_count = hash_mb * 1024 * 1024 / (int)sizeof(TT_Cluster);
@@ -3971,6 +4391,58 @@ static void tt_init(SearchState *s, int hash_mb)
         s->tt_cluster_count = 16;
     s->tt = (TT_Cluster *)calloc(s->tt_cluster_count, sizeof(TT_Cluster));
     s->tt_generation = 1;
+}
+
+static TT_Cluster *g_tt = NULL;
+static int g_tt_cluster_count = 0;
+static int g_tt_generation = 1;
+static int g_tt_hash_mb = 128;
+
+static void tt_init_global(int hash_mb)
+{
+    if (g_tt && g_tt_hash_mb == hash_mb)
+        return;
+    if (g_tt)
+    {
+        free(g_tt);
+        g_tt = NULL;
+    }
+    g_tt_hash_mb = hash_mb;
+    int raw_count = hash_mb * 1024 * 1024 / (int)sizeof(TT_Cluster);
+    g_tt_cluster_count = next_power_of_2(raw_count);
+    if (g_tt_cluster_count < 16)
+        g_tt_cluster_count = 16;
+    g_tt = (TT_Cluster *)calloc(g_tt_cluster_count, sizeof(TT_Cluster));
+    g_tt_generation = 1;
+}
+
+void tt_clear_global(void)
+{
+    if (g_tt && g_tt_cluster_count > 0)
+    {
+        memset(g_tt, 0, (size_t)g_tt_cluster_count * sizeof(TT_Cluster));
+    }
+    g_tt_generation = 1;
+}
+
+void tt_resize_global(int hash_mb)
+{
+    if (hash_mb < 1)
+        hash_mb = 1;
+    if (hash_mb > 65536)
+        hash_mb = 65536;
+    if (g_tt)
+    {
+        free(g_tt);
+        g_tt = NULL;
+    }
+    g_tt_hash_mb = hash_mb;
+    int raw_count = hash_mb * 1024 * 1024 / (int)sizeof(TT_Cluster);
+    g_tt_cluster_count = next_power_of_2(raw_count);
+    if (g_tt_cluster_count < 16)
+        g_tt_cluster_count = 16;
+    g_tt = (TT_Cluster *)calloc(g_tt_cluster_count, sizeof(TT_Cluster));
+    g_tt_generation = 1;
 }
 
 static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score)
@@ -4055,7 +4527,7 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
         }
     }
     int replace_idx = 0;
-    int worst_val = 0x7FFFFFFF;
+    int worst_val = -0x7FFFFFFF - 1;
     for (i = 0; i < 4; i++)
     {
         TT_Entry *e = &cluster->entries[i];
@@ -4724,6 +5196,17 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     int qs_max_depth = is_endgame_qs ? QS_MAX_DEPTH_EG : QS_MAX_DEPTH_MG;
     if (qs_depth >= qs_max_depth)
     {
+        int in_check_at_limit = is_check(&s->board, s->board.side_to_move);
+        if (in_check_at_limit)
+        {
+            Move moves[MAX_MOVES];
+            int n = generate_legal_moves(&s->board, moves);
+            if (n == 0)
+            {
+                return -MATE_SCORE + ply;
+            }
+        }
+        
         int eval = evaluate(&s->board);
         if (s->board.side_to_move == BLACK)
             eval = -eval;
@@ -4743,8 +5226,15 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             return beta;
         if (alpha < stand_pat)
             alpha = stand_pat;
-        if (stand_pat + DELTA < alpha)
-            return alpha;
+        {
+            int delta_margin = DELTA;
+            int my_npm = s->board.npm[s->board.side_to_move];
+            int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
+            if (my_npm < opp_npm - 100)
+                delta_margin = delta_margin * 3 / 2;
+            if (stand_pat + delta_margin < alpha)
+                return alpha;
+        }
         if (stand_pat + QUEEN_VALUE < alpha)
             return alpha;
         if (ply >= 60)
@@ -4866,6 +5356,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     int saved_history_count = s->search_history_count;
 
+    s->pv_length[ply] = 0;
+
     if (s->search_history_count < 256)
     {
         s->search_history[s->search_history_count] = key;
@@ -4879,26 +5371,51 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     }
 
     int in_check = is_check(&s->board, s->board.side_to_move);
-    /*
-    if (in_check && ext_count < 4)
+    if (in_check && ext_count < 2)
     {
         depth++;
         ext_count++;
     }
-    */
 
     int is_endgame = 0;
+    int is_simple_endgame = 0;
     {
         int npm = s->board.npm[0] + s->board.npm[1];
         if (npm <= ENDGAME_PHASE_THRESHOLD)
             is_endgame = 1;
+        if (npm <= 3)
+            is_simple_endgame = 1;
+        if (is_simple_endgame)
+        {
+            int w_pawns = count_bits(s->board.pieces[WHITE][PAWN]);
+            int b_pawns = count_bits(s->board.pieces[BLACK][PAWN]);
+            int w_knights = count_bits(s->board.pieces[WHITE][KNIGHT]);
+            int b_knights = count_bits(s->board.pieces[BLACK][KNIGHT]);
+            int w_bishops = count_bits(s->board.pieces[WHITE][BISHOP]);
+            int b_bishops = count_bits(s->board.pieces[BLACK][BISHOP]);
+            int w_rooks = count_bits(s->board.pieces[WHITE][ROOK]);
+            int b_rooks = count_bits(s->board.pieces[BLACK][ROOK]);
+            int w_queens = count_bits(s->board.pieces[WHITE][QUEEN]);
+            int b_queens = count_bits(s->board.pieces[BLACK][QUEEN]);
+            int w_majors = w_rooks + w_queens;
+            int b_majors = b_rooks + b_queens;
+            int w_minors = w_knights + w_bishops;
+            int b_minors = b_knights + b_bishops;
+            if (w_majors == 0 && b_majors == 0 && w_pawns == 0 && b_pawns == 0)
+                is_simple_endgame = 2;
+            else if (w_majors + b_majors <= 1 && w_pawns + b_pawns <= 2)
+                is_simple_endgame = 2;
+            (void)w_minors; (void)b_minors;
+        }
     }
-    /*
-    if (is_endgame && depth >= 2 && depth < 8)
+    if (is_endgame && ENDGAME_DEPTH_BONUS > 0 && depth >= 2 && depth < 8)
     {
         depth += ENDGAME_DEPTH_BONUS;
     }
-    */
+
+    int static_eval = evaluate(&s->board);
+    if (s->board.side_to_move == BLACK)
+        static_eval = -static_eval;
 
     if (tt_move.from == 0 && tt_move.to == 0 && depth >= 4 && alpha > -INF + 1000 && beta < INF - 1000)
     {
@@ -4919,19 +5436,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
      * we can reduce the search depth or return the evaluation directly.
      * This is applied before move generation to save time.
      */
-    if (should_apply_razoring(s, depth, alpha, in_check))
+    if (should_apply_razoring(s, depth, alpha, in_check) && !is_simple_endgame)
     {
-        /* Get static evaluation */
-        int eval = evaluate(&s->board);
-
-        /* Calculate razor margin */
-        int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 150;
+        int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 100;
         if (is_endgame)
-            razor_margin = razor_margin * 3 / 2;
+            razor_margin = razor_margin * 5 / 4;
 
-        /* If eval + margin is still below alpha, do a quiescence search
-         * to verify the position is really bad */
-        if (eval + razor_margin < alpha)
+        if (static_eval + razor_margin < alpha)
         {
             /* Do a quiescence search to verify */
             int q_score = quiescence_search(s, alpha, beta, ply, 0);
@@ -4956,6 +5467,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     Board *b = &s->board;
     Move moves[MAX_MOVES];
     int n = generate_pseudo_legal_moves(b, moves);
+
+    if (tt_move.from == 0 && tt_move.to == 0 && depth >= 4)
+    {
+        depth -= 1;
+    }
+
     int legal_count = 0;
     int i;
 
@@ -4963,7 +5480,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     {
         if (moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
         {
-            moves[i].score = 1000000;
+            moves[i].score = 2000000;
         }
         else if (moves[i].capture)
         {
@@ -5003,7 +5520,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             }
             if (moves[i].score == 0 && ply >= 3)
             {
-                Move *fu = &s->followup[moves[i].from][moves[i].to];
+                Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
                 if (fu->from == moves[i].from && fu->to == moves[i].to)
                 {
                     moves[i].score = 25000;
@@ -5012,6 +5529,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             if (moves[i].score == 0)
             {
                 moves[i].score = s->history[moves[i].from][moves[i].to];
+            }
+            if (is_endgame)
+            {
+                if (moves[i].promotion)
+                    moves[i].score += 50000;
+                if (move_gives_check(&s->board, &moves[i]))
+                    moves[i].score += 15000;
             }
         }
         if (g_blunder_memory_loaded)
@@ -5033,7 +5557,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             }
         }
     }
-    sort_moves(moves, n);
 
     int best_score = -INF;
     Move best_move = {0};
@@ -5041,23 +5564,20 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     {
         int is_pv_node_rfp = (beta - alpha > 1);
-        if (!in_check && !is_pv_node_rfp && depth <= 8 && abs(beta) < MATE_SCORE - 100)
+        if (!in_check && !is_pv_node_rfp && depth <= 8 && abs(beta) < MATE_SCORE - 100 && !is_simple_endgame)
         {
-            int static_eval_rfp = evaluate(&s->board);
-            if (s->board.side_to_move == BLACK)
-                static_eval_rfp = -static_eval_rfp;
             int margin_rfp = depth * 80;
             if (b->phase < 10)
                 margin_rfp = margin_rfp * 3 / 2;
-            if (static_eval_rfp - margin_rfp >= beta)
+            if (static_eval - margin_rfp >= beta)
             {
                 s->search_history_count = saved_history_count;
-                return static_eval_rfp - margin_rfp;
+                return static_eval - margin_rfp;
             }
         }
     }
 
-    if (depth >= NULL_MOVE_MIN_DEPTH && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move))
+    if (depth >= NULL_MOVE_MIN_DEPTH && !in_check && beta < INF - 1000 && has_non_pawn_material(b, b->side_to_move) && !is_simple_endgame)
     {
         int saved_side = b->side_to_move;
         int saved_ep = b->en_passant;
@@ -5072,13 +5592,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->en_passant = -1;
         b->eval_score = EVAL_SCORE_INVALID;
         int R = 3 + depth / 6;
-        int static_eval_nm = evaluate(&s->board);
-        if (s->board.side_to_move == BLACK)
-            static_eval_nm = -static_eval_nm;
-        if (static_eval_nm - beta > 200)
+        if (static_eval - beta > 200)
             R += 1;
         if (b->phase < 10)
             R = (R > 1) ? R - 1 : 1;
+        if (is_endgame)
+            R = (R > 2) ? R - ENDGAME_NMR_BONUS : 1;
         if (R >= depth)
             R = depth - 1;
         if (R < 1)
@@ -5122,9 +5641,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
     }
 
+    int is_pv_node = (beta - alpha > 1);
     for (i = 0; i < n; i++)
     {
-        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame))
+        pick_next_move(moves, n, i);
+        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame, static_eval))
         {
             int estimated_nodes_saved = (1 << depth) - 1;
             s->futility_prunes++;
@@ -5132,11 +5653,26 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
+        if (!in_check && !is_pv_node && depth <= 5 && i >= 3 + depth * depth
+            && !moves[i].capture && !moves[i].promotion && !move_gives_check(b, &moves[i]))
+        {
+            continue;
+        }
+
+        if (!in_check && moves[i].capture && !moves[i].promotion && depth <= 8 &&
+            legal_count >= 1 && (beta - alpha <= 1))
+        {
+            int see_val = see(b, moves[i].from, moves[i].to);
+            if (see_val < -depth * 30)
+                continue;
+        }
+
         if (!in_check && !moves[i].capture && !moves[i].promotion &&
             depth <= 3 && legal_count > 3 + depth * depth &&
             (beta - alpha <= 1) &&
             s->history[moves[i].from][moves[i].to] < 0 &&
-            !move_gives_check(b, &moves[i]))
+            !move_gives_check(b, &moves[i]) &&
+            !is_endgame)
         {
             continue;
         }
@@ -5156,13 +5692,39 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int score;
         if (i == 0)
         {
-            int se_depth = depth - 1;
-            if (depth >= 8 && tt_score >= beta + 30 &&
-                moves[i].from == tt_move.from && moves[i].to == tt_move.to)
+            int se_depth = 0;
+            if (depth >= 8 && moves[i].from == tt_move.from && moves[i].to == tt_move.to
+                && tt_score > -MATE_SCORE + 100 && tt_score < MATE_SCORE - 100
+                && tt_val != INF + 1)
             {
-                se_depth = depth;
+                int se_beta = tt_score - 2 * depth;
+                int se_depth_limit = depth - 3;
+                
+                Move se_moves[MAX_MOVES];
+                int se_count = 0;
+                for (int si = 0; si < n; si++)
+                {
+                    if (moves[si].from != tt_move.from || moves[si].to != tt_move.to)
+                        se_moves[se_count++] = moves[si];
+                }
+                
+                int se_score = -INF;
+                for (int si = 0; si < se_count; si++)
+                {
+                    UndoInfo se_undo;
+                    make_move(b, &se_moves[si], &se_undo);
+                    if (!is_check(b, b->side_to_move ^ 1))
+                    {
+                        se_score = -negamax(s, se_depth_limit - 1, -se_beta, -se_beta + 1, ext_count, ply + 1);
+                        break;
+                    }
+                    unmake_move(b, &se_moves[si], &se_undo);
+                }
+                
+                if (se_score < se_beta)
+                    se_depth = 1;
             }
-            score = -negamax(s, se_depth, -beta, -alpha, ext_count, ply + 1);
+            score = -negamax(s, depth - 1 + se_depth, -beta, -alpha, ext_count, ply + 1);
         }
         else
         {
@@ -5209,6 +5771,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             return 0;
         }
 
+        if (!moves[i].capture && !moves[i].promotion && score <= alpha)
+        {
+            s->history[moves[i].from][moves[i].to] -= depth * depth;
+        }
+
         if (score > best_score)
         {
             best_score = score;
@@ -5217,14 +5784,22 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             {
                 alpha = score;
                 flag = 0;
+                s->pv_table[ply][0] = moves[i];
+                memcpy(&s->pv_table[ply][1], s->pv_table[ply + 1], s->pv_length[ply + 1] * sizeof(Move));
+                s->pv_length[ply] = s->pv_length[ply + 1] + 1;
                 if (alpha >= beta)
                 {
                     flag = 2;
                     if (!moves[i].capture && depth < 64)
                     {
-                        s->killers[depth][1] = s->killers[depth][0];
-                        s->killers[depth][0] = moves[i];
+                        if (moves[i].from != s->killers[depth][0].from || moves[i].to != s->killers[depth][0].to)
+                        {
+                            s->killers[depth][1] = s->killers[depth][0];
+                            s->killers[depth][0] = moves[i];
+                        }
                         s->history[moves[i].from][moves[i].to] += depth * depth;
+                        if (s->history[moves[i].from][moves[i].to] > 8000)
+                            s->history[moves[i].from][moves[i].to] = 8000;
                     }
                     if (ply >= 1)
                     {
@@ -5235,7 +5810,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     if (ply >= 2)
                     {
                         Move prev_own_move = s->move_stack[ply - 2];
-                        s->followup[prev_own_move.from][prev_own_move.to] = moves[i];
+                        s->followup[b->side_to_move][prev_own_move.from][prev_own_move.to] = moves[i];
                     }
                     tt_store(s, key, depth, beta, flag, best_move, ply);
                     s->search_history_count = saved_history_count;
@@ -5638,7 +6213,7 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
     if (tm->optimal_time > time_left * 0.4)
         tm->optimal_time = time_left * 0.4;
 
-    tm->max_time = time_left * 0.6;
+    tm->max_time = time_left * 0.4;
     if (tm->max_time < tm->optimal_time * 3)
         tm->max_time = tm->optimal_time * 3;
     if (tm->max_time > time_left - 0.1)
@@ -5682,38 +6257,18 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     s.nodes = 0;
 
     TimeManager tm;
-    if (time_left > 0)
-    {
-        tm.optimal_time = time_limit;
-        tm.max_time = time_left;
-        tm.remaining = time_left;
-        tm.increment = 0;
-        tm.moves_to_go = 0;
-        tm.move_number = 0;
-        tm.easy_move_count = 0;
-        tm.prev_best_move_from = -1;
-        tm.prev_best_move_to = -1;
-        tm.stable_count = 0;
-        tm.panic_flag = 0;
-        tm.start_time = s.start_time;
-    }
-    else
+    init_time_manager(&tm, time_left > 0 ? time_left : time_limit, increment, moves_to_go, move_number, s.start_time);
+    if (time_left <= 0)
     {
         tm.optimal_time = time_limit;
         tm.max_time = time_limit;
         tm.remaining = time_limit;
-        tm.increment = 0;
-        tm.moves_to_go = 0;
-        tm.move_number = 0;
-        tm.easy_move_count = 0;
-        tm.prev_best_move_from = -1;
-        tm.prev_best_move_to = -1;
-        tm.stable_count = 0;
-        tm.panic_flag = 0;
-        tm.start_time = s.start_time;
     }
     s.time_limit = tm.max_time;
-    tt_init(&s, 128);
+    tt_init_global(128);
+    s.tt = g_tt;
+    s.tt_cluster_count = g_tt_cluster_count;
+    s.tt_generation = g_tt_generation;
     s.search_history_count = 0;
     s.game_history_count = 0;
     if (game_history && game_history_count > 0)
@@ -5778,8 +6333,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
         {
             if (out_nodes)
                 *out_nodes = 0;
-            free(s.tt);
-            return best_move; // Return null move, let cutechess handle the draw
+            return best_move;
         }
     }
 
@@ -5787,8 +6341,14 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     {
         if (out_nodes)
             *out_nodes = 0;
-        free(s.tt);
         return best_move;
+    }
+
+    if (legal_moves_count == 1)
+    {
+        if (out_nodes)
+            *out_nodes = 1;
+        return root_moves[0];
     }
 
     // Root move ordering: sort moves for better search efficiency
@@ -5851,7 +6411,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
         depth_bonus = 1;
     int effective_max_depth = max_depth + depth_bonus;
 
-    int window = 25;
+    int window = 15;
 
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
@@ -5895,6 +6455,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     break;
 
                 root_scores[i] = score;
+                root_moves[i].score = score;
 
                 if (score > current_score)
                 {
@@ -5903,6 +6464,9 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     if (score > alpha)
                     {
                         alpha = score;
+                        s.pv_table[0][0] = root_moves[i];
+                        memcpy(&s.pv_table[0][1], s.pv_table[1], s.pv_length[1] * sizeof(Move));
+                        s.pv_length[0] = s.pv_length[1] + 1;
                     }
                 }
             }
@@ -5945,6 +6509,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         break;
 
                     root_scores[i] = score;
+                    root_moves[i].score = score;
 
                     if (score > current_score)
                     {
@@ -5953,6 +6518,9 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         if (score > alpha)
                         {
                             alpha = score;
+                            s.pv_table[0][0] = root_moves[i];
+                            memcpy(&s.pv_table[0][1], s.pv_table[1], s.pv_length[1] * sizeof(Move));
+                            s.pv_length[0] = s.pv_length[1] + 1;
                         }
                     }
                 }
@@ -5962,14 +6530,14 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
 
                 if (current_score <= alpha)
                 {
-                    window *= 2;
+                    window += window / 2 + 5;
                     alpha = best_score - window;
                     if (alpha < -INF)
                         alpha = -INF;
                 }
                 else if (current_score >= beta)
                 {
-                    window *= 2;
+                    window += window / 2 + 5;
                     beta = best_score + window;
                     if (beta > INF)
                         beta = INF;
@@ -6015,10 +6583,22 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 {
                     if (root_moves[j].from == current_best.from && root_moves[j].to == current_best.to && root_moves[j].promotion == current_best.promotion)
                     {
-                        Move tmp = root_moves[0];
-                        root_moves[0] = root_moves[j];
-                        root_moves[j] = tmp;
-                        break;
+                        root_moves[j].score = current_score + 1000000;
+                    }
+                }
+                for (j = 1; j < legal_moves_count; j++)
+                {
+                    int k;
+                    for (k = j; k > 0; k--)
+                    {
+                        if (root_moves[k].score > root_moves[k - 1].score)
+                        {
+                            Move tmp = root_moves[k];
+                            root_moves[k] = root_moves[k - 1];
+                            root_moves[k - 1] = tmp;
+                        }
+                        else
+                            break;
                     }
                 }
             }
@@ -6027,27 +6607,39 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
             {
                 double elapsed2 = get_time() - s.start_time;
                 int time_ms = (int)(elapsed2 * 1000);
-                char pv_buf[256];
+                char pv_buf[1024];
                 int pv_pos = 0;
-                pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",
-                                  'a' + (current_best.from & 7), '1' + (current_best.from >> 3),
-                                  'a' + (current_best.to & 7), '1' + (current_best.to >> 3));
-                if (current_best.promotion)
+                int pv_len = s.pv_length[0];
+                if (pv_len <= 0)
+                    pv_len = 1;
+                int pi;
+                for (pi = 0; pi < pv_len && pi < 32; pi++)
                 {
-                    char pc = 'q';
-                    switch (current_best.promotion)
+                    Move *pm = &s.pv_table[0][pi];
+                    if (pm->from == 0 && pm->to == 0 && pi > 0)
+                        break;
+                    if (pv_pos > 0)
+                        pv_pos += sprintf(pv_buf + pv_pos, " ");
+                    pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",
+                                      'a' + (pm->from & 7), '1' + (pm->from >> 3),
+                                      'a' + (pm->to & 7), '1' + (pm->to >> 3));
+                    if (pm->promotion)
                     {
-                    case KNIGHT:
-                        pc = 'n';
-                        break;
-                    case BISHOP:
-                        pc = 'b';
-                        break;
-                    case ROOK:
-                        pc = 'r';
-                        break;
+                        char pc = 'q';
+                        switch (pm->promotion)
+                        {
+                        case KNIGHT:
+                            pc = 'n';
+                            break;
+                        case BISHOP:
+                            pc = 'b';
+                            break;
+                        case ROOK:
+                            pc = 'r';
+                            break;
+                        }
+                        pv_pos += sprintf(pv_buf + pv_pos, "%c", pc);
                     }
-                    pv_pos += sprintf(pv_buf + pv_pos, "%c", pc);
                 }
                 pv_buf[pv_pos] = '\0';
                 g_info_callback(depth, current_score, s.nodes, time_ms, pv_buf);
@@ -6059,7 +6651,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 {
                     for (hj = 0; hj < 64; hj++)
                     {
-                        s.history[hi][hj] = s.history[hi][hj] * 9 / 10;
+                        s.history[hi][hj] = s.history[hi][hj] * 7 / 8;
                     }
                 }
             }
@@ -6077,10 +6669,19 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
             tm.prev_best_move_from = current_best.from;
             tm.prev_best_move_to = current_best.to;
 
-            if (tm.stable_count >= 3 && current_score >= prev_score + 10)
+            if (tm.stable_count >= 3 && abs(current_score - prev_score) <= 15)
             {
                 double em_elapsed = get_time() - tm.start_time;
-                if (em_elapsed >= tm.optimal_time * 0.3)
+                if (em_elapsed >= tm.optimal_time * 0.25)
+                {
+                    early_terminate = 1;
+                }
+            }
+
+            if (tm.stable_count >= 5 && abs(current_score - prev_score) <= 30)
+            {
+                double em_elapsed = get_time() - tm.start_time;
+                if (em_elapsed >= tm.optimal_time * 0.15)
                 {
                     early_terminate = 1;
                 }
@@ -6091,9 +6692,17 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 tm.panic_flag = 1;
             }
 
+            if (tm.panic_flag && current_score >= prev_score + 10)
+            {
+                tm.panic_flag = 0;
+            }
+
             if (tm.panic_flag)
             {
-                s.time_limit = tm.max_time;
+                double panic_limit = tm.optimal_time * 3.0;
+                if (panic_limit > tm.max_time)
+                    panic_limit = tm.max_time;
+                s.time_limit = panic_limit;
             }
             else
             {
@@ -6111,28 +6720,52 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     {
         int candidate_count = 0;
         int candidate_indices[MAX_MOVES];
+        int candidate_weights[MAX_MOVES];
+        int total_weight = 0;
         int min_acceptable_score = best_score - g_perturb_threshold;
 
         for (i = 0; i < legal_moves_count; i++)
         {
             if (root_scores[i] >= min_acceptable_score)
             {
-                candidate_indices[candidate_count++] = i;
+                int diff = best_score - root_scores[i];
+                int weight = g_perturb_threshold + 1 - diff;
+                if (weight < 1) weight = 1;
+                candidate_indices[candidate_count] = i;
+                candidate_weights[candidate_count] = weight;
+                total_weight += weight;
+                candidate_count++;
             }
         }
 
         if (candidate_count > 1)
         {
-            int chosen_idx = perturb_rand_int(candidate_count);
-            int move_idx = candidate_indices[chosen_idx];
-            best_move = root_moves[move_idx];
-            best_move.score = root_scores[move_idx];
+            int roll = perturb_rand_int(total_weight);
+            int cumulative = 0;
+            int chosen_idx = 0;
+            for (i = 0; i < candidate_count; i++)
+            {
+                cumulative += candidate_weights[i];
+                if (roll < cumulative)
+                {
+                    chosen_idx = i;
+                    break;
+                }
+            }
+            best_move = root_moves[candidate_indices[chosen_idx]];
+            best_move.score = root_scores[candidate_indices[chosen_idx]];
         }
+    }
+
+    if (!scores_valid && legal_moves_count > 0)
+    {
+        best_move = root_moves[0];
+        best_move.score = 0;
     }
 
     if (out_nodes)
         *out_nodes = s.nodes;
-    free(s.tt);
+    g_tt_generation = s.tt_generation;
     return best_move;
 }
 
@@ -6280,12 +6913,12 @@ static void smp_worker_search(LazySMPWorker *w)
     memset(&s, 0, sizeof(SearchState));
     s.board = w->board;
     s.start_time = w->start_time;
-    s.time_limit = w->time_limit_max;
+    s.time_limit = w->time_limit;
     s.aborted = 0;
     s.nodes = 0;
     s.tt = w->shared_tt;
     s.tt_cluster_count = w->tt_cluster_count;
-    s.tt_generation = 1;
+    s.tt_generation = g_tt_generation;
     s.search_history_count = 0;
     s.game_history_count = w->game_history_count;
     if (w->game_history_count > 0)
@@ -6325,11 +6958,13 @@ static void smp_worker_search(LazySMPWorker *w)
         return;
     }
 
-    int start_depth = 1;
+    int start_depth = 1 + (w->thread_id % 4);
     int depth_step = 1;
 
     Move best_move = root_moves[0];
     int best_score = -INF;
+    w->best_move = best_move;
+    w->best_score = best_score;
 
     for (int depth = start_depth; depth <= w->max_depth; depth += depth_step)
     {
@@ -6461,21 +7096,13 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     }
 
     int tt_cluster_count_smp;
-    int raw_count_smp = 128 * 1024 * 1024 / (int)sizeof(TT_Cluster);
-    tt_cluster_count_smp = next_power_of_2(raw_count_smp);
-    if (tt_cluster_count_smp < 16)
-        tt_cluster_count_smp = 16;
-    TT_Cluster *shared_tt = (TT_Cluster *)calloc(tt_cluster_count_smp, sizeof(TT_Cluster));
-    if (!shared_tt)
-    {
-        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
-                                game_history, game_history_count);
-    }
+    tt_init_global(128);
+    TT_Cluster *shared_tt = g_tt;
+    tt_cluster_count_smp = g_tt_cluster_count;
 
     LazySMPWorker *workers = (LazySMPWorker *)calloc(num_threads, sizeof(LazySMPWorker));
     if (!workers)
     {
-        free(shared_tt);
         return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
                                 game_history, game_history_count);
     }
@@ -6489,7 +7116,11 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     if (time_left > 0)
     {
         smp_optimal = time_limit;
-        smp_max = time_left;
+        smp_max = time_left * 0.4;
+        if (smp_max < smp_optimal * 3)
+            smp_max = smp_optimal * 3;
+        if (smp_max > time_left - 0.1)
+            smp_max = time_left - 0.1;
     }
     else
     {
@@ -6574,7 +7205,6 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     g_last_search_nodes = total_nodes;
     g_last_best_score = best_score;
 
-    free(shared_tt);
     free(workers);
     return best_move;
 }
@@ -6662,12 +7292,20 @@ perft(const char *fen, int depth)
     return perft_internal(&b, depth);
 }
 
-void set_engine_abort(int flag)
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+set_engine_abort(int flag)
 {
     g_engine_abort_flag = flag;
 }
 
-int get_engine_abort(void)
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+get_engine_abort(void)
 {
     return g_engine_abort_flag;
 }

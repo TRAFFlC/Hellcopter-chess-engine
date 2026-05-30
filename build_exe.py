@@ -37,9 +37,9 @@ def package_exe():
         print(f"错误: {dll_name} 不存在，请先编译 C 引擎")
         sys.exit(1)
 
-    opening_book = os.path.join(script_dir, "opening_book.json")
-    if not os.path.isfile(opening_book):
-        print("错误: opening_book.json 不存在")
+    book_bin = os.path.join(script_dir, "dist", "book.bin")
+    if not os.path.isfile(book_bin):
+        print("错误: dist/book.bin 不存在，请先运行 generate_book.py")
         sys.exit(1)
 
     dist_dir = os.path.join(script_dir, "dist")
@@ -56,7 +56,7 @@ def package_exe():
         "--distpath", dist_dir,
         "--workpath", build_dir,
         "--add-data", f"{dll_path}{os.pathsep}.",
-        "--add-data", f"{opening_book}{os.pathsep}.",
+        "--add-data", f"{book_bin}{os.pathsep}.",
         "--hidden-import", "chess",
         "--hidden-import", "engine",
         "--hidden-import", "engine_wrapper",

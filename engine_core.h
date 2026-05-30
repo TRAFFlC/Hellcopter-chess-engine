@@ -108,8 +108,10 @@ typedef struct
     Move killers[64][2];
     int history[64][64];
     Move countermove[2][64][64];
-    Move followup[64][64];
+    Move followup[2][64][64];
     Move move_stack[128];
+    Move pv_table[128][64];
+    int pv_length[128];
     int nodes;
     double start_time;
     double time_limit;
@@ -195,5 +197,9 @@ int get_engine_abort(void);
 /* Info callback for iterative deepening output */
 typedef void (*EngineInfoCallback)(int depth, int score, int nodes, int time_ms, const char *pv_str);
 void set_engine_info_callback(EngineInfoCallback cb);
+
+/* Global TT management */
+void tt_clear_global(void);
+void tt_resize_global(int hash_mb);
 
 #endif

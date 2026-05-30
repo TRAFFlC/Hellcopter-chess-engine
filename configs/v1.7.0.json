@@ -8,7 +8,7 @@
       "name": "静止搜索深度增强",
       "description": "残局时增加静止搜索深度限制",
       "params": {
-        "QS_MAX_DEPTH_MG": 8,
+        "QS_MAX_DEPTH_MG": 12,
         "QS_MAX_DEPTH_EG": 16
       }
     },
@@ -73,8 +73,8 @@
       "null_move_min_depth": 3,
       "endgame_nmr_bonus": 1,
       "endgame_depth_bonus": 3,
-      "qs_max_depth_mg": 8,
-      "qs_max_depth_eg": 16,
+      "qs_max_depth_mg": 12,
+      "qs_max_depth_eg": 24,
       "lmr_enabled": true,
       "lmr_min_depth": 3,
       "lmr_move_threshold": 2,

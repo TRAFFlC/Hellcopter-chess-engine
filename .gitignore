@@ -40,6 +40,7 @@ test_engines/
 
 # Match records
 match_records/
+game_*.txt
 
 # PyInstaller build artifacts
 build_pyinstaller/

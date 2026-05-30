@@ -98,6 +98,9 @@ typedef struct {
 static PolyglotEntry *g_book_entries = NULL;
 static int g_book_count = 0;
 static int g_book_capacity = 0;
+static int g_own_book = 1;
+static char g_book_path[MAX_LINE] = "";
+static int g_book_randomness = 20;
 
 static int load_polyglot_book(const char *path)
 {
@@ -159,8 +162,23 @@ static int polyglot_decode_move(U16 encoded, int *from_out, int *to_out, int *pr
     return 1;
 }
 
+static U64 xorshift64_state = 0;
+
+static U64 xorshift64(void)
+{
+    if (xorshift64_state == 0)
+        xorshift64_state = (U64)time(NULL) ^ ((U64)clock() << 16);
+    U64 x = xorshift64_state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    xorshift64_state = x;
+    return x;
+}
+
 static int find_book_move(const Board *b, char *out_move)
 {
+    if (!g_own_book) return 0;
     if (!g_book_entries || g_book_count == 0) return 0;
 
     U64 target = polyglot_hash(b);
@@ -185,21 +203,52 @@ static int find_book_move(const Board *b, char *out_move)
         found_idx--;
     }
 
-    int best_weight = 0;
-    int best_move = -1;
+    int start_idx = found_idx;
+    int match_count = 0;
     int idx = found_idx;
     while (idx < g_book_count && g_book_entries[idx].key == target) {
-        if (g_book_entries[idx].weight > best_weight) {
-            best_weight = g_book_entries[idx].weight;
-            best_move = g_book_entries[idx].move;
-        }
+        match_count++;
         idx++;
     }
 
-    if (best_move < 0) return 0;
+    int selected_move = -1;
+
+    if (g_book_randomness > 0 && match_count > 1) {
+        int total_weight = 0;
+        for (int i = 0; i < match_count; i++) {
+            int w = (int)g_book_entries[start_idx + i].weight;
+            if (w <= 0) w = 1;
+            total_weight += w;
+        }
+        if (total_weight > 0) {
+            int r = (int)(xorshift64() % (U64)total_weight);
+            int cumulative = 0;
+            for (int i = 0; i < match_count; i++) {
+                int w = (int)g_book_entries[start_idx + i].weight;
+                if (w <= 0) w = 1;
+                cumulative += w;
+                if (r < cumulative) {
+                    selected_move = g_book_entries[start_idx + i].move;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (selected_move < 0) {
+        int best_weight = 0;
+        for (int i = 0; i < match_count; i++) {
+            if (g_book_entries[start_idx + i].weight > best_weight) {
+                best_weight = g_book_entries[start_idx + i].weight;
+                selected_move = g_book_entries[start_idx + i].move;
+            }
+        }
+    }
+
+    if (selected_move < 0) return 0;
 
     int from, to, promo;
-    polyglot_decode_move((U16)best_move, &from, &to, &promo);
+    polyglot_decode_move((U16)selected_move, &from, &to, &promo);
 
     out_move[0] = 'a' + (from & 7);
     out_move[1] = '1' + (from >> 3);
@@ -308,16 +357,30 @@ static int str_to_promotion(char c)
 
 static void load_opening_book(void)
 {
-    char path[MAX_LINE];
+    free_polyglot_book();
 
-    sprintf(path, "%s\\book.bin", g_exe_dir);
-    int count = load_polyglot_book(path);
-    if (count <= 0) {
-        sprintf(path, "%s/book.bin", g_exe_dir);
-        count = load_polyglot_book(path);
+    if (g_book_path[0] != '\0') {
+        int count = load_polyglot_book(g_book_path);
+        if (count > 0) {
+            fprintf(stderr, "Loaded opening book from %s: %d positions\n", g_book_path, count);
+            return;
+        }
+        fprintf(stderr, "Failed to load book from BookPath: %s\n", g_book_path);
     }
-    if (count > 0) {
-        fprintf(stderr, "Loaded opening book: %d positions\n", count);
+
+    char path[MAX_LINE];
+    const char *book_names[] = {"Goi5.1.bin", "book.bin"};
+    int count = 0;
+    for (int i = 0; i < 2 && count <= 0; i++) {
+        sprintf(path, "%s\\%s", g_exe_dir, book_names[i]);
+        count = load_polyglot_book(path);
+        if (count <= 0) {
+            sprintf(path, "%s/%s", g_exe_dir, book_names[i]);
+            count = load_polyglot_book(path);
+        }
+        if (count > 0) {
+            fprintf(stderr, "Loaded opening book (%s): %d positions\n", book_names[i], count);
+        }
     }
 }
 
@@ -469,6 +532,10 @@ static void cmd_uci(void)
 {
     printf("id name Hellcopter\n");
     printf("id author Trafflc\n");
+    printf("option name OwnBook type check default true\n");
+    printf("option name BookPath type string default \n");
+    printf("option name BookRandomness type spin default 20 min 0 max 100\n");
+    printf("option name SyzygyPath type string default dist\\syzygy\n");
     printf("uciok\n");
     fflush(stdout);
 }
@@ -479,12 +546,59 @@ static void cmd_isready(void)
     fflush(stdout);
 }
 
+static void cmd_setoption(const char *args)
+{
+    const char *p = args;
+    while (*p == ' ') p++;
+    if (strncmp(p, "name", 4) != 0) return;
+    p += 4;
+    while (*p == ' ') p++;
+
+    if (strncmp(p, "OwnBook", 7) == 0 && (p[7] == ' ' || p[7] == '\0')) {
+        p += 7;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        g_own_book = (strncmp(p, "true", 4) == 0) ? 1 : 0;
+    } else if (strncmp(p, "BookPath", 8) == 0 && (p[8] == ' ' || p[8] == '\0')) {
+        p += 8;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        strncpy(g_book_path, p, MAX_LINE - 1);
+        g_book_path[MAX_LINE - 1] = '\0';
+        int len = (int)strlen(g_book_path);
+        while (len > 0 && (g_book_path[len - 1] == '\n' || g_book_path[len - 1] == '\r'))
+            g_book_path[--len] = '\0';
+        load_opening_book();
+    } else if (strncmp(p, "BookRandomness", 14) == 0 && (p[14] == ' ' || p[14] == '\0')) {
+        p += 14;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        g_book_randomness = atoi(p);
+        if (g_book_randomness < 0) g_book_randomness = 0;
+        if (g_book_randomness > 100) g_book_randomness = 100;
+    } else if (strncmp(p, "SyzygyPath", 10) == 0 && (p[10] == ' ' || p[10] == '\0')) {
+        p += 10;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        fprintf(stderr, "SyzygyPath set to: %s (built-in tablebase rules active)\n", p);
+    }
+}
+
 static void cmd_ucinewgame(void)
 {
     set_engine_abort(1);
     g_position_history_count = 0;
     board_from_fen(&g_board,
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    tt_clear_global();
     set_engine_abort(0);
 }
 
@@ -663,6 +777,39 @@ static void cmd_stop(void)
     set_engine_abort(1);
 }
 
+static void cmd_bench(void)
+{
+    static const char *bench_fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "8/P7/8/8/8/8/8/4K2k w - - 0 1",
+        "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        "rnbqkbnr/pppp1ppp/8/4pP2/8/8/PPPPP1PP/RNBQKBNR w KQkq e6 0 3",
+        "r1bqkb1r/pppppppp/2n2n2/8/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq d3 0 3",
+        "r1bq1rk1/ppp2ppp/2n2n2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 6",
+    };
+    int num_fens = sizeof(bench_fens) / sizeof(bench_fens[0]);
+    int bench_depth = 10;
+    long long total_nodes = 0;
+    clock_t start = clock();
+
+    for (int i = 0; i < num_fens; i++) {
+        int nodes = 0;
+        find_best_move_c(bench_fens[i], 100000.0, 0, 0, 0, 0, bench_depth, &nodes, NULL, 0);
+        total_nodes += nodes;
+        fprintf(stdout, "Position %2d/%2d: nodes=%d\n", i + 1, num_fens, nodes);
+    }
+
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    long long nps = (long long)(total_nodes / (elapsed > 0.001 ? elapsed : 0.001));
+    fprintf(stdout, "Bench: %lld nodes in %.2fs (%lld nps)\n", total_nodes, elapsed, nps);
+}
+
 int main(void)
 {
 #ifdef _WIN32
@@ -687,6 +834,8 @@ int main(void)
             cmd_uci();
         } else if (strcmp(cmd, "isready") == 0) {
             cmd_isready();
+        } else if (strncmp(cmd, "setoption", 9) == 0) {
+            cmd_setoption(cmd + 9);
         } else if (strcmp(cmd, "ucinewgame") == 0) {
             cmd_ucinewgame();
         } else if (strncmp(cmd, "position", 8) == 0) {
@@ -696,6 +845,8 @@ int main(void)
                 cmd_go(cmd + 2);
         } else if (strcmp(cmd, "stop") == 0) {
             cmd_stop();
+        } else if (strcmp(cmd, "bench") == 0) {
+            cmd_bench();
         } else if (strcmp(cmd, "quit") == 0) {
             set_engine_abort(1);
             break;

@@ -263,6 +263,7 @@ def calc_elo(wins, losses, draws):
 
 
 def save_results(base_dir, results, args, config_path):
+    import math
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     config_tag = args.config if args.config else "default"
     

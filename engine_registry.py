@@ -14,40 +14,18 @@ RAINMAN_PATH = os.path.join(BASE_DIR, "test_engines", "Rainman 1427", "rainman.e
 SARGON_PATH = os.path.join(BASE_DIR, "test_engines", "sargon 1163", "sargon-engine-static-link.exe")
 TSCP_PATH = os.path.join(BASE_DIR, "test_engines", "TSCP 1607", "tscp181.exe")
 CHESS3SUPER_PATH = ENGINE_PATH
-HELLCOPTER_ADAPTER_DIR = os.path.join(BASE_DIR, "temp_hellcopter_uci")
-
-
-def create_hellcopter_adapter():
-    env_params = os.path.join(BASE_DIR, "configs", "v1.7.0.json")
-    os.makedirs(HELLCOPTER_ADAPTER_DIR, exist_ok=True)
-    adapter_path = os.path.join(HELLCOPTER_ADAPTER_DIR, "hellcopter_uci.py")
-
-    env_params_fwd = env_params.replace("\\", "/")
-    base_dir_fwd = BASE_DIR.replace("\\", "/")
-
-    with open(adapter_path, "w", encoding="utf-8") as f:
-        f.write("import os\n")
-        f.write("import sys\n\n")
-        f.write(f'os.environ["ENGINE_PARAMS"] = "{env_params_fwd}"\n')
-        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
-        f.write("from uci_engine import UCIEngine\n\n")
-        f.write('if __name__ == "__main__":\n')
-        f.write("    uci = UCIEngine()\n")
-        f.write("    uci.run()\n")
-
-    return adapter_path
+HELLCOPTER_EXE_PATH = os.path.join(BASE_DIR, "dist", "Hellcopter.exe")
 
 
 def _make_hellcopter(name):
-    ap = create_hellcopter_adapter()
-    return Engine(sys.executable, engine_args=[ap], protocol="uci")
+    return Engine(HELLCOPTER_EXE_PATH, protocol="uci")
 
 
 ENGINE_REGISTRY = [
     {"id": "chess3super", "name": "Chess3Super",
      "path": CHESS3SUPER_PATH, "args": [], "protocol": "uci", "options": []},
-    {"id": "hellcopter", "name": "Hellcopter v1.7.0",
-     "path": None, "factory": lambda: _make_hellcopter("Hellcopter v1.7.0"),
+    {"id": "hellcopter", "name": "Hellcopter v1.8.0",
+     "path": None, "factory": lambda: _make_hellcopter("Hellcopter v1.8.0"),
      "protocol": "uci", "options": []},
     {"id": "velvet", "name": "Velvet v8.1.1",
      "path": VELVET_PATH, "args": [], "protocol": "uci",

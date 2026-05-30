@@ -158,6 +158,9 @@ def _load_library():
     ]
     lib.load_blunder_memory.restype = None
 
+    lib.set_engine_abort.argtypes = [ctypes.c_int]
+    lib.set_engine_abort.restype = None
+
     try:
         lib.get_engine_version.argtypes = []
         lib.get_engine_version.restype = ctypes.c_int
@@ -394,6 +397,11 @@ def add_blunder_entry(fen: str, bad_from: int, bad_to: int,
 def clear_blunder_memory() -> None:
     _ensure_loaded()
     _lib.clear_blunder_memory()
+
+
+def set_engine_abort(flag: int = 1) -> None:
+    _ensure_loaded()
+    _lib.set_engine_abort(flag)
 
 
 def load_blunder_memory_from_file(blunder_memory_path: str) -> None:

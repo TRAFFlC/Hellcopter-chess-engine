@@ -5,7 +5,7 @@ a = Analysis(
     ['E:\\world\\python\\chess\\uci_engine.py'],
     pathex=[],
     binaries=[],
-    datas=[('E:\\world\\python\\chess\\engine_core.dll', '.'), ('E:\\world\\python\\chess\\opening_book.json', '.')],
+    datas=[('E:\\world\\python\\chess\\engine_core.dll', '.'), ('E:\\world\\python\\chess\\dist\\book.bin', '.')],
     hiddenimports=['chess', 'engine', 'engine_wrapper'],
     hookspath=[],
     hooksconfig={},
