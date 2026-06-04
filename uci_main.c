@@ -279,7 +279,20 @@ static int g_go_params_winc;
 static int g_go_params_binc;
 static int g_go_params_depth;
 static int g_go_params_movetime;
+static int g_go_params_movestogo;
 static int g_go_infinite;
+
+static volatile int g_ponder_mode = 0;
+static volatile int g_ponderhit_received = 0;
+#ifdef _WIN32
+static HANDLE g_search_thread = NULL;
+#else
+static pthread_t g_search_thread_id;
+static int g_search_thread_active = 0;
+#endif
+static volatile int g_search_running = 0;
+static char g_last_best_move[MAX_MOVE_STR] = "";
+static char g_last_ponder_move[MAX_MOVE_STR] = "";
 
 static char g_exe_dir[MAX_LINE];
 
@@ -421,12 +434,16 @@ static double compute_time(int wtime, int btime, int winc, int binc, int movetim
     }
 
     double time_limit = remaining / estimated_moves_left + inc * 0.85;
-    if (time_limit > remaining * 0.5) time_limit = remaining * 0.5;
+    if (time_limit > remaining * 0.5 + inc * 0.5) time_limit = remaining * 0.5 + inc * 0.5;
     time_limit *= time_fraction;
 
-    if (inc > 0 && time_limit < inc * 0.9) time_limit = inc * 0.9;
-    if (remaining < inc * 3 && inc > 0 && time_limit > inc * 0.95)
-        time_limit = inc * 0.95;
+    if (inc > 0 && time_limit < inc * 0.85) time_limit = inc * 0.85;
+    if (remaining < inc * 5 && inc > 0)
+    {
+        if (time_limit < inc * 0.85) time_limit = inc * 0.85;
+        if (time_limit > remaining + inc * 0.9 - 0.05)
+            time_limit = remaining + inc * 0.9 - 0.05;
+    }
 
     if (time_limit < 0.05) time_limit = 0.05;
     return time_limit;
@@ -457,7 +474,7 @@ static void run_search(double time_limit, int max_depth)
 
     double time_left = 0.0;
     double increment = 0.0;
-    int moves_to_go = 0;
+    int moves_to_go = g_go_params_movestogo;
     int move_number = g_board.fullmove_number;
 
     if (g_go_params_movetime <= 0) {
@@ -486,6 +503,8 @@ static void run_search(double time_limit, int max_depth)
     int time_ms = (int)((double)(end - start) / CLOCKS_PER_SEC * 1000);
 
     if (result.from == 0 && result.to == 0) {
+        strcpy(g_last_best_move, "0000");
+        g_last_ponder_move[0] = '\0';
         printf("bestmove 0000\n");
         fflush(stdout);
         return;
@@ -496,6 +515,29 @@ static void run_search(double time_limit, int max_depth)
 
     char uci_move[MAX_MOVE_STR];
     move_to_uci(&result, uci_move);
+    strcpy(g_last_best_move, uci_move);
+
+    g_last_ponder_move[0] = '\0';
+    {
+        Move ponder_mv = {0};
+        if (extract_ponder_move(&g_board, result, &ponder_mv))
+        {
+            move_to_uci(&ponder_mv, g_last_ponder_move);
+        }
+    }
+
+    if (g_ponder_mode) {
+        while (!g_ponderhit_received && !get_engine_abort()) {
+#ifdef _WIN32
+            Sleep(1);
+#else
+            usleep(1000);
+#endif
+        }
+        if (g_ponderhit_received) {
+            set_engine_abort(0);
+        }
+    }
 
     if (depth > 0) {
         if (abs(score) >= 30000) {
@@ -508,7 +550,10 @@ static void run_search(double time_limit, int max_depth)
                    depth, score, nodes, time_ms, uci_move);
         }
     }
-    printf("bestmove %s\n", uci_move);
+    if (g_last_ponder_move[0] != '\0')
+        printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
+    else
+        printf("bestmove %s\n", g_last_best_move);
     fflush(stdout);
 }
 
@@ -516,26 +561,50 @@ static void run_search(double time_limit, int max_depth)
 static unsigned __stdcall search_thread_func(void *arg)
 {
     double *time_limit_ptr = (double *)arg;
-    run_search(*time_limit_ptr, g_go_params_depth);
+    double tl = *time_limit_ptr;
+    free(time_limit_ptr);
+    run_search(tl, g_go_params_depth);
+    g_search_running = 0;
     return 0;
 }
 #else
 static void *search_thread_func(void *arg)
 {
     double *time_limit_ptr = (double *)arg;
-    run_search(*time_limit_ptr, g_go_params_depth);
+    double tl = *time_limit_ptr;
+    free(time_limit_ptr);
+    run_search(tl, g_go_params_depth);
+    g_search_running = 0;
     return NULL;
 }
 #endif
+
+static void wait_for_search_thread(void)
+{
+#ifdef _WIN32
+    if (g_search_thread != NULL) {
+        WaitForSingleObject(g_search_thread, INFINITE);
+        CloseHandle(g_search_thread);
+        g_search_thread = NULL;
+    }
+#else
+    if (g_search_thread_active) {
+        pthread_join(g_search_thread_id, NULL);
+        g_search_thread_active = 0;
+    }
+#endif
+    g_search_running = 0;
+}
 
 static void cmd_uci(void)
 {
     printf("id name Hellcopter\n");
     printf("id author Trafflc\n");
+    printf("option name Ponder type check default true\n");
     printf("option name OwnBook type check default true\n");
     printf("option name BookPath type string default \n");
     printf("option name BookRandomness type spin default 20 min 0 max 100\n");
-    printf("option name SyzygyPath type string default dist\\syzygy\n");
+    printf("option name SyzygyPath type string default dist/syzygy\n");
     printf("uciok\n");
     fflush(stdout);
 }
@@ -588,13 +657,26 @@ static void cmd_setoption(const char *args)
         if (strncmp(p, "value", 5) != 0) return;
         p += 5;
         while (*p == ' ') p++;
-        fprintf(stderr, "SyzygyPath set to: %s (built-in tablebase rules active)\n", p);
+        {
+            extern unsigned TB_LARGEST;
+            extern int tb_init(const char *);
+            int ok = tb_init(p);
+            if (ok)
+            {
+                fprintf(stderr, "SyzygyPath set to: %s (TB_LARGEST=%u)\n", p, TB_LARGEST);
+            }
+            else
+            {
+                fprintf(stderr, "SyzygyPath failed to load: %s\n", p);
+            }
+        }
     }
 }
 
 static void cmd_ucinewgame(void)
 {
     set_engine_abort(1);
+    wait_for_search_thread();
     g_position_history_count = 0;
     board_from_fen(&g_board,
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
@@ -697,6 +779,7 @@ static void cmd_position(const char *args)
 static void cmd_go(const char *args)
 {
     set_engine_abort(1);
+    wait_for_search_thread();
 
     g_go_params_wtime = 0;
     g_go_params_btime = 0;
@@ -704,12 +787,17 @@ static void cmd_go(const char *args)
     g_go_params_binc = 0;
     g_go_params_depth = 100;
     g_go_params_movetime = 0;
+    g_go_params_movestogo = 0;
     g_go_infinite = 0;
+    g_ponder_mode = 0;
+    g_ponderhit_received = 0;
 
     const char *p = args;
     while (*p) {
         while (*p == ' ') p++;
-        if (strncmp(p, "wtime", 5) == 0) {
+        if (strncmp(p, "ponder", 6) == 0 && (p[6] == ' ' || p[6] == '\0')) {
+            g_ponder_mode = 1;
+        } else if (strncmp(p, "wtime", 5) == 0) {
             g_go_params_wtime = atoi(p + 5);
         } else if (strncmp(p, "btime", 5) == 0) {
             g_go_params_btime = atoi(p + 5);
@@ -721,6 +809,8 @@ static void cmd_go(const char *args)
             g_go_params_depth = atoi(p + 5);
         } else if (strncmp(p, "movetime", 8) == 0) {
             g_go_params_movetime = atoi(p + 8);
+        } else if (strncmp(p, "movestogo", 9) == 0) {
+            g_go_params_movestogo = atoi(p + 9);
         } else if (strncmp(p, "infinite", 8) == 0) {
             g_go_infinite = 1;
         }
@@ -736,7 +826,7 @@ static void cmd_go(const char *args)
     }
 
     double time_limit;
-    if (g_go_infinite) {
+    if (g_go_infinite || g_ponder_mode) {
         time_limit = 1e9;
     } else if (g_go_params_wtime == 0 && g_go_params_btime == 0 && g_go_params_movetime == 0) {
         time_limit = 30.0;
@@ -753,27 +843,53 @@ static void cmd_go(const char *args)
     double *tl_ptr = (double *)malloc(sizeof(double));
     *tl_ptr = time_limit;
 
+    g_search_running = 1;
+
 #ifdef _WIN32
-    HANDLE h = (HANDLE)_beginthreadex(NULL, 0, search_thread_func, tl_ptr, 0, NULL);
-    if (h) {
-        WaitForSingleObject(h, INFINITE);
-        CloseHandle(h);
+    g_search_thread = (HANDLE)_beginthreadex(NULL, 4 * 1024 * 1024, search_thread_func, tl_ptr, 0, NULL);
+    if (g_search_thread) {
+        if (!g_ponder_mode) {
+            WaitForSingleObject(g_search_thread, INFINITE);
+            CloseHandle(g_search_thread);
+            g_search_thread = NULL;
+            g_search_running = 0;
+        }
     } else {
+        free(tl_ptr);
         run_search(time_limit, g_go_params_depth);
+        g_search_running = 0;
     }
 #else
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, search_thread_func, tl_ptr) == 0) {
-        pthread_join(tid, NULL);
-    } else {
-        run_search(time_limit, g_go_params_depth);
+    {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 4 * 1024 * 1024);
+        if (pthread_create(&g_search_thread_id, &attr, search_thread_func, tl_ptr) == 0) {
+            pthread_attr_destroy(&attr);
+            g_search_thread_active = 1;
+            if (!g_ponder_mode) {
+                pthread_join(g_search_thread_id, NULL);
+                g_search_thread_active = 0;
+                g_search_running = 0;
+            }
+        } else {
+            pthread_attr_destroy(&attr);
+            free(tl_ptr);
+            run_search(time_limit, g_go_params_depth);
+            g_search_running = 0;
+        }
     }
 #endif
-    free(tl_ptr);
 }
 
 static void cmd_stop(void)
 {
+    set_engine_abort(1);
+}
+
+static void cmd_ponderhit(void)
+{
+    g_ponderhit_received = 1;
     set_engine_abort(1);
 }
 
@@ -845,10 +961,13 @@ int main(void)
                 cmd_go(cmd + 2);
         } else if (strcmp(cmd, "stop") == 0) {
             cmd_stop();
+        } else if (strcmp(cmd, "ponderhit") == 0) {
+            cmd_ponderhit();
         } else if (strcmp(cmd, "bench") == 0) {
             cmd_bench();
         } else if (strcmp(cmd, "quit") == 0) {
             set_engine_abort(1);
+            wait_for_search_thread();
             break;
         }
     }
