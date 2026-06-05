@@ -1,4 +1,8 @@
 /* engine_search_root.c — 根搜索入口：时间管理、迭代加深、Lazy SMP（从 engine_core.c 拆分） */
+
+/* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
+extern unsigned TB_LARGEST;
+
 static void init_time_manager(TimeManager *tm, double time_left, double inc, int moves_to_go, int move_number, double start_time)
 {
     tm->remaining = time_left;
@@ -377,7 +381,13 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         s->board.pieces[BLACK][BISHOP] | s->board.pieces[BLACK][ROOK] |
                         s->board.pieces[BLACK][QUEEN] | s->board.pieces[BLACK][KING];
         int total_pieces = count_bits(all_white) + count_bits(all_black);
-        if (total_pieces <= (int)TB_LARGEST && total_pieces >= 3 && s->board.castling_rights == 0)
+        int w_bishops = count_bits(s->board.pieces[WHITE][BISHOP]);
+        int b_bishops = count_bits(s->board.pieces[BLACK][BISHOP]);
+        int w_knights = count_bits(s->board.pieces[WHITE][KNIGHT]);
+        int b_knights = count_bits(s->board.pieces[BLACK][KNIGHT]);
+        int root_total_pawns = count_bits(s->board.pieces[WHITE][PAWN] | s->board.pieces[BLACK][PAWN]);
+        int is_kbnk = (w_bishops + b_bishops == 1 && w_knights + b_knights == 1 && root_total_pawns == 0);
+        if (total_pieces <= (int)TB_LARGEST && total_pieces >= 3 && s->board.castling_rights == 0 && !is_kbnk)
         {
             unsigned ep_sq = 0;
             if (s->board.en_passant >= 0 && s->board.en_passant < 64)
@@ -400,6 +410,26 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
             if (tb_res != TB_RESULT_FAILED)
             {
                 int wdl = TB_GET_WDL(tb_res);
+
+                /* Sanity check: if tablebase claims DRAW but material imbalance
+                 * is huge, the TB file may be corrupt. Ignore and fall back to search. */
+                if (wdl == TB_DRAW)
+                {
+                    int w_mat = count_bits(s->board.pieces[WHITE][QUEEN]) * 900 +
+                                count_bits(s->board.pieces[WHITE][ROOK]) * 480 +
+                                count_bits(s->board.pieces[WHITE][BISHOP]) * 340 +
+                                count_bits(s->board.pieces[WHITE][KNIGHT]) * 320;
+                    int b_mat = count_bits(s->board.pieces[BLACK][QUEEN]) * 900 +
+                                count_bits(s->board.pieces[BLACK][ROOK]) * 480 +
+                                count_bits(s->board.pieces[BLACK][BISHOP]) * 340 +
+                                count_bits(s->board.pieces[BLACK][KNIGHT]) * 320;
+                    int mat_diff = w_mat - b_mat;
+                    if (s->board.side_to_move == BLACK)
+                        mat_diff = -mat_diff;
+                    if (mat_diff > 400)
+                        goto root_tb_done;
+                }
+
                 int from_sq = TB_GET_FROM(tb_res);
                 int to_sq = TB_GET_TO(tb_res);
                 int promotes = TB_GET_PROMOTES(tb_res);
@@ -418,6 +448,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 Move tb_move = {0};
                 tb_move.from = from_sq;
                 tb_move.to = to_sq;
+                tb_move.score = tb_score;
                 if (promotes == TB_PROMOTES_QUEEN)
                     tb_move.promotion = QUEEN;
                 else if (promotes == TB_PROMOTES_ROOK)
@@ -449,6 +480,8 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     return tb_move;
                 }
             }
+        root_tb_done:
+            ;
         }
     }
 

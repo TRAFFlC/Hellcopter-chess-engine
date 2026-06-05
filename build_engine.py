@@ -354,11 +354,20 @@ def _needs_rebuild(src_file: str, output_file: str, params_header: str) -> bool:
             print("参数头文件已更新，需要重新编译")
             return True
 
+    # 检查 fathom/tbprobe.c 是否更新
+    script_dir = os.path.dirname(os.path.abspath(src_file))
+    fathom_src = os.path.join(script_dir, "fathom", "src", "tbprobe.c")
+    if os.path.exists(fathom_src):
+        fathom_mtime = os.path.getmtime(fathom_src)
+        if fathom_mtime > output_mtime:
+            print("fathom/tbprobe.c 已更新，需要重新编译")
+            return True
+
     print("无需重新编译（使用增量编译）")
     return False
 
 
-def build(config_path: Optional[str] = None, force: bool = False, optimize: bool = True) -> bool:
+def build(config_path: Optional[str] = None, force: bool = False, optimize: bool = True, pgo: bool = False) -> bool:
     """
     检测平台并编译 engine_core.c 为共享库。
 
@@ -374,6 +383,8 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
     script_dir = os.path.dirname(os.path.abspath(__file__))
     src_file = os.path.join(script_dir, "engine_core.c")
     params_header = os.path.join(script_dir, "engine_params.h")
+    fathom_src = os.path.join(script_dir, "fathom", "src", "tbprobe.c")
+    fathom_inc = os.path.join(script_dir, "fathom", "src")
 
     if not os.path.exists(src_file):
         print(f"错误: 源文件未找到: {src_file}", file=sys.stderr)
@@ -429,8 +440,10 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
                 "gcc",
                 "-shared",
                 "-std=c99",
+                f"-I{fathom_inc}",
                 "-o", output_file,
                 src_file,
+                fathom_src,
                 "-lm",
             ]
 
@@ -442,7 +455,7 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
                 cmd.insert(5, "-DNDEBUG")
 
             if pgo and compiler == "gcc":
-                pgo_gen = os.path.join(dist_dir, "Hellcopter_pgo_gen.exe")
+                pgo_gen = os.path.join(script_dir, "Hellcopter_pgo_gen.exe")
                 cmd_gen = list(cmd)
                 cmd_gen[cmd_gen.index("-fomit-frame-pointer")
                         ] = "-fprofile-generate"
@@ -485,6 +498,8 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
                 f"/Fe{output_file}",
                 f"/Fo{obj_file}",
                 src_file,
+                fathom_src,
+                f"/I{fathom_inc}",
             ]
 
             # 添加优化选项
@@ -508,8 +523,10 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
             "-shared",
             "-std=c99",
             "-fPIC",
+            f"-I{fathom_inc}",
             "-o", output_file,
             src_file,
+            fathom_src,
             "-lm",
         ]
 
@@ -536,8 +553,10 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
             compiler,
             "-dynamiclib",
             "-std=c99",
+            f"-I{fathom_inc}",
             "-o", output_file,
             src_file,
+            fathom_src,
         ]
 
         # 添加优化选项
@@ -594,6 +613,8 @@ def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: 
     engine_src = os.path.join(script_dir, "engine_core.c")
     uci_src = os.path.join(script_dir, "uci_main.c")
     params_header = os.path.join(script_dir, "engine_params.h")
+    fathom_src = os.path.join(script_dir, "fathom", "src", "tbprobe.c")
+    fathom_inc = os.path.join(script_dir, "fathom", "src")
 
     if not os.path.exists(engine_src):
         print(f"错误: 源文件未找到: {engine_src}", file=sys.stderr)
@@ -634,8 +655,9 @@ def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: 
         if compiler == "gcc":
             cmd = [
                 "gcc", "-std=c99",
+                f"-I{fathom_inc}",
                 "-o", output_file,
-                engine_src, uci_src,
+                engine_src, uci_src, fathom_src,
                 "-lm",
             ]
             if optimize:
@@ -747,15 +769,11 @@ def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: 
 
     if os.path.exists(output_file):
         file_size = os.path.getsize(output_file)
-        book_src = os.path.join(script_dir, "dist", "book.bin")
+        book_src = os.path.join(script_dir, "dist", "Goi5.1.bin")
         if os.path.exists(book_src):
             print(f"  开局库已存在: {book_src}")
         else:
-            gen_script = os.path.join(script_dir, "generate_book.py")
-            if os.path.exists(gen_script):
-                print("  生成开局库...")
-                subprocess.run([sys.executable, gen_script],
-                               cwd=script_dir, check=True)
+            print("  提示: dist/Goi5.1.bin 不存在，开局库将不可用")
         print(f"\n{'='*60}")
         print(f"[SUCCESS] 编译成功: {output_file}")
         print(f"  文件大小: {file_size:,} 字节 ({file_size / 1024:.1f} KB)")

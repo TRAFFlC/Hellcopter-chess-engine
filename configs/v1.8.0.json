@@ -103,7 +103,7 @@
     "constants": {
       "mate_score": 900000,
       "delta": 200,
-      "endgame_phase_threshold": 14,
+      "endgame_phase_threshold": 20,
       "endgame_depth_bonus": 1,
       "endgame_nmr_bonus": 1,
       "king_activity_weight": 10

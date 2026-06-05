@@ -28,21 +28,15 @@
 typedef unsigned short U16;
 typedef unsigned int U32;
 
-static U64 g_polyglot_random[1851];
+/* Polyglot random numbers - hardcoded from python-chess (standard MT19937-64 with seed 1070372) */
+#include "polyglot_randoms.h"
+
 static int g_polyglot_initialized = 0;
 
 static void init_polyglot_random(void)
 {
     if (g_polyglot_initialized) return;
     g_polyglot_initialized = 1;
-
-    U64 state = 0xD9348E5E5A5A5A5AULL;
-    for (int i = 0; i < 1851; i++) {
-        state ^= (state >> 12);
-        state ^= (state << 25);
-        state ^= (state >> 27);
-        g_polyglot_random[i] = state * 0x2545F4914F6CDD1DULL;
-    }
 }
 
 static U64 polyglot_hash(const Board *b)
@@ -50,9 +44,10 @@ static U64 polyglot_hash(const Board *b)
     init_polyglot_random();
     U64 h = 0;
 
+    /* Polyglot piece index: interleaved order (WP=0,BP=1,WN=2,BN=3,...,WK=10,BK=11) */
     static const int piece_map[2][7] = {
-        {-1, 0, 1, 2, 3, 4, 5},
-        {-1, 6, 7, 8, 9, 10, 11}
+        {-1, 0, 2, 4, 6, 8, 10},  /* WHITE: pawn=0, knight=2, bishop=4, rook=6, queen=8, king=10 */
+        {-1, 1, 3, 5, 7, 9, 11}   /* BLACK: pawn=1, knight=3, bishop=5, rook=7, queen=9, king=11 */
     };
 
     for (int side = 0; side < 2; side++) {
@@ -62,7 +57,7 @@ static U64 polyglot_hash(const Board *b)
                 int sq = __builtin_ctzll(bb);
                 bb &= bb - 1;
                 int idx = piece_map[side][ptype];
-                h ^= g_polyglot_random[64 * idx + sq];
+                h ^= POLYGLOT_RANDOMS[64 * idx + sq];
             }
         }
     }
@@ -72,17 +67,20 @@ static U64 polyglot_hash(const Board *b)
     if (b->castling_rights & 2) castling |= 2;
     if (b->castling_rights & 4) castling |= 4;
     if (b->castling_rights & 8) castling |= 8;
-    if (castling) {
-        h ^= g_polyglot_random[768 + castling - 1];
-    }
+    /* Polyglot: each castling right uses its own random number, XORed independently */
+    if (castling & 1) h ^= POLYGLOT_RANDOMS[768];
+    if (castling & 2) h ^= POLYGLOT_RANDOMS[769];
+    if (castling & 4) h ^= POLYGLOT_RANDOMS[770];
+    if (castling & 8) h ^= POLYGLOT_RANDOMS[771];
 
     if (b->en_passant >= 0 && b->en_passant < 64) {
         int ep_file = b->en_passant & 7;
-        h ^= g_polyglot_random[772 + ep_file];
+        h ^= POLYGLOT_RANDOMS[772 + ep_file];
     }
 
-    if (b->side_to_move == BLACK) {
-        h ^= g_polyglot_random[780];
+    /* Polyglot: XOR turn random when WHITE to move (not BLACK) */
+    if (b->side_to_move == WHITE) {
+        h ^= POLYGLOT_RANDOMS[780];
     }
 
     return h;
@@ -503,6 +501,10 @@ static void run_search(double time_limit, int max_depth)
     int time_ms = (int)((double)(end - start) / CLOCKS_PER_SEC * 1000);
 
     if (result.from == 0 && result.to == 0) {
+        if (g_ponder_mode && g_ponderhit_received) {
+            /* ponderhit received during search - skip output, cmd_ponderhit will start new search */
+            return;
+        }
         strcpy(g_last_best_move, "0000");
         g_last_ponder_move[0] = '\0';
         printf("bestmove 0000\n");
@@ -535,8 +537,12 @@ static void run_search(double time_limit, int max_depth)
 #endif
         }
         if (g_ponderhit_received) {
+            /* Ponderhit: don't output old bestmove.
+               cmd_ponderhit() will start a new search on the updated position. */
             set_engine_abort(0);
+            return;
         }
+        /* Aborted by stop: output the bestmove from the ponder search */
     }
 
     if (depth > 0) {
@@ -658,12 +664,11 @@ static void cmd_setoption(const char *args)
         p += 5;
         while (*p == ' ') p++;
         {
-            extern unsigned TB_LARGEST;
-            extern int tb_init(const char *);
-            int ok = tb_init(p);
-            if (ok)
+            extern int init_syzygy_c(const char *);
+            int tb_largest = init_syzygy_c(p);
+            if (tb_largest > 0)
             {
-                fprintf(stderr, "SyzygyPath set to: %s (TB_LARGEST=%u)\n", p, TB_LARGEST);
+                fprintf(stderr, "SyzygyPath set to: %s (TB_LARGEST=%d)\n", p, tb_largest);
             }
             else
             {
@@ -885,12 +890,50 @@ static void cmd_go(const char *args)
 static void cmd_stop(void)
 {
     set_engine_abort(1);
+    if (g_ponder_mode) {
+        wait_for_search_thread();
+        /* Output the bestmove from the ponder search */
+        if (g_last_best_move[0] != '\0') {
+            if (g_last_ponder_move[0] != '\0')
+                printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
+            else
+                printf("bestmove %s\n", g_last_best_move);
+            fflush(stdout);
+        }
+        g_ponder_mode = 0;
+        g_ponderhit_received = 0;
+    }
 }
 
 static void cmd_ponderhit(void)
 {
     g_ponderhit_received = 1;
     set_engine_abort(1);
+    wait_for_search_thread();
+
+    /* Now start a new search on the updated position with time limit.
+       The GUI should have sent a "position" command before "ponderhit"
+       to update g_board to the post-opponent-move position. */
+    g_ponder_mode = 0;
+    g_ponderhit_received = 0;
+
+    /* Check book first */
+    char book_move[MAX_MOVE_STR];
+    if (find_book_move(&g_board, book_move)) {
+        printf("info depth 0 score cp 0 nodes 0 time 0 pv %s\n", book_move);
+        printf("bestmove %s\n", book_move);
+        fflush(stdout);
+        return;
+    }
+
+    double time_limit = compute_time(
+        g_go_params_wtime, g_go_params_btime,
+        g_go_params_winc, g_go_params_binc,
+        g_go_params_movetime
+    );
+
+    set_engine_abort(0);
+    run_search(time_limit, g_go_params_depth);
 }
 
 static void cmd_bench(void)
@@ -936,6 +979,31 @@ int main(void)
     get_exe_dir();
     load_opening_book();
     set_engine_info_callback(uci_info_callback);
+
+    /* Auto-load Syzygy EGTB if available */
+    {
+        extern int init_syzygy_c(const char *);
+        const char *egtb_paths[] = {
+            "EGTB",
+            "syzygy",
+            "../EGTB",
+            "../syzygy",
+        };
+        int egtb_loaded = 0;
+        for (int pi = 0; pi < 4; pi++) {
+            int tb_largest = init_syzygy_c(egtb_paths[pi]);
+            if (tb_largest > 0) {
+                fprintf(stderr, "Auto-loaded Syzygy EGTB from: %s (TB_LARGEST=%d)\n",
+                        egtb_paths[pi], tb_largest);
+                egtb_loaded = 1;
+                break;
+            }
+        }
+        if (!egtb_loaded) {
+            fprintf(stderr, "Syzygy EGTB not found in standard paths. "
+                    "Use 'setoption name SyzygyPath value <path>' to load manually.\n");
+        }
+    }
 
     board_from_fen(&g_board,
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");

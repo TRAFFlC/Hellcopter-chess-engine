@@ -3,30 +3,39 @@ import sys
 import subprocess
 import threading
 import queue
+import time
 
 
 class Engine:
     def __init__(self, engine_path, engine_args=None, protocol="auto",
-                 init_options=None):
+                 init_options=None, init_env=None):
         self.engine_path = engine_path
         self.engine_args = engine_args or []
         self.process = None
         self.lock = threading.Lock()
         self.protocol = protocol
         self.init_options = init_options or {}
+        self.init_env = init_env
         self.xboard_features = {}
         self._line_queue = queue.Queue()
         self._reader_alive = False
+        self._pondering = False
+        self._ponder_move = None
+        self.syzygy_path = None
 
     def start(self):
+        tag = os.path.basename(self.engine_path)
+        print(f"[ENGINE-DBG] {tag} start: path={self.engine_path}, protocol={self.protocol}")
         try:
             cmd = [self.engine_path] + self.engine_args
+            env = self.init_env if self.init_env else None
             self.process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 bufsize=0,
+                env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except Exception as e:
@@ -44,6 +53,15 @@ class Engine:
             self._init_xboard()
         elif self.protocol == "tscp":
             self._init_tscp()
+
+        if self.process and self.process.poll() is not None:
+            print(f"[ENGINE] {self.engine_path} died immediately after start, exit code: {self.process.returncode}")
+            return False
+
+        if self.syzygy_path and self.protocol == "uci":
+            self.set_option("SyzygyPath", self.syzygy_path)
+            self.send("isready")
+            self._read_until("readyok", timeout=5)
 
         return True
 
@@ -68,10 +86,9 @@ class Engine:
         self._reader_alive = False
 
     def _detect_protocol(self):
-        self.process.stdin.write(b"xboard\n")
+        self.process.stdin.write(b"uci\n")
         self.process.stdin.flush()
 
-        import time
         time.sleep(0.3)
 
         lines = []
@@ -82,13 +99,16 @@ class Engine:
                 break
 
         for line in lines:
-            if line.startswith("feature"):
-                self._parse_xboard_feature(line)
-                self.protocol = "xboard"
-                self._line_queue.queue.clear()
+            if "uciok" in line or "id name" in line or "option name" in line:
+                self.protocol = "uci"
+                while True:
+                    try:
+                        self._line_queue.get_nowait()
+                    except queue.Empty:
+                        break
                 return
 
-        self.process.stdin.write(b"uci\n")
+        self.process.stdin.write(b"xboard\n")
         self.process.stdin.flush()
         time.sleep(0.3)
 
@@ -99,19 +119,32 @@ class Engine:
                 break
 
         for line in lines:
-            if "uciok" in line or "id name" in line or "option name" in line:
-                self.protocol = "uci"
-                self._line_queue.queue.clear()
+            if line.startswith("feature"):
+                self._parse_xboard_feature(line)
+                self.protocol = "xboard"
+                while True:
+                    try:
+                        self._line_queue.get_nowait()
+                    except queue.Empty:
+                        break
                 return
 
         for line in lines:
             if "Illegal" in line or "Error" in line or "move" in line:
                 self.protocol = "tscp"
-                self._line_queue.queue.clear()
+                while True:
+                    try:
+                        self._line_queue.get_nowait()
+                    except queue.Empty:
+                        break
                 return
 
         self.protocol = "tscp"
-        self._line_queue.queue.clear()
+        while True:
+            try:
+                self._line_queue.get_nowait()
+            except queue.Empty:
+                break
 
     def _parse_xboard_feature(self, line):
         parts = line.split()
@@ -121,9 +154,12 @@ class Engine:
                 self.xboard_features[key] = value.strip('"')
 
     def _init_uci(self):
+        tag = os.path.basename(self.engine_path)
+        print(f"[ENGINE-DBG] {tag} _init_uci: send uci")
         self.process.stdin.write(b"uci\n")
         self.process.stdin.flush()
-        self._read_until("uciok", timeout=5)
+        lines = self._read_until("uciok", timeout=5)
+        print(f"[ENGINE-DBG] {tag} _init_uci: uciok received, extra_lines={len(lines)-1 if lines else 0}")
 
     def _init_xboard(self):
         self.process.stdin.write(b"xboard\n")
@@ -152,7 +188,6 @@ class Engine:
             return None
 
     def _read_until(self, token, timeout=5):
-        import time
         deadline = time.time() + timeout
         lines = []
         while time.time() < deadline:
@@ -164,13 +199,24 @@ class Engine:
         return lines
 
     def wait_for(self, token, timeout=60):
-        import time
         deadline = time.time() + timeout
         while time.time() < deadline:
             line = self.readline(timeout=1.0)
             if line is not None and token in line:
                 return line
         return None
+
+    def _parse_bestmove(self, line):
+        if not line or not line.startswith("bestmove"):
+            return None, None
+        parts = line.split()
+        if len(parts) < 2:
+            return None, None
+        best_move = parts[1]
+        ponder_move = None
+        if len(parts) >= 4 and parts[2] == "ponder":
+            ponder_move = parts[3]
+        return best_move, ponder_move
 
     def get_best_move(self, move_history, move_time):
         if self.protocol == "uci":
@@ -181,35 +227,115 @@ class Engine:
                 if line is None:
                     return None
                 if line.startswith("bestmove"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return parts[1]
-                    return None
+                    best, ponder = self._parse_bestmove(line)
+                    return best
         elif self.protocol == "xboard":
             return self._xboard_get_move(move_time)
         elif self.protocol == "tscp":
             return self._tscp_get_move(move_history)
         return None
 
+    def is_alive(self):
+        if self.process is None:
+            return False
+        return self.process.poll() is None
+
     def get_best_move_with_time(self, move_history, wtime, btime, winc, binc,
                                 board=None, ep_target=None, castling=None):
+        self._pondering = False
+        self._ponder_move = None
+        tag = os.path.basename(self.engine_path)
         if self.protocol == "uci":
-            self.send("position startpos moves " + " ".join(move_history))
-            self.send(f"go wtime {wtime} btime {btime} winc {winc} binc {binc}")
+            while not self._line_queue.empty():
+                try: self._line_queue.get_nowait()
+                except: break
+            alive_before = self.is_alive()
+            pos_cmd = "position startpos moves " + " ".join(move_history)
+            go_cmd = f"go wtime {wtime} btime {btime} winc {winc} binc {binc}"
+            print(f"[ENGINE-DBG] {tag} alive={alive_before} send: {pos_cmd}")
+            self.send(pos_cmd)
+            print(f"[ENGINE-DBG] {tag} send: {go_cmd}")
+            self.send(go_cmd)
+            deadline = time.time() + 60
+            loop_count = 0
             while True:
-                line = self.readline(timeout=120)
-                if line is None:
+                loop_count += 1
+                alive = self.is_alive()
+                if not alive:
+                    rc = self.process.returncode if self.process else "?"
+                    print(f"[ENGINE-DBG] {tag} DIED at loop {loop_count}, exit={rc}")
                     return None
-                if line.startswith("bestmove"):
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        return parts[1]
+                line = self.readline(timeout=3)
+                if line is not None:
+                    print(f"[ENGINE-DBG] {tag} recv: {line[:80]}")
+                    if line.startswith("bestmove"):
+                        best, ponder = self._parse_bestmove(line)
+                        self._ponder_move = ponder
+                        return best
+                if time.time() >= deadline:
+                    print(f"[ENGINE-DBG] {tag} TIMEOUT at loop {loop_count}, alive={alive}")
                     return None
         elif self.protocol == "xboard":
             return self._xboard_get_move_fixed(wtime, btime, winc, binc)
         elif self.protocol == "tscp":
             return self._tscp_get_move(move_history)
+        print(f"[ENGINE-DBG] {tag} FALLTHROUGH protocol={self.protocol}")
         return None
+
+    def start_ponder(self, move_history, wtime, btime, winc, binc, ponder_move=None):
+        if self.protocol != "uci":
+            return
+        self._pondering = True
+        pos_cmd = "position startpos moves " + " ".join(move_history)
+        # UCI ponder: 必须将 ponder 着法加入 position，这样引擎搜索的是
+        # 对手走了 ponder 着法后的局面，ponderhit 时返回的是我方最佳着法
+        if ponder_move:
+            pos_cmd += " " + ponder_move
+        self.send(pos_cmd)
+        self.send(f"go ponder wtime {wtime} btime {btime} winc {winc} binc {binc}")
+
+    def send_ponderhit(self):
+        if self.protocol != "uci":
+            return
+        self._pondering = False
+        self.send("ponderhit")
+
+    def stop_ponder(self):
+        if self.protocol != "uci":
+            return
+        self.send("stop")
+        # 消费引擎返回的 bestmove 响应，避免残留行污染后续搜索
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            line = self.readline(timeout=1.0)
+            if line is not None and line.startswith("bestmove"):
+                break
+        self._pondering = False
+        self._ponder_move = None
+
+    def wait_for_bestmove_ponder(self, timeout=60):
+        if self.protocol != "uci":
+            return None, None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self.is_alive():
+                self._pondering = False
+                return None, None
+            line = self.readline(timeout=min(3.0, deadline - time.time() + 0.1))
+            if line is None:
+                continue
+            if line.startswith("bestmove"):
+                best, ponder = self._parse_bestmove(line)
+                self._pondering = False
+                return best, ponder
+        self._pondering = False
+        return None, None
+
+    def is_pondering(self):
+        return self._pondering
+
+    def get_ponder_move(self):
+        return self._ponder_move
 
     def _xboard_get_move(self, move_time):
         self.send(f"go {move_time // 10}")
@@ -250,10 +376,18 @@ class Engine:
                 return stripped
 
     def new_game(self):
+        tag = os.path.basename(self.engine_path)
+        self._pondering = False
+        self._ponder_move = None
         if self.protocol == "uci":
+            print(f"[ENGINE-DBG] {tag} new_game: send ucinewgame+isready")
             self.send("ucinewgame")
             self.send("isready")
-            self._read_until("readyok", timeout=5)
+            lines = self._read_until("readyok", timeout=5)
+            print(f"[ENGINE-DBG] {tag} new_game: readyok received, extra_lines={len(lines)-1 if lines else 0}")
+            while not self._line_queue.empty():
+                try: self._line_queue.get_nowait()
+                except: break
         elif self.protocol == "xboard":
             self.send("new")
 

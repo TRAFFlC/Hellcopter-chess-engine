@@ -37,17 +37,12 @@ def package_exe():
         print(f"错误: {dll_name} 不存在，请先编译 C 引擎")
         sys.exit(1)
 
-    book_bin = os.path.join(script_dir, "dist", "book.bin")
-    if not os.path.isfile(book_bin):
-        print("错误: dist/book.bin 不存在，请先运行 generate_book.py")
-        sys.exit(1)
+    book_bin = os.path.join(script_dir, "dist", "Goi5.1.bin")
 
     dist_dir = os.path.join(script_dir, "dist")
     build_dir = os.path.join(script_dir, "build_pyinstaller")
     if os.path.isdir(build_dir):
         shutil.rmtree(build_dir)
-    if os.path.isdir(dist_dir):
-        shutil.rmtree(dist_dir)
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
@@ -56,7 +51,10 @@ def package_exe():
         "--distpath", dist_dir,
         "--workpath", build_dir,
         "--add-data", f"{dll_path}{os.pathsep}.",
-        "--add-data", f"{book_bin}{os.pathsep}.",
+    ]
+    if os.path.isfile(book_bin):
+        cmd += ["--add-data", f"{book_bin}{os.pathsep}."]
+    cmd += [
         "--hidden-import", "chess",
         "--hidden-import", "engine",
         "--hidden-import", "engine_wrapper",

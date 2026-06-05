@@ -3,12 +3,13 @@ import sys
 import argparse
 import subprocess
 import shutil
-import platform
 import json
 import tempfile
 import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from match_utils import find_cutechess, create_temp_uci_adapter_with_env
 
 
 OPPONENTS = {
@@ -80,71 +81,6 @@ def resolve_config(base_dir, config_ref):
     if os.path.isfile(config_ref):
         return config_ref
     
-    return None
-
-
-def create_temp_uci_adapter(base_dir, config_path):
-    from config import load_and_resolve_config
-    
-    temp_dir = tempfile.mkdtemp(prefix="hellcopter_match_")
-    dest_params = os.path.join(temp_dir, "engine_params.json")
-    
-    resolved = load_and_resolve_config(config_path)
-    with open(dest_params, "w", encoding="utf-8") as f:
-        json.dump(resolved, f, indent=2)
-    
-    dest_params_fwd = dest_params.replace("\\", "/")
-    base_dir_fwd = base_dir.replace("\\", "/")
-    
-    script_path = os.path.join(temp_dir, "uci_adapter.py")
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write("import os\n")
-        f.write("import sys\n\n")
-        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
-        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
-        f.write("from uci_engine import UCIEngine\n\n")
-        f.write('if __name__ == "__main__":\n')
-        f.write("    uci = UCIEngine()\n")
-        f.write("    uci.run()\n")
-    
-    return script_path, temp_dir
-
-
-def find_cutechess(cli_path, base_dir):
-    if cli_path:
-        if os.path.isfile(cli_path):
-            return cli_path
-        return None
-
-    found = shutil.which("cutechess-cli")
-    if found:
-        return found
-
-    candidates = [
-        os.path.join(base_dir, "cutechess-cli.exe"),
-        os.path.join(base_dir, "cutechess-cli"),
-        os.path.join(base_dir, "cutechess", "cutechess-cli.exe"),
-        os.path.join(base_dir, "cutechess", "cutechess-cli"),
-    ]
-
-    if platform.system() == "Windows":
-        program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-        program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-        candidates.extend([
-            os.path.join(program_files, "cutechess-cli", "cutechess-cli.exe"),
-            os.path.join(program_files_x86, "cutechess-cli", "cutechess-cli.exe"),
-        ])
-    else:
-        candidates.extend([
-            os.path.join(base_dir, "cutechess-cli"),
-            "/usr/local/bin/cutechess-cli",
-            "/usr/bin/cutechess-cli",
-        ])
-
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
-
     return None
 
 
@@ -439,7 +375,7 @@ def main():
             print(f"Error: Config not found: {args.config}")
             sys.exit(1)
         print(f"Using config: {config_path}")
-        uci_script, temp_dir = create_temp_uci_adapter(base_dir, config_path)
+        uci_script, temp_dir = create_temp_uci_adapter_with_env(base_dir, config_path)
 
     print(f"\nMulti-Opponent Test Configuration:")
     print(f"  Opponents: {opponent_list}")

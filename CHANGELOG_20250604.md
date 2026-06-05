@@ -969,3 +969,110 @@ return tb_move;
 - KQ+P vs K：5秒内找到杀棋
 - KQ+R+P vs K：5秒内找到杀棋
 - KR+P vs K：depth 21 找到杀棋（该残局本身复杂，属正常表现）
+
+---
+
+## 第十轮修复：Ponder Bug / Runtime 参数 / Polyglot 开局库
+
+### 问题描述
+
+1. **Ponder 返回非法走法**：引擎在 ponder 模式下返回对手侧的着法（如 `d7d5`），导致对局异常
+2. **Runtime 参数缺失**：`endgame_phase_threshold` 等参数从未被运行时加载，C 代码使用编译时宏
+3. **配置版本不同步**：`engine_params.json` 仍为 v1.7.0 配置，`endgame_phase_threshold=1500`
+4. **Polyglot 开局库完全失效**：C 引擎的 Zobrist hash 计算有 3 个严重 Bug，导致开局库永远无法命中
+
+### P0 致命级修复（4项）
+
+#### 55. Ponder 未将 ponder 着法加入 position 命令
+
+**位置**: `engine_comm.py` `start_ponder()` 方法
+
+**根因**: UCI 协议规定 `go ponder` 时必须将 ponder 着法加入 position 命令。原实现只发送 `position startpos moves e2e4 d7d5`（不含 ponder 着法），引擎搜索白方着法，ponderhit 时返回白方着法而非黑方。
+
+**修改前**:
+
+```python
+def start_ponder(self, move_history, wtime, btime, winc, binc):
+    pos_cmd = "position startpos moves " + " ".join(move_history)
+    self.send(pos_cmd)
+    self.send(f"go ponder wtime {wtime} btime {btime} winc {winc} binc {binc}")
+```
+
+**修改后**:
+
+```python
+def start_ponder(self, move_history, wtime, btime, winc, binc, ponder_move=None):
+    pos_cmd = "position startpos moves " + " ".join(move_history)
+    if ponder_move:
+        pos_cmd += " " + ponder_move
+    self.send(pos_cmd)
+    self.send(f"go ponder wtime {wtime} btime {btime} winc {winc} binc {binc}")
+```
+
+**关联修改**: `match_manager.py` 调用 `start_ponder` 时传递 `opp_eng.get_ponder_move()`
+
+#### 56. RuntimeParams 缺少 endgame 参数
+
+**位置**: `engine_core.c` RuntimeParams 结构体, `engine_params_loader.c` load_params_from_file()
+
+**根因**: `load_params_from_file()` 不解析 `endgame_phase_threshold` 等参数，C 代码使用编译时宏 `ENDGAME_PHASE_THRESHOLD`。`engine_params.json` 是 v1.7.0 配置（`endgame_phase_threshold=1500`），虽然从未被加载，但其他参数（如 `futility_margin_base=200`）确实被加载。
+
+**修复**:
+
+1. `RuntimeParams` 新增字段：`endgame_phase_threshold`, `endgame_depth_bonus`, `endgame_nmr_bonus`, `king_activity_weight`, `qs_max_depth_mg`, `qs_max_depth_eg`
+2. `load_params_from_file()` 添加这些参数的 JSON 解析
+3. C 代码中 `ENDGAME_PHASE_THRESHOLD` → `g_runtime_params.endgame_phase_threshold` 等
+4. `engine_params.json` 更新为 v1.8.0 完整配置
+
+#### 57. Polyglot PRNG 算法完全错误
+
+**位置**: `uci_main.c` polyglot_hash()
+
+**根因**: 原代码使用 xorshift64star（seed=0xD9348E5E5A5A5A5A），这是 Stockfish magic bitboard PRNG，不是 Polyglot 标准的 MT19937-64（seed=1070372）。随机数完全不匹配，导致 hash 永远无法命中开局库。
+
+**修复**: 替换为硬编码标准随机数数组 `polyglot_randoms.h`（从 python-chess 生成）
+
+#### 58. Polyglot 棋子索引 / Castling / 走子方三重 Bug
+
+**位置**: `uci_main.c` polyglot_hash()
+
+**Bug A: 棋子索引排列错误**
+
+修改前（分组排列）: `{0,1,2,3,4,5}/{6,7,8,9,10,11}`
+修改后（交替排列）: `{0,2,4,6,8,10}/{1,3,5,7,9,11}`
+
+Polyglot 标准使用交替排列：WP=0,BP=1,WN=2,BN=3,...,WK=10,BK=11
+
+**Bug B: Castling hash 错误**
+
+修改前: `h ^= g_polyglot_random[768 + castling - 1]`（组合索引）
+修改后: 每个易位权独立 XOR `POLYGLOT_RANDOMS[768/769/770/771]`
+
+**Bug C: 走子方 XOR 逻辑反转**
+
+修改前: `side_to_move == BLACK` 时 XOR
+修改后: `side_to_move == WHITE` 时 XOR
+
+### P1 中等级修复（1项）
+
+#### 59. book_provider.py polyglot_hash 同步修复
+
+**位置**: `book_provider.py`
+
+**修复**:
+
+1. 优先使用 `chess.polyglot.zobrist_hash()` 和 `chess.polyglot.POLYGLOT_RANDOM_ARRAY`
+2. 回退实现使用交替棋子索引 + 白方 XOR + 独立 castling XOR
+3. 修复 `import chess.polyglot` 覆盖外层 `chess` 变量的 `UnboundLocalError`
+
+### 新增文件
+
+- `polyglot_randoms.h` — 781 个标准 Polyglot 随机数硬编码数组
+
+### 验证结果
+
+- 编译：通过（326KB）
+- 初始局面开局库命中：返回 `e2e4`（book move）
+- python-chess hash 验证：`0x463B96181691FC9C` 匹配
+- e2e4 后回应：返回 `e7e5`（book move）
+- 开局库命中条目数：2（e2e4 weight=255, d2d4 weight=127）

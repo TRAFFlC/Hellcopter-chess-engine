@@ -62,8 +62,8 @@ body {
 .board-wrap { display: flex; flex-direction: column; }
 
 .coords-row {
-  display: flex; justify-content: space-around;
-  padding: 0 18px; margin-top: 2px;
+  display: flex; justify-content: space-between;
+  padding: 0; margin-top: 2px;
 }
 
 .coords-row span {
@@ -315,6 +315,25 @@ body {
   margin-right: 8px; vertical-align: middle;
 }
 
+.fen-bar {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+.fen-text {
+  flex: 1; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.btn-fen {
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; cursor: pointer;
+  font-size: 14px; transition: all 0.2s;
+}
+.btn-fen:hover { background: var(--bg-hover); border-color: var(--accent); }
+
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -410,6 +429,11 @@ body {
         <div class="empty-state" id="moveEmpty">等待对局开始...</div>
         <table class="move-table" id="moveTable" style="display:none"><tbody id="moveTbody"></tbody></table>
       </div>
+    </div>
+
+    <div class="fen-bar">
+      <span class="fen-text" id="fenText">FEN: --</span>
+      <button class="btn-fen" id="btnFen" onclick="copyFEN()" title="复制FEN">📋</button>
     </div>
   </div>
 </div>
@@ -541,10 +565,25 @@ function render() {
   document.getElementById('btnStart').disabled = state.active;
   document.getElementById('btnStop').disabled = !state.active;
   renderHistory();
+
+  const fenEl = document.getElementById('fenText');
+  if (fenEl && state.fen) fenEl.textContent = state.fen;
+}
+
+function copyFEN() {
+  const fenEl = document.getElementById('fenText');
+  if (!fenEl) return;
+  const fen = fenEl.textContent;
+  if (!fen || fen === 'FEN: --') return;
+  navigator.clipboard.writeText(fen).then(() => {
+    const btn = document.getElementById('btnFen');
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = '📋'; }, 1200);
+  }).catch(() => {});
 }
 
 function renderHistory() {
-  const moves = state.moveHistory || [];
+  const moves = state.sanMoves || state.moveHistory || [];
   const empty = document.getElementById('moveEmpty');
   const table = document.getElementById('moveTable');
   const tbody = document.getElementById('moveTbody');
@@ -649,7 +688,7 @@ async function loadEngines() {
         s.appendChild(opt);
       });
     });
-    s1.value = 'chess3super';
+    s1.value = 'monarch';
     const hcIdx = engines.findIndex(e => e.id === 'hellcopter');
     s2.value = hcIdx >= 0 ? 'hellcopter' : (engines[1] ? engines[1].id : '');
     s1.onchange = updateOptionsVisibility;

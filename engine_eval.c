@@ -1495,7 +1495,7 @@ evaluate(Board *b)
                     else if (mop_up_active && mop_up_strong_side == (1 - side))
                         activity_weight = 3;
                     else
-                        activity_weight = (phase < 8) ? 25 : KING_ACTIVITY_WEIGHT;
+                        activity_weight = (phase < 8) ? 25 : g_runtime_params.king_activity_weight;
                     int activity_bonus = (6 - center_dist) * activity_weight;
                     score += sign * activity_bonus;
                 }
@@ -1625,85 +1625,263 @@ evaluate(Board *b)
         int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
         int total_pawns = w_pawns + b_pawns;
 
-        if (total_pawns == 0 && (w_queens + b_queens + w_rooks + b_rooks + w_bishops + b_bishops + w_knights + b_knights) <= 3)
+        /* ============================================================
+         * Mop-up evaluation for winning endgames
+         * ============================================================ */
+
+        /* Helper: calculate mop-up score for king vs king (strong king pushes weak king to edge) */
+        #define MOPUP_KING_EDGE_WEIGHT  120
+        #define MOPUP_KING_PROX_WEIGHT  60
+        #define MOPUP_OPPOSITION_WEIGHT 80
+
+        int is_kqk_white = (w_queens == 1 && b_queens == 0 && w_rooks == 0 && b_rooks == 0 &&
+                            w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        int is_kqk_black = (b_queens == 1 && w_queens == 0 && w_rooks == 0 && b_rooks == 0 &&
+                            w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        int is_krk_white = (w_rooks == 1 && b_rooks == 0 && w_queens == 0 && b_queens == 0 &&
+                            w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        int is_krk_black = (b_rooks == 1 && w_rooks == 0 && w_queens == 0 && b_queens == 0 &&
+                            w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        /* KQKR: queen vs rook (winning side must avoid stalemate, push enemy king to edge) */
+        int is_kqkr_white = (w_queens == 1 && b_rooks == 1 && w_rooks == 0 && b_queens == 0 &&
+                             w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        int is_kqkr_black = (b_queens == 1 && w_rooks == 1 && b_rooks == 0 && w_queens == 0 &&
+                             w_bishops + w_knights == 0 && b_bishops + b_knights == 0 && total_pawns == 0);
+        /* KBNK: bishop+knight vs bare king (must drive to corner matching bishop color) */
+        int is_kbnk_white = (w_bishops == 1 && w_knights == 1 && b_bishops == 0 && b_knights == 0 &&
+                             w_queens == 0 && b_queens == 0 && w_rooks == 0 && b_rooks == 0 && total_pawns == 0);
+        int is_kbnk_black = (b_bishops == 1 && b_knights == 1 && w_bishops == 0 && w_knights == 0 &&
+                             w_queens == 0 && b_queens == 0 && w_rooks == 0 && b_rooks == 0 && total_pawns == 0);
+
+        if (is_kqk_white || is_krk_white)
         {
-            if (w_queens == 1 && b_queens == 0 && w_rooks == 0 && b_rooks == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+            int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
+            int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
+            int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+            int manhattan = file_dist + rank_dist;
+
+            /* Push enemy king to edge/corner */
+            int corner_bonus = (3 - edge_dist) * MOPUP_KING_EDGE_WEIGHT;
+            /* Keep our king close to enemy king */
+            int proximity_bonus = (7 - chebyshev) * MOPUP_KING_PROX_WEIGHT;
+            /* Opposition bonus: kings face each other with one square gap */
+            int opposition_bonus = 0;
+            if (chebyshev == 2 && manhattan % 2 == 0)
+                opposition_bonus = MOPUP_OPPOSITION_WEIGHT;
+
+            /* KRK-specific: encourage rook to cut off enemy king */
+            int rook_cutoff_bonus = 0;
+            if (is_krk_white)
             {
-                int w_king = b->king_sq[WHITE];
-                int b_king = b->king_sq[BLACK];
-                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
-                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
-                int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
-                int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
-                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
-                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
-                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
-                int king_dist = file_dist + rank_dist;
-                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
-                int corner_bonus = (3 - edge_dist) * 80;
-                int proximity_bonus = (7 - chebyshev) * 30;
-                int opposition_bonus = 0;
-                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
-                    opposition_bonus = 40;
-                score += corner_bonus + proximity_bonus + opposition_bonus;
+                int rook_sq = lsb_index(b->pieces[WHITE][ROOK]);
+                int r_f = file_of(rook_sq), r_r = rank_of(rook_sq);
+                /* Rook on same rank/file as enemy king cuts off escape */
+                if (r_f == b_kf || r_r == b_kr)
+                    rook_cutoff_bonus = 60;
+                /* Rook far from enemy king is bad (should stay close to control) */
+                int r_dist_f = (r_f > b_kf) ? (r_f - b_kf) : (b_kf - r_f);
+                int r_dist_r = (r_r > b_kr) ? (r_r - b_kr) : (b_kr - r_r);
+                if (r_dist_f > 3 && r_dist_r > 3)
+                    rook_cutoff_bonus -= 40;
             }
-            else if (b_queens == 1 && w_queens == 0 && w_rooks == 0 && b_rooks == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
+
+            score += corner_bonus + proximity_bonus + opposition_bonus + rook_cutoff_bonus;
+        }
+        else if (is_kqkr_white)
+        {
+            /* KQKR: queen vs rook — winning side pushes enemy king to edge,
+             * keeps our king close, and tries to fork or trap the rook */
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+            int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
+            int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
+            int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+
+            int corner_bonus = (3 - edge_dist) * 150;
+            int proximity_bonus = (7 - chebyshev) * 80;
+            /* Queen close to enemy king increases chance of forks */
+            int queen_sq = lsb_index(b->pieces[WHITE][QUEEN]);
+            int q_dist_f = (file_of(queen_sq) > b_kf) ? (file_of(queen_sq) - b_kf) : (b_kf - file_of(queen_sq));
+            int q_dist_r = (rank_of(queen_sq) > b_kr) ? (rank_of(queen_sq) - b_kr) : (b_kr - rank_of(queen_sq));
+            int q_chebyshev = (q_dist_f > q_dist_r) ? q_dist_f : q_dist_r;
+            int queen_prox_bonus = (7 - q_chebyshev) * 50;
+            /* Avoid stalemate: if enemy king is on edge, keep some distance */
+            int stalemate_avoid = 0;
+            if (edge_dist == 0 && chebyshev == 1)
+                stalemate_avoid = -100;
+            /* Big bonus when enemy king is actually in corner (mate is close) */
+            int corner_mate_bonus = 0;
+            if (edge_dist == 0)
+                corner_mate_bonus = 200;
+
+            score += corner_bonus + proximity_bonus + queen_prox_bonus + stalemate_avoid + corner_mate_bonus;
+        }
+        else if (is_kbnk_white)
+        {
+            /* KBNK: bishop+knight vs bare king
+             * Winning corner must match bishop color.
+             * Square color = (file + rank) % 2. 0 = dark, 1 = light.
+             * Correct corners:
+             *   dark bishop -> a1 (0+0=0) or h8 (7+7=14 even -> 0)
+             *   light bishop -> a8 (0+7=7 odd -> 1) or h1 (7+0=7 odd -> 1)
+             */
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+
+            int bishop_sq = lsb_index(b->pieces[WHITE][BISHOP]);
+            int bishop_color = ((bishop_sq >> 3) ^ (bishop_sq & 7)) & 1;
+
+            /* Target corners based on bishop color */
+            int target_corners[2][2] = {
+                {0, 0},   /* dark: a1 */
+                {7, 7},   /* dark: h8 */
+            };
+            int alt_target_corners[2][2] = {
+                {0, 7},   /* light: a8 */
+                {7, 0},   /* light: h1 */
+            };
+
+            int *tc1, *tc2;
+            if (bishop_color == 0) {
+                tc1 = target_corners[0]; tc2 = target_corners[1];
+            } else {
+                tc1 = alt_target_corners[0]; tc2 = alt_target_corners[1];
+            }
+
+            int dist1 = (b_kf > tc1[0] ? b_kf - tc1[0] : tc1[0] - b_kf)
+                      + (b_kr > tc1[1] ? b_kr - tc1[1] : tc1[1] - b_kr);
+            int dist2 = (b_kf > tc2[0] ? b_kf - tc2[0] : tc2[0] - b_kf)
+                      + (b_kr > tc2[1] ? b_kr - tc2[1] : tc2[1] - b_kr);
+            int corner_dist = (dist1 < dist2) ? dist1 : dist2;
+
+            /* Reward pushing enemy king toward correct corner */
+            int corner_bonus = (6 - corner_dist) * 100;
+            /* Keep our king close to enemy king */
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+            int proximity_bonus = (7 - chebyshev) * 60;
+            /* Big bonus when enemy king is actually in correct corner */
+            int in_correct_corner = 0;
+            if (corner_dist == 0)
+                in_correct_corner = 300;
+
+            score += corner_bonus + proximity_bonus + in_correct_corner;
+        }
+        else if (is_kqk_black || is_krk_black)
+        {
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+            int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
+            int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
+            int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+            int manhattan = file_dist + rank_dist;
+
+            int corner_bonus = (3 - edge_dist) * MOPUP_KING_EDGE_WEIGHT;
+            int proximity_bonus = (7 - chebyshev) * MOPUP_KING_PROX_WEIGHT;
+            int opposition_bonus = 0;
+            if (chebyshev == 2 && manhattan % 2 == 0)
+                opposition_bonus = MOPUP_OPPOSITION_WEIGHT;
+
+            int rook_cutoff_bonus = 0;
+            if (is_krk_black)
             {
-                int w_king = b->king_sq[WHITE];
-                int b_king = b->king_sq[BLACK];
-                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
-                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
-                int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
-                int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
-                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
-                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
-                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
-                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
-                int corner_bonus = (3 - edge_dist) * 80;
-                int proximity_bonus = (7 - chebyshev) * 30;
-                int opposition_bonus = 0;
-                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
-                    opposition_bonus = 40;
-                score -= corner_bonus + proximity_bonus + opposition_bonus;
+                int rook_sq = lsb_index(b->pieces[BLACK][ROOK]);
+                int r_f = file_of(rook_sq), r_r = rank_of(rook_sq);
+                if (r_f == w_kf || r_r == w_kr)
+                    rook_cutoff_bonus = 60;
+                int r_dist_f = (r_f > w_kf) ? (r_f - w_kf) : (w_kf - r_f);
+                int r_dist_r = (r_r > w_kr) ? (r_r - w_kr) : (w_kr - r_r);
+                if (r_dist_f > 3 && r_dist_r > 3)
+                    rook_cutoff_bonus -= 40;
             }
-            else if (w_rooks == 1 && b_rooks == 0 && w_queens == 0 && b_queens == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
-            {
-                int w_king = b->king_sq[WHITE];
-                int b_king = b->king_sq[BLACK];
-                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
-                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
-                int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
-                int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
-                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
-                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
-                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
-                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
-                int corner_bonus = (3 - edge_dist) * 80;
-                int proximity_bonus = (7 - chebyshev) * 30;
-                int opposition_bonus = 0;
-                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
-                    opposition_bonus = 50;
-                score += corner_bonus + proximity_bonus + opposition_bonus;
+
+            score -= corner_bonus + proximity_bonus + opposition_bonus + rook_cutoff_bonus;
+        }
+        else if (is_kqkr_black)
+        {
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+            int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
+            int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
+            int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+
+            int corner_bonus = (3 - edge_dist) * 150;
+            int proximity_bonus = (7 - chebyshev) * 80;
+            int queen_sq = lsb_index(b->pieces[BLACK][QUEEN]);
+            int q_dist_f = (file_of(queen_sq) > w_kf) ? (file_of(queen_sq) - w_kf) : (w_kf - file_of(queen_sq));
+            int q_dist_r = (rank_of(queen_sq) > w_kr) ? (rank_of(queen_sq) - w_kr) : (w_kr - rank_of(queen_sq));
+            int q_chebyshev = (q_dist_f > q_dist_r) ? q_dist_f : q_dist_r;
+            int queen_prox_bonus = (7 - q_chebyshev) * 50;
+            int stalemate_avoid = 0;
+            if (edge_dist == 0 && chebyshev == 1)
+                stalemate_avoid = -100;
+            int corner_mate_bonus = 0;
+            if (edge_dist == 0)
+                corner_mate_bonus = 200;
+
+            score -= corner_bonus + proximity_bonus + queen_prox_bonus + stalemate_avoid + corner_mate_bonus;
+        }
+        else if (is_kbnk_black)
+        {
+            int w_king = b->king_sq[WHITE];
+            int b_king = b->king_sq[BLACK];
+            int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+            int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+
+            int bishop_sq = lsb_index(b->pieces[BLACK][BISHOP]);
+            int bishop_color = ((bishop_sq >> 3) ^ (bishop_sq & 7)) & 1;
+
+            int target_corners[2][2] = { {0, 0}, {7, 7} };
+            int alt_target_corners[2][2] = { {0, 7}, {7, 0} };
+
+            int *tc1, *tc2;
+            if (bishop_color == 0) {
+                tc1 = target_corners[0]; tc2 = target_corners[1];
+            } else {
+                tc1 = alt_target_corners[0]; tc2 = alt_target_corners[1];
             }
-            else if (b_rooks == 1 && w_rooks == 0 && w_queens == 0 && b_queens == 0 && w_bishops + w_knights == 0 && b_bishops + b_knights == 0)
-            {
-                int w_king = b->king_sq[WHITE];
-                int b_king = b->king_sq[BLACK];
-                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
-                int b_kf = file_of(b_king), b_kr = rank_of(b_king);
-                int edge_dist_f = (w_kf < (7 - w_kf)) ? w_kf : (7 - w_kf);
-                int edge_dist_r = (w_kr < (7 - w_kr)) ? w_kr : (7 - w_kr);
-                int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
-                int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
-                int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
-                int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
-                int corner_bonus = (3 - edge_dist) * 80;
-                int proximity_bonus = (7 - chebyshev) * 30;
-                int opposition_bonus = 0;
-                if (chebyshev == 2 && (file_dist + rank_dist) % 2 == 0)
-                    opposition_bonus = 50;
-                score -= corner_bonus + proximity_bonus + opposition_bonus;
-            }
+
+            int dist1 = (w_kf > tc1[0] ? w_kf - tc1[0] : tc1[0] - w_kf)
+                      + (w_kr > tc1[1] ? w_kr - tc1[1] : tc1[1] - w_kr);
+            int dist2 = (w_kf > tc2[0] ? w_kf - tc2[0] : tc2[0] - w_kf)
+                      + (w_kr > tc2[1] ? w_kr - tc2[1] : tc2[1] - w_kr);
+            int corner_dist = (dist1 < dist2) ? dist1 : dist2;
+
+            int corner_bonus = (6 - corner_dist) * 100;
+            int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
+            int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
+            int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
+            int proximity_bonus = (7 - chebyshev) * 60;
+            int in_correct_corner = 0;
+            if (corner_dist == 0)
+                in_correct_corner = 300;
+
+            score -= corner_bonus + proximity_bonus + in_correct_corner;
         }
         /* Extended mop-up: winning side has Q or R with pawns vs bare king or king+pawns */
         else if (total_pawns > 0 && (w_queens + b_queens + w_rooks + b_rooks) > 0)

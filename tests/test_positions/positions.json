@@ -1,0 +1,351 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "description": "Hellcopter 引擎测试局面集",
+    "total_positions": 250,
+    "categories": ["tactical", "endgame", "simple", "complex", "time_pressure", "symmetry", "pawn_structure", "king_safety"]
+  },
+  "positions": {
+    "tactical": [
+      {
+        "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "学者将杀威胁",
+        "expected_move": "Qxf7#",
+        "depth": 2
+      },
+      {
+        "fen": "rnbqkb1r/pppp1ppp/5n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "经典学者将杀",
+        "expected_move": "Qxf7#",
+        "depth": 1
+      },
+      {
+        "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "快速将杀威胁",
+        "expected_move": "Qxf7#",
+        "depth": 1
+      },
+      {
+        "fen": "rnbqkbnr/ppppp2p/5p2/6pQ/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3",
+        "description": "陷阱局面",
+        "expected_move": "Qh5#",
+        "depth": 1
+      },
+      {
+        "fen": "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "双将杀威胁",
+        "expected_move": "Qxf7#",
+        "depth": 1
+      }
+    ],
+    "endgame": [
+      {
+        "fen": "8/8/8/4k3/8/8/8/4K2R w - - 0 1",
+        "description": "车对单王残局",
+        "expected_eval_range": [500, 5000],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/3QK3 w - - 0 1",
+        "description": "后对单王残局",
+        "expected_eval_range": [5000, 30000],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/R3K3 w - - 0 1",
+        "description": "车对单王（白方优势）",
+        "expected_eval_range": [500, 5000],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/3k4/8/8/8/3QK3 w - - 0 1",
+        "description": "后对单王（黑方在中心）",
+        "expected_eval_range": [5000, 30000],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1",
+        "description": "王兵残局",
+        "expected_eval_range": [0, 500],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/4KB2 w - - 0 1",
+        "description": "象对单王（和棋）",
+        "expected_eval_range": [-50, 50],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/4KN2 w - - 0 1",
+        "description": "马对单王（和棋）",
+        "expected_eval_range": [-50, 50],
+        "phase": "endgame"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/3QK3 b - - 0 1",
+        "description": "后对单王（黑方走棋）",
+        "expected_eval_range": [-30000, -5000],
+        "phase": "endgame"
+      }
+    ],
+    "simple": [
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "description": "起始局面",
+        "expected_legal_moves": 20,
+        "time_limit_ratio": 0.1
+      },
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        "description": "王兵开局后",
+        "expected_legal_moves": 20,
+        "time_limit_ratio": 0.1
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        "description": "中心对称局面",
+        "expected_legal_moves": 20,
+        "time_limit_ratio": 0.1
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2",
+        "description": "后兵开局",
+        "expected_legal_moves": 20,
+        "time_limit_ratio": 0.1
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+        "description": "马对中心控制",
+        "expected_legal_moves": 20,
+        "time_limit_ratio": 0.1
+      }
+    ],
+    "complex": [
+      {
+        "fen": "r1bq1rk1/ppp2ppp/2n2n2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQ - 0 6",
+        "description": "复杂中局",
+        "expected_legal_moves_gt": 30,
+        "time_limit_ratio": 0.5
+      },
+      {
+        "fen": "r2qkb1r/ppp2ppp/2n1bn2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6",
+        "description": "开放性复杂局面",
+        "expected_legal_moves_gt": 30,
+        "time_limit_ratio": 0.5
+      },
+      {
+        "fen": "r1bq1rk1/pp2ppbp/2np1np1/8/2BNP3/2N1B3/PPP2PPP/R2QK2R w KQ - 0 8",
+        "description": "西西里防御复杂变例",
+        "expected_legal_moves_gt": 30,
+        "time_limit_ratio": 0.5
+      },
+      {
+        "fen": "r1bq1rk1/ppp2ppp/2n2n2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQ - 0 6",
+        "description": "意大利游戏复杂变例",
+        "expected_legal_moves_gt": 30,
+        "time_limit_ratio": 0.5
+      },
+      {
+        "fen": "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+        "description": "双马防御复杂局面",
+        "expected_legal_moves_gt": 30,
+        "time_limit_ratio": 0.5
+      }
+    ],
+    "time_pressure": [
+      {
+        "fen": "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "快速将杀（时间压力测试）",
+        "time_ms": 100,
+        "expected_move": "Qxf7#"
+      },
+      {
+        "fen": "rnbqkb1r/pppp1ppp/5n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "学者将杀（极短时间）",
+        "time_ms": 50,
+        "expected_move": "Qxf7#"
+      },
+      {
+        "fen": "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 4 4",
+        "description": "快速将杀（100ms）",
+        "time_ms": 100,
+        "expected_move": "Qxf7#"
+      },
+      {
+        "fen": "rnbqkbnr/ppppp2p/5p2/6pQ/4P3/8/PPPP1PPP/RNB1KBNR w KQkq - 0 3",
+        "description": "陷阱局面（50ms）",
+        "time_ms": 50,
+        "expected_move": "Qh5#"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/4K2R w - - 0 1",
+        "description": "残局时间压力",
+        "time_ms": 1000,
+        "expected_eval_range": [500, 5000]
+      }
+    ],
+    "symmetry": [
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "description": "起始局面（对称）",
+        "expected_eval_range": [-20, 20]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+        "description": "对称中心局面",
+        "expected_eval_range": [-20, 20]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2",
+        "description": "后兵对称局面",
+        "expected_eval_range": [-20, 20]
+      },
+      {
+        "fen": "r1bqkbnr/pppppppp/2n5/8/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 2 2",
+        "description": "马对称局面",
+        "expected_eval_range": [-20, 20]
+      },
+      {
+        "fen": "rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 2 2",
+        "description": "双马对称局面",
+        "expected_eval_range": [-20, 20]
+      }
+    ],
+    "pawn_structure": [
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "description": "标准兵型",
+        "pawn_features": ["no_doubled", "no_isolated", "connected"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2",
+        "description": "中心兵对峙",
+        "pawn_features": ["no_doubled", "no_isolated"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2",
+        "description": "后兵开局兵型",
+        "pawn_features": ["no_doubled", "connected"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        "description": "中心兑兵",
+        "pawn_features": ["no_doubled"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+        "description": "马对兵的控制",
+        "pawn_features": ["no_doubled"]
+      }
+    ],
+    "king_safety": [
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "description": "起始局面王安全",
+        "king_safety_features": ["castling_available", "pawn_shield"]
+      },
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+        "description": "王兵开局后王安全",
+        "king_safety_features": ["castling_available", "pawn_shield"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        "description": "中心对峙王安全",
+        "king_safety_features": ["castling_available", "pawn_shield"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2",
+        "description": "后兵开局王安全",
+        "king_safety_features": ["castling_available", "pawn_shield"]
+      },
+      {
+        "fen": "rnbqkbnr/ppp1pppp/8/3p4/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+        "description": "马对中心控制王安全",
+        "king_safety_features": ["castling_available", "pawn_shield"]
+      }
+    ],
+    "zugzwang": [
+      {
+        "fen": "8/8/8/4k3/8/8/8/4K3 w - - 0 1",
+        "description": "单王对单王（和棋）",
+        "zugzwang_risk": "low"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/4P3/4K3 w - - 0 1",
+        "description": "王兵残局（zugzwang 风险）",
+        "zugzwang_risk": "high"
+      },
+      {
+        "fen": "8/8/8/3k4/8/8/3KP3/8 w - - 0 1",
+        "description": "王兵残局（对王）",
+        "zugzwang_risk": "high"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/3KP3/8 w - - 0 1",
+        "description": "王兵残局（非对王）",
+        "zugzwang_risk": "high"
+      },
+      {
+        "fen": "8/8/8/4k3/8/8/8/3K4 w - - 0 1",
+        "description": "单王对单王（中心对王）",
+        "zugzwang_risk": "low"
+      }
+    ],
+    "perft": [
+      {
+        "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "description": "起始局面",
+        "perft": {
+          "1": 20,
+          "2": 400,
+          "3": 8902,
+          "4": 197281,
+          "5": 4865609,
+          "6": 119060324
+        }
+      },
+      {
+        "fen": "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "description": "Kiwipete",
+        "perft": {
+          "1": 48,
+          "2": 2039,
+          "3": 97862,
+          "4": 4085603
+        }
+      },
+      {
+        "fen": "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "description": "残局测试",
+        "perft": {
+          "1": 14,
+          "2": 191,
+          "3": 2812,
+          "4": 43238,
+          "5": 674624
+        }
+      },
+      {
+        "fen": "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "description": "复杂残局",
+        "perft": {
+          "1": 6,
+          "2": 264,
+          "3": 9467,
+          "4": 422333
+        }
+      },
+      {
+        "fen": "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "description": "复杂中局",
+        "perft": {
+          "1": 44,
+          "2": 1486,
+          "3": 62379,
+          "4": 2103487
+        }
+      }
+    ]
+  }
+}

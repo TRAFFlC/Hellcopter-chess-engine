@@ -46,43 +46,89 @@ def _init_polyglot_randoms():
     global POLYGLOT_RANDOMS
     if POLYGLOT_RANDOMS is not None:
         return
-    
-    POLYGLOT_RANDOMS = []
-    rng_state = 0xD9348E5E5A5A5A5A
-    
-    def next_random():
-        nonlocal rng_state
-        rng_state ^= (rng_state >> 12) & 0xFFFFFFFFFFFFFFFF
-        rng_state ^= (rng_state << 25) & 0xFFFFFFFFFFFFFFFF
-        rng_state ^= (rng_state >> 27) & 0xFFFFFFFFFFFFFFFF
-        return (rng_state * 0x2545F4914F6CDD1D) & 0xFFFFFFFFFFFFFFFF
-    
-    for _ in range(1851):
-        POLYGLOT_RANDOMS.append(next_random())
+
+    # 直接使用 python-chess 内置的标准 Polyglot 随机数
+    try:
+        import chess.polyglot
+        POLYGLOT_RANDOMS = list(chess.polyglot.POLYGLOT_RANDOM_ARRAY)
+        return
+    except (ImportError, AttributeError):
+        pass
+
+    # 回退：MT19937-64 Mersenne Twister
+    MASK64 = 0xFFFFFFFFFFFFFFFF
+    NN = 312
+    MM = 156
+    MATRIX_A = 0xB5026F5AA96619E9
+    UM = 0xFFFFFFFF80000000
+    LM = 0x7FFFFFFF
+
+    mt = [0] * NN
+    mti = NN + 1
+
+    def mt_init(seed):
+        nonlocal mt, mti
+        mt[0] = seed & MASK64
+        for i in range(1, NN):
+            mt[i] = (6364136223846793005 * (mt[i-1] ^ (mt[i-1] >> 62)) + i) & MASK64
+        mti = NN
+
+    def mt_next():
+        nonlocal mt, mti
+        mag01 = [0, MATRIX_A]
+        if mti >= NN:
+            if mti == NN + 1:
+                mt_init(5489)
+            for i in range(NN - MM):
+                x = (mt[i] & UM) | (mt[i+1] & LM)
+                mt[i] = (mt[i + MM] ^ (x >> 1) ^ mag01[x & 1]) & MASK64
+            for i in range(NN - MM, NN - 1):
+                x = (mt[i] & UM) | (mt[i+1] & LM)
+                mt[i] = (mt[i + MM - NN] ^ (x >> 1) ^ mag01[x & 1]) & MASK64
+            x = (mt[NN-1] & UM) | (mt[0] & LM)
+            mt[NN-1] = (mt[MM-1] ^ (x >> 1) ^ mag01[x & 1]) & MASK64
+            mti = 0
+        y = mt[mti]
+        mti += 1
+        y ^= (y >> 29) & 0x5555555555555555
+        y ^= (y << 17) & 0x71D67FFFEDA60000
+        y ^= (y << 37) & 0xFFF7EEE000000000
+        y ^= (y >> 43)
+        return y & MASK64
+
+    mt_init(1070372)
+    POLYGLOT_RANDOMS = [mt_next() for _ in range(781)]
 
 
 def polyglot_hash(board) -> int:
-    """计算 Polyglot 哈希"""
+    """计算 Polyglot 哈希 - 直接使用 python-chess 内置实现"""
     if chess is None:
         raise ImportError("python-chess is required")
-    
+    try:
+        import chess.polyglot as _pg
+        return _pg.zobrist_hash(board)
+    except (ImportError, AttributeError):
+        pass
+
+    # 回退实现
     _init_polyglot_randoms()
     h = 0
-    
+
+    # Polyglot piece index: interleaved order (WP=0,BP=1,WN=2,BN=3,...,WK=10,BK=11)
     piece_map = {
-        chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
-        chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5
+        chess.PAWN: 0, chess.KNIGHT: 2, chess.BISHOP: 4,
+        chess.ROOK: 6, chess.QUEEN: 8, chess.KING: 10
     }
-    
+
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece:
             piece_idx = piece_map[piece.piece_type]
             if piece.color == chess.BLACK:
-                piece_idx += 6
+                piece_idx += 1
             idx = 64 * piece_idx + square
             h ^= POLYGLOT_RANDOMS[idx]
-    
+
     castling = board.castling_rights
     castling_idx = 0
     if castling & chess.BB_H1:
@@ -93,16 +139,24 @@ def polyglot_hash(board) -> int:
         castling_idx |= 4
     if castling & chess.BB_A8:
         castling_idx |= 8
-    if castling_idx:
-        h ^= POLYGLOT_RANDOMS[768 + castling_idx - 1]
-    
+    # Polyglot: each castling right uses its own random number, XORed independently
+    if castling_idx & 1:
+        h ^= POLYGLOT_RANDOMS[768]
+    if castling_idx & 2:
+        h ^= POLYGLOT_RANDOMS[769]
+    if castling_idx & 4:
+        h ^= POLYGLOT_RANDOMS[770]
+    if castling_idx & 8:
+        h ^= POLYGLOT_RANDOMS[771]
+
     if board.ep_square is not None:
         ep_file = chess.square_file(board.ep_square)
         h ^= POLYGLOT_RANDOMS[772 + ep_file]
-    
-    if board.turn == chess.BLACK:
+
+    # Polyglot: XOR turn random when WHITE to move
+    if board.turn == chess.WHITE:
         h ^= POLYGLOT_RANDOMS[780]
-    
+
     return h
 
 
@@ -156,77 +210,60 @@ class BookProvider(ABC):
 
 
 class PolyglotBookProvider(BookProvider):
-    """Polyglot .bin 格式开局库"""
+    """Polyglot .bin 格式开局库
+    
+    使用 python-chess 内置的 polyglot 模块，确保哈希函数正确。
+    """
     
     def __init__(self):
-        self._entries: List[Tuple[int, int, int, int]] = []
+        self._reader = None
         self._loaded = False
         self._path = ""
+        self._entry_count = 0
     
     def load(self, path: str) -> bool:
         if not os.path.isfile(path):
             return False
         
         try:
-            with open(path, 'rb') as f:
-                f.seek(0, 2)
-                file_size = f.tell()
-                f.seek(0, 0)
-                
-                if file_size % 16 != 0:
-                    return False
-                
-                count = file_size // 16
-                self._entries = []
-                
-                for _ in range(count):
-                    key = struct.unpack('>Q', f.read(8))[0]
-                    move = struct.unpack('>H', f.read(2))[0]
-                    weight = struct.unpack('>H', f.read(2))[0]
-                    learn = struct.unpack('>I', f.read(4))[0]
-                    self._entries.append((key, move, weight, learn))
-                
-                self._entries.sort(key=lambda x: x[0])
-                self._loaded = True
-                self._path = path
-                return True
-        except Exception:
+            import chess.polyglot
+            self._reader = chess.polyglot.open_reader(path)
+            self._loaded = True
+            self._path = path
+            # 使用文件大小估算条目数（每条16字节），避免遍历整个文件
+            file_size = os.path.getsize(path)
+            self._entry_count = file_size // 16
+            return True
+        except Exception as e:
+            self._loaded = False
+            self._reader = None
             return False
     
     def lookup(self, board) -> Optional[BookEntry]:
-        if not self._loaded:
+        if not self._loaded or not self._reader:
             return None
         
-        target = polyglot_hash(board)
-        
-        left, right = 0, len(self._entries) - 1
-        found_idx = -1
-        
-        while left <= right:
-            mid = (left + right) // 2
-            if self._entries[mid][0] < target:
-                left = mid + 1
-            elif self._entries[mid][0] > target:
-                right = mid - 1
-            else:
-                found_idx = mid
-                break
-        
-        if found_idx < 0:
+        try:
+            import chess.polyglot
+            entries = list(self._reader.find_all(board))
+            if not entries:
+                return None
+            
+            moves = []
+            for entry in entries:
+                # entry.move 是属性，不是方法
+                move_uci = str(entry.move)
+                moves.append(BookMove(
+                    uci=move_uci,
+                    weight=entry.weight,
+                    learn=entry.learn
+                ))
+            
+            return BookEntry(key=0, moves=moves)
+        except (KeyError, StopIteration):
             return None
-        
-        while found_idx > 0 and self._entries[found_idx - 1][0] == target:
-            found_idx -= 1
-        
-        moves = []
-        idx = found_idx
-        while idx < len(self._entries) and self._entries[idx][0] == target:
-            _, move, weight, learn = self._entries[idx]
-            uci = _decode_polyglot_move(move)
-            moves.append(BookMove(uci=uci, weight=weight, learn=learn))
-            idx += 1
-        
-        return BookEntry(key=target, moves=moves)
+        except Exception:
+            return None
     
     def select_move(self, board, 
                     randomness: float = 0.0,
@@ -243,25 +280,37 @@ class PolyglotBookProvider(BookProvider):
         if not entry or not entry.moves:
             return None
         
+        # Filter by min_score if needed
+        valid_moves = entry.moves
+        if min_score > -9999:
+            valid_moves = [m for m in valid_moves if m.weight >= min_score]
+            if not valid_moves:
+                return None
+        
         if randomness <= 0:
-            best = max(entry.moves, key=lambda m: m.weight)
+            best = max(valid_moves, key=lambda m: m.weight)
             return best.uci
         
-        total_weight = sum(m.weight for m in entry.moves)
+        total_weight = sum(m.weight for m in valid_moves)
         if total_weight <= 0:
             return None
         
         r = random.random() * total_weight
         cumulative = 0
-        for move in entry.moves:
+        for move in valid_moves:
             cumulative += move.weight
             if r <= cumulative:
                 return move.uci
         
-        return entry.moves[0].uci
+        return valid_moves[0].uci
     
     def close(self) -> None:
-        self._entries = []
+        if self._reader:
+            try:
+                self._reader.close()
+            except:
+                pass
+        self._reader = None
         self._loaded = False
     
     @property
@@ -270,7 +319,7 @@ class PolyglotBookProvider(BookProvider):
     
     @property
     def entry_count(self) -> int:
-        return len(self._entries)
+        return self._entry_count
 
 
 class JsonBookProvider(BookProvider):
@@ -315,7 +364,7 @@ class JsonBookProvider(BookProvider):
         
         for uci in moves_list:
             score = evals.get(uci, 0)
-            weight = 1 if uci == entry.get('preferred') else 1
+            weight = 3 if uci == entry.get('preferred') else 1
             moves.append(BookMove(uci=uci, weight=weight, score=score))
         
         return BookEntry(key=hash(pos_key), moves=moves)
@@ -505,7 +554,7 @@ class BookManager:
         if self._mode == BookMode.INTERNAL:
             if self._tournament_mode:
                 return False
-            path = book_path or os.path.join(base_path, "dist", "book.bin")
+            path = book_path or os.path.join(base_path, "dist", "Goi5.1.bin")
             self._provider = PolyglotBookProvider()
             return self._provider.load(path)
         
@@ -519,7 +568,7 @@ class BookManager:
         elif self._mode == BookMode.HYBRID:
             if self._tournament_mode:
                 return False
-            internal_path = os.path.join(base_path, "dist", "book.bin")
+            internal_path = os.path.join(base_path, "dist", "Goi5.1.bin")
             generic_path = book_path
             
             primary = PolyglotBookProvider()
@@ -562,6 +611,19 @@ class BookManager:
         bonus = base_time * self._exit_bonus_time
         self._book_exit_position = None
         return bonus
+    
+    def is_just_exited_book(self) -> bool:
+        """判断是否刚离开开局库"""
+        return self._book_exit_position is not None
+    
+    def get_book_exit_time_factor(self) -> float:
+        """获取出书后的时间缩减因子
+
+        出书后需要正常思考，不应削减时间。
+        返回 1.0 表示正常思考时间。
+        注意：不再清除 _book_exit_position，由 get_exit_bonus_time() 负责清除。
+        """
+        return 1.0
     
     @property
     def mode(self) -> BookMode:
