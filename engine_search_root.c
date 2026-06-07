@@ -555,9 +555,9 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     if (extreme_time_mode)
     {
         /* In extreme time pressure, limit depth to 6-8 */
-        int extreme_depth = 6;
-        if (tm.increment > 0.1)
-            extreme_depth = 8; /* With increment, we can search deeper */
+        int extreme_depth = 8;
+        if (tm.increment >= 0.1)
+            extreme_depth = 10; /* With increment, we can search deeper */
         if (effective_max_depth > extreme_depth)
             effective_max_depth = extreme_depth;
     }

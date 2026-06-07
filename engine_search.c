@@ -425,6 +425,18 @@ static int see(Board *b, int from, int to)
     occupied &= ~(1ULL << from);
     occupied |= (1ULL << to);
 
+    /* For en passant captures, remove the captured pawn from occupied.
+     * The captured pawn is on a different square than the target square:
+     * for white capturing en passant, the captured pawn is at to-8;
+     * for black, at to+8. */
+    if (b->en_passant == to && piece_on_square(b, to) == 0)
+    {
+        if (b->side_to_move == WHITE)
+            occupied &= ~(1ULL << (to - 8));
+        else
+            occupied &= ~(1ULL << (to + 8));
+    }
+
     int gain[32];
     int gain_count = 0;
     gain[gain_count++] = capture_value;
@@ -514,6 +526,17 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
 
     int in_check = is_check(&s->board, s->board.side_to_move);
     int next_ply = ply + 1;
+    int initial_alpha_qs = alpha; /* Save initial alpha for correct TT flag */
+
+    /* TT probe in quiescence search */
+    U64 pos_key = s->board.hash;
+    Move tt_move = {0};
+    int tt_score_raw = 0;
+    int tt_hit = tt_probe(s, pos_key, 0, alpha, beta, &tt_move, ply, &tt_score_raw);
+    if (tt_hit <= INF)
+    {
+        return tt_hit;
+    }
 
     int stand_pat_val = 0;
     if (!in_check)
@@ -555,10 +578,16 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     for (i = 0; i < n; i++)
     {
         moves[i].score = mvv_lva(&s->board, &moves[i]);
+        /* Give TT move the highest priority for better move ordering */
+        if (tt_move.from != 0 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
+        {
+            moves[i].score = 100000;
+        }
     }
     sort_moves(moves, n);
 
     int legal_count = 0;
+    Move best_qs_move = {0};
     for (i = 0; i < n; i++)
     {
         if (!in_check && moves[i].capture && !moves[i].promotion)
@@ -587,9 +616,11 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             if (score > alpha)
             {
                 alpha = score;
+                best_qs_move = moves[i];
                 if (alpha >= beta)
                 {
                     unmake_move(&s->board, &moves[i], &undo);
+                    tt_store(s, pos_key, 0, beta, 2, best_qs_move, ply);
                     return beta;
                 }
             }
@@ -600,6 +631,14 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     if (in_check && legal_count == 0)
     {
         return -MATE_SCORE + ply;
+    }
+
+    /* Store QS result in TT.
+     * Flag: EXACT (0) if alpha was raised above initial alpha,
+     * UPPERBOUND (1) if no move/capture improved on the initial alpha. */
+    {
+        int flag = (alpha > initial_alpha_qs) ? 0 : 1;
+        tt_store(s, pos_key, 0, alpha, flag, best_qs_move, ply);
     }
 
     return alpha;
@@ -865,7 +904,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
      * This is applied before move generation to save time.
      * Disabled in clearly winning positions to avoid missing forced mates.
      */
-    if (should_apply_razoring(s, depth, alpha, in_check) && !is_simple_endgame && !is_endgame && static_eval < 2000)
+    if (should_apply_razoring(s, depth, alpha, in_check) && (beta - alpha == 1) && !is_simple_endgame && !is_endgame && static_eval < 2000)
     {
         int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 100;
 
@@ -1105,10 +1144,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         {
             if (depth >= NULL_MOVE_VERIFICATION_DEPTH)
             {
-                int saved_for_verify = s->search_history_count;
-                s->search_history_count = saved_history_count;
+                /* Keep the current position in the repetition history for
+                 * the verification search. Previously this was resetting
+                 * to saved_history_count which removed the current position,
+                 * potentially allowing the verify search to miss repetitions. */
                 int verify_score = negamax(s, depth - NULL_MOVE_VERIFICATION_REDUCTION, alpha, alpha + 1, ext_count, ply);
-                s->search_history_count = saved_for_verify;
                 if (s->aborted)
                 {
                     s->search_history_count = saved_history_count;
@@ -1190,7 +1230,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (i == 0)
         {
             int se_depth = promo_ext;
-            if (depth >= 8 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && tt_score > -MATE_SCORE + 100 && tt_score < MATE_SCORE - 100 && tt_val != INF + 1)
+            if (depth >= 8 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && tt_score > -MATE_SCORE + 100 && tt_score < MATE_SCORE - 100)
             {
                 /* Singular Extension: verify that the TT move is singular by
                  * searching the position with the TT move excluded at reduced depth.

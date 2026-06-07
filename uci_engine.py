@@ -325,10 +325,14 @@ class UCIEngine:
                     except:
                         depth = 1
                     time_ms = int(elapsed * 1000)
-                    if abs(score) >= 30000:
-                        mate_in = (32767 - abs(score) + 1) // 2
-                        if score < 0:
-                            mate_in = -mate_in
+                    MATE_SCORE = 900000
+                    if score > MATE_SCORE - 100:
+                        # Winning mate: convert ply distance to full moves
+                        mate_in = (MATE_SCORE - score + 1) // 2
+                        self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
+                    elif score < -(MATE_SCORE - 100):
+                        # Losing mate: negative full moves
+                        mate_in = -((MATE_SCORE + score + 1) // 2)
                         self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
                     else:
                         self.send(f"info depth {depth} score cp {score} nodes {nodes} time {time_ms}")
