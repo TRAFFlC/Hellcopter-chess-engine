@@ -1,4 +1,8 @@
 /* engine_search.c — 搜索核心：TT、SEE、走法排序、quiescence、negamax（从 engine_core.c 拆分） */
+
+/* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
+extern unsigned TB_LARGEST;
+
 static int mvv_lva(const Board *b, const Move *m)
 {
     /* MVV-LVA: Most Valuable Victim - Least Valuable Attacker */
@@ -119,6 +123,11 @@ void tt_resize_global(int hash_mb)
 
 static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score)
 {
+    /* Singular Extension: skip TT when we have an excluded move at this ply,
+     * because the TT entry may depend on the excluded move being the best. */
+    if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0))
+        return INF + 1;
+
     int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
     TT_Cluster *cluster = &s->tt[idx];
     int i;
@@ -173,6 +182,11 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
 
 static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Move best_move, int ply)
 {
+    /* Singular Extension: don't store TT when we have an excluded move at this ply,
+     * to avoid polluting TT with results from an incomplete search. */
+    if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0))
+        return;
+
     int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
     TT_Cluster *cluster = &s->tt[idx];
     U64 key32 = key >> 32;
@@ -411,6 +425,18 @@ static int see(Board *b, int from, int to)
     occupied &= ~(1ULL << from);
     occupied |= (1ULL << to);
 
+    /* For en passant captures, remove the captured pawn from occupied.
+     * The captured pawn is on a different square than the target square:
+     * for white capturing en passant, the captured pawn is at to-8;
+     * for black, at to+8. */
+    if (b->en_passant == to && piece_on_square(b, to) == 0)
+    {
+        if (b->side_to_move == WHITE)
+            occupied &= ~(1ULL << (to - 8));
+        else
+            occupied &= ~(1ULL << (to + 8));
+    }
+
     int gain[32];
     int gain_count = 0;
     gain[gain_count++] = capture_value;
@@ -475,10 +501,10 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     int is_endgame_qs = 0;
     {
         int npm = s->board.npm[0] + s->board.npm[1];
-        if (npm <= ENDGAME_PHASE_THRESHOLD)
+        if (npm <= g_runtime_params.endgame_phase_threshold)
             is_endgame_qs = 1;
     }
-    int qs_max_depth = is_endgame_qs ? QS_MAX_DEPTH_EG : QS_MAX_DEPTH_MG;
+    int qs_max_depth = is_endgame_qs ? g_runtime_params.qs_max_depth_eg : g_runtime_params.qs_max_depth_mg;
     if (qs_depth >= qs_max_depth)
     {
         int in_check_at_limit = is_check(&s->board, s->board.side_to_move);
@@ -500,6 +526,17 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
 
     int in_check = is_check(&s->board, s->board.side_to_move);
     int next_ply = ply + 1;
+    int initial_alpha_qs = alpha; /* Save initial alpha for correct TT flag */
+
+    /* TT probe in quiescence search */
+    U64 pos_key = s->board.hash;
+    Move tt_move = {0};
+    int tt_score_raw = 0;
+    int tt_hit = tt_probe(s, pos_key, 0, alpha, beta, &tt_move, ply, &tt_score_raw);
+    if (tt_hit <= INF)
+    {
+        return tt_hit;
+    }
 
     int stand_pat_val = 0;
     if (!in_check)
@@ -541,10 +578,16 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     for (i = 0; i < n; i++)
     {
         moves[i].score = mvv_lva(&s->board, &moves[i]);
+        /* Give TT move the highest priority for better move ordering */
+        if (tt_move.from != 0 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
+        {
+            moves[i].score = 100000;
+        }
     }
     sort_moves(moves, n);
 
     int legal_count = 0;
+    Move best_qs_move = {0};
     for (i = 0; i < n; i++)
     {
         if (!in_check && moves[i].capture && !moves[i].promotion)
@@ -573,9 +616,11 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             if (score > alpha)
             {
                 alpha = score;
+                best_qs_move = moves[i];
                 if (alpha >= beta)
                 {
                     unmake_move(&s->board, &moves[i], &undo);
+                    tt_store(s, pos_key, 0, beta, 2, best_qs_move, ply);
                     return beta;
                 }
             }
@@ -586,6 +631,14 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     if (in_check && legal_count == 0)
     {
         return -MATE_SCORE + ply;
+    }
+
+    /* Store QS result in TT.
+     * Flag: EXACT (0) if alpha was raised above initial alpha,
+     * UPPERBOUND (1) if no move/capture improved on the initial alpha. */
+    {
+        int flag = (alpha > initial_alpha_qs) ? 0 : 1;
+        tt_store(s, pos_key, 0, alpha, flag, best_qs_move, ply);
     }
 
     return alpha;
@@ -628,7 +681,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                         s->board.pieces[BLACK][BISHOP] | s->board.pieces[BLACK][ROOK] |
                         s->board.pieces[BLACK][QUEEN] | s->board.pieces[BLACK][KING];
         int total_pieces = count_bits(all_white) + count_bits(all_black);
-        if (total_pieces <= (int)TB_LARGEST && total_pieces >= 3 && s->board.castling_rights == 0)
+        int w_bishops = count_bits(s->board.pieces[WHITE][BISHOP]);
+        int b_bishops = count_bits(s->board.pieces[BLACK][BISHOP]);
+        int w_knights = count_bits(s->board.pieces[WHITE][KNIGHT]);
+        int b_knights = count_bits(s->board.pieces[BLACK][KNIGHT]);
+        int total_pawns = count_bits(s->board.pieces[WHITE][PAWN] | s->board.pieces[BLACK][PAWN]);
+        int is_kbnk = (w_bishops + b_bishops == 1 && w_knights + b_knights == 1 && total_pawns == 0);
+        if (total_pieces <= (int)TB_LARGEST && total_pieces >= 3 && s->board.castling_rights == 0 && !is_kbnk)
         {
             unsigned ep_sq = 0;
             if (s->board.en_passant >= 0 && s->board.en_passant < 64)
@@ -648,6 +707,27 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 s->board.side_to_move == WHITE);
             if (wdl != TB_RESULT_FAILED)
             {
+                /* Sanity check: if tablebase claims DRAW but material imbalance
+                 * is huge (e.g. Q vs R, BN vs bare K), the TB file may be corrupt.
+                 * Ignore corrupt TB results and fall back to search + eval. */
+                if (wdl == TB_DRAW)
+                {
+                    int w_mat = count_bits(s->board.pieces[WHITE][QUEEN]) * 900 +
+                                count_bits(s->board.pieces[WHITE][ROOK]) * 480 +
+                                count_bits(s->board.pieces[WHITE][BISHOP]) * 340 +
+                                count_bits(s->board.pieces[WHITE][KNIGHT]) * 320;
+                    int b_mat = count_bits(s->board.pieces[BLACK][QUEEN]) * 900 +
+                                count_bits(s->board.pieces[BLACK][ROOK]) * 480 +
+                                count_bits(s->board.pieces[BLACK][BISHOP]) * 340 +
+                                count_bits(s->board.pieces[BLACK][KNIGHT]) * 320;
+                    int mat_diff = w_mat - b_mat;
+                    if (s->board.side_to_move == BLACK)
+                        mat_diff = -mat_diff;
+                    /* If side to move has >400 advantage, TB DRAW is suspicious */
+                    if (mat_diff > 400)
+                        goto tb_done;
+                }
+
                 int tb_score;
                 if (wdl == TB_WIN)
                     tb_score = 100000 - ply;
@@ -664,6 +744,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 if (tb_score > alpha)
                     alpha = tb_score;
             }
+        tb_done:
+            ;
         }
     }
 
@@ -715,7 +797,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     int is_one_sided_major_endgame = 0; /* one side has Q/R, other has none */
     {
         int npm = s->board.npm[0] + s->board.npm[1];
-        if (npm <= ENDGAME_PHASE_THRESHOLD)
+        if (npm <= g_runtime_params.endgame_phase_threshold)
             is_endgame = 1;
         if (npm <= 3)
             is_simple_endgame = 1;
@@ -822,7 +904,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
      * This is applied before move generation to save time.
      * Disabled in clearly winning positions to avoid missing forced mates.
      */
-    if (should_apply_razoring(s, depth, alpha, in_check) && !is_simple_endgame && !is_endgame && static_eval < 2000)
+    if (should_apply_razoring(s, depth, alpha, in_check) && (beta - alpha == 1) && !is_simple_endgame && !is_endgame && static_eval < 2000)
     {
         int razor_margin = g_runtime_params.razoring_margin + (depth - 1) * 100;
 
@@ -1041,7 +1123,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (b->phase < 10)
             R = (R > 1) ? R - 1 : 1;
         if (is_endgame)
-            R = (R > 2) ? R - ENDGAME_NMR_BONUS : 1;
+            R = (R > 2) ? R - g_runtime_params.endgame_nmr_bonus : 1;
         if (R >= depth)
             R = depth - 1;
         if (R < 1)
@@ -1062,10 +1144,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         {
             if (depth >= NULL_MOVE_VERIFICATION_DEPTH)
             {
-                int saved_for_verify = s->search_history_count;
-                s->search_history_count = saved_history_count;
+                /* Keep the current position in the repetition history for
+                 * the verification search. Previously this was resetting
+                 * to saved_history_count which removed the current position,
+                 * potentially allowing the verify search to miss repetitions. */
                 int verify_score = negamax(s, depth - NULL_MOVE_VERIFICATION_REDUCTION, alpha, alpha + 1, ext_count, ply);
-                s->search_history_count = saved_for_verify;
                 if (s->aborted)
                 {
                     s->search_history_count = saved_history_count;
@@ -1089,6 +1172,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     for (i = 0; i < n; i++)
     {
         pick_next_move(moves, n, i);
+
+        /* Singular Extension: skip the excluded move */
+        if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0) &&
+            moves[i].from == s->se_excluded[ply].from && moves[i].to == s->se_excluded[ply].to)
+            continue;
+
         if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame, static_eval))
         {
             int estimated_nodes_saved = (1 << depth) - 1;
@@ -1141,33 +1230,31 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (i == 0)
         {
             int se_depth = promo_ext;
-            if (depth >= 8 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && tt_score > -MATE_SCORE + 100 && tt_score < MATE_SCORE - 100 && tt_val != INF + 1)
+            if (depth >= 8 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && tt_score > -MATE_SCORE + 100 && tt_score < MATE_SCORE - 100)
             {
+                /* Singular Extension: verify that the TT move is singular by
+                 * searching the position with the TT move excluded at reduced depth.
+                 * If all alternatives score below (tt_score - 2*depth), the TT
+                 * move is singular and deserves an extension. */
                 int se_beta = tt_score - 2 * depth;
-                int se_depth_limit = depth - 3;
+                int se_depth_limit = depth / 2;
 
-                Move *se_moves = (Move *)malloc(MAX_MOVES * sizeof(Move));
-                int se_count = 0;
-                for (int si = 0; si < n; si++)
-                {
-                    if (moves[si].from != tt_move.from || moves[si].to != tt_move.to)
-                        se_moves[se_count++] = moves[si];
-                }
+                /* Save PV table before SE search to avoid corruption.
+                 * The SE search runs at the same ply and would overwrite
+                 * pv_table[ply], pv_length[ply], and static_eval_stack[ply]. */
+                Move saved_pv[64];
+                int saved_pv_len = s->pv_length[ply];
+                int saved_static_eval = s->static_eval_stack[ply];
+                memcpy(saved_pv, s->pv_table[ply], saved_pv_len * sizeof(Move));
 
-                int se_score = -INF;
-                for (int si = 0; si < se_count; si++)
-                {
-                    UndoInfo se_undo;
-                    make_move(b, &se_moves[si], &se_undo);
-                    if (!is_check(b, b->side_to_move ^ 1))
-                    {
-                        se_score = -negamax(s, se_depth_limit - 1, -se_beta, -se_beta + 1, ext_count + promo_ext, ply + 1);
-                        unmake_move(b, &se_moves[si], &se_undo);
-                        break;
-                    }
-                    unmake_move(b, &se_moves[si], &se_undo);
-                }
-                free(se_moves);
+                s->se_excluded[ply] = tt_move;
+                int se_score = negamax(s, se_depth_limit, se_beta - 1, se_beta, ext_count, ply);
+                s->se_excluded[ply] = (Move){0};
+
+                /* Restore state after SE search */
+                s->pv_length[ply] = saved_pv_len;
+                memcpy(s->pv_table[ply], saved_pv, saved_pv_len * sizeof(Move));
+                s->static_eval_stack[ply] = saved_static_eval;
 
                 if (se_score < se_beta)
                     se_depth = 1;
@@ -1181,7 +1268,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
             if (apply_lmr)
             {
-                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check);
+                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check, static_eval);
 
                 int estimated_nodes_saved = (1 << reduction) - 1;
 
@@ -1244,8 +1331,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     {
                         if (moves[i].from != s->killers[depth][0].from || moves[i].to != s->killers[depth][0].to)
                         {
-                            s->killers[depth][1] = s->killers[depth][0];
-                            s->killers[depth][0] = moves[i];
+                            /* Only shift if the new move is also different from killer[1],
+                             * otherwise we'd duplicate killer[1] into killer[0]. */
+                            if (moves[i].from != s->killers[depth][1].from || moves[i].to != s->killers[depth][1].to)
+                            {
+                                s->killers[depth][1] = s->killers[depth][0];
+                                s->killers[depth][0] = moves[i];
+                            }
                         }
                         s->history[moves[i].from][moves[i].to] += depth * depth;
                         if (s->history[moves[i].from][moves[i].to] > 8000)

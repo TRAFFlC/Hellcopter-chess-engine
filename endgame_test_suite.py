@@ -56,7 +56,7 @@ class TestResult:
 ENDGAME_POSITIONS = [
     EndgamePosition(
         name="KQvsK - 后王对王将杀",
-        fen="8/8/8/8/8/8/1k6/KQ6 w - - 0 1",
+        fen="8/8/8/8/8/8/2k5/K6Q w - - 0 1",
         category="强制将杀",
         expected_result="白方胜",
         expected_description="白方后+王应在有限步数内将杀黑王",

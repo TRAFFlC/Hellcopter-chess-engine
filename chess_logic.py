@@ -110,9 +110,9 @@ def is_square_attacked(board, r, c, by_color):
         if in_bounds(nr, nc):
             p = board[nr][nc]
             if is_enemy(p, by_color) and p.lower() == "p":
-                if by_color == "w" and dr == 1:
+                if by_color == "w" and dr == -1:
                     continue
-                if by_color == "b" and dr == -1:
+                if by_color == "b" and dr == 1:
                     continue
                 return True
 
@@ -146,7 +146,7 @@ def is_in_check(board, color):
     if pos is None:
         return False
     r, c = pos
-    return is_square_attacked(board, r, c, "b" if color == "w" else "w")
+    return is_square_attacked(board, r, c, color)
 
 
 def generate_pseudo_legal_moves(board, color, ep_target=None, castling=None):
@@ -221,28 +221,27 @@ def generate_pseudo_legal_moves(board, color, ep_target=None, castling=None):
                             moves.append(sq_name(r, c) + sq_name(nr, nc))
 
                 if castling:
-                    enemy = "b" if color == "w" else "w"
                     if color == "w" and r == 7 and c == 4:
                         if castling.get("K") and board[7][5] == "." and board[7][6] == ".":
-                            if not is_square_attacked(board, 7, 4, enemy) and \
-                               not is_square_attacked(board, 7, 5, enemy) and \
-                               not is_square_attacked(board, 7, 6, enemy):
+                            if not is_square_attacked(board, 7, 4, color) and \
+                               not is_square_attacked(board, 7, 5, color) and \
+                               not is_square_attacked(board, 7, 6, color):
                                 moves.append("e1g1")
                         if castling.get("Q") and board[7][3] == "." and board[7][2] == "." and board[7][1] == ".":
-                            if not is_square_attacked(board, 7, 4, enemy) and \
-                               not is_square_attacked(board, 7, 3, enemy) and \
-                               not is_square_attacked(board, 7, 2, enemy):
+                            if not is_square_attacked(board, 7, 4, color) and \
+                               not is_square_attacked(board, 7, 3, color) and \
+                               not is_square_attacked(board, 7, 2, color):
                                 moves.append("e1c1")
                     elif color == "b" and r == 0 and c == 4:
                         if castling.get("k") and board[0][5] == "." and board[0][6] == ".":
-                            if not is_square_attacked(board, 0, 4, enemy) and \
-                               not is_square_attacked(board, 0, 5, enemy) and \
-                               not is_square_attacked(board, 0, 6, enemy):
+                            if not is_square_attacked(board, 0, 4, color) and \
+                               not is_square_attacked(board, 0, 5, color) and \
+                               not is_square_attacked(board, 0, 6, color):
                                 moves.append("e8g8")
                         if castling.get("q") and board[0][3] == "." and board[0][2] == "." and board[0][1] == ".":
-                            if not is_square_attacked(board, 0, 4, enemy) and \
-                               not is_square_attacked(board, 0, 3, enemy) and \
-                               not is_square_attacked(board, 0, 2, enemy):
+                            if not is_square_attacked(board, 0, 4, color) and \
+                               not is_square_attacked(board, 0, 3, color) and \
+                               not is_square_attacked(board, 0, 2, color):
                                 moves.append("e8c8")
 
     return moves

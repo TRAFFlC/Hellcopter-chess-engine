@@ -119,14 +119,14 @@ class EndgameClassifier:
         if w_q + b_q + w_r + b_r + w_minors + b_minors == 0:
             return EndgameClass.PAWN_ENDGAME
         
-        if w_q == 1 and b_q == 0 and w_r == 0 and b_r == 0 and w_minors == 0 and b_minors == 0:
+        if w_q == 1 and b_q == 0 and w_r == 0 and b_r == 0 and w_minors == 0 and b_minors == 0 and w_p == 0 and b_p == 0:
             return EndgameClass.BASIC_MATE
-        if b_q == 1 and w_q == 0 and w_r == 0 and b_r == 0 and w_minors == 0 and b_minors == 0:
+        if b_q == 1 and w_q == 0 and w_r == 0 and b_r == 0 and w_minors == 0 and b_minors == 0 and w_p == 0 and b_p == 0:
             return EndgameClass.BASIC_MATE
-        
-        if w_r == 1 and b_r == 0 and w_q == 0 and b_q == 0 and w_minors == 0 and b_minors == 0:
+
+        if w_r == 1 and b_r == 0 and w_q == 0 and b_q == 0 and w_minors == 0 and b_minors == 0 and w_p == 0 and b_p == 0:
             return EndgameClass.BASIC_MATE
-        if b_r == 1 and w_r == 0 and w_q == 0 and b_q == 0 and w_minors == 0 and b_minors == 0:
+        if b_r == 1 and w_r == 0 and w_q == 0 and b_q == 0 and w_minors == 0 and b_minors == 0 and w_p == 0 and b_p == 0:
             return EndgameClass.BASIC_MATE
         
         if w_q + b_q == 0 and w_r + b_r == 0:
@@ -391,26 +391,27 @@ class BasicMateTemplates:
     
     def _find_push_king_move(self, board) -> Optional[str]:
         """找到逼王的着法"""
-        enemy_king_sq = board.king(not board.turn)
+        enemy_color = not board.turn
+        enemy_king_sq = board.king(enemy_color)
         if enemy_king_sq is None:
             return None
-        
+
         best_move = None
-        best_score = -1000
-        
+        best_score = 100
+
         for move in board.legal_moves:
             board.push(move)
-            new_enemy_king = board.king(not board.turn)
+            new_enemy_king = board.king(enemy_color)
             if new_enemy_king:
                 nf = chess.square_file(new_enemy_king)
                 nr = chess.square_rank(new_enemy_king)
                 corners = [(0, 0), (0, 7), (7, 0), (7, 7)]
                 new_corner_dist = min(abs(nf - cf) + abs(nr - cr) for cf, cr in corners)
-                if new_corner_dist > best_score:
+                if new_corner_dist < best_score:
                     best_score = new_corner_dist
                     best_move = move.uci()
             board.pop()
-        
+
         return best_move
 
 

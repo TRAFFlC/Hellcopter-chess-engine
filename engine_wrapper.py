@@ -3,6 +3,7 @@ import os
 import sys
 import platform
 import logging
+import threading
 
 EXPECTED_ENGINE_VERSION = 20260511
 
@@ -161,6 +162,15 @@ def _load_library():
     lib.set_engine_abort.argtypes = [ctypes.c_int]
     lib.set_engine_abort.restype = None
 
+    lib.get_last_search_info.argtypes = [ctypes.c_int]
+    lib.get_last_search_info.restype = ctypes.c_int
+
+    try:
+        lib.init_syzygy_c.argtypes = [ctypes.c_char_p]
+        lib.init_syzygy_c.restype = ctypes.c_int
+    except AttributeError:
+        pass
+
     try:
         lib.get_engine_version.argtypes = []
         lib.get_engine_version.restype = ctypes.c_int
@@ -177,12 +187,15 @@ def _load_library():
 
 
 _lib = None
+_load_lock = threading.Lock()
 
 
 def _ensure_loaded():
     global _lib
     if _lib is None:
-        _lib = _load_library()
+        with _load_lock:
+            if _lib is None:  # double-check
+                _lib = _load_library()
 
 
 def get_version() -> int:
@@ -402,6 +415,15 @@ def clear_blunder_memory() -> None:
 def set_engine_abort(flag: int = 1) -> None:
     _ensure_loaded()
     _lib.set_engine_abort(flag)
+
+
+def init_syzygy(path: str) -> int:
+    _ensure_loaded()
+    try:
+        result = _lib.init_syzygy_c(path.encode("utf-8"))
+        return result
+    except (AttributeError, OSError):
+        return 0
 
 
 def load_blunder_memory_from_file(blunder_memory_path: str) -> None:

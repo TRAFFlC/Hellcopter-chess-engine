@@ -71,6 +71,26 @@ rainman.ini
 
 # Test PGN and EPD
 openings.epd
+*_test.pgn
+*_test_v*.pgn
+validation_*.pgn
+baseline_*.pgn
+quick_test_*.pgn
+spsa_match_*.pgn
+
+# Test scripts and results
+test_*.py
+test_*.c
+test_*.json
+endgame_test_results/
+validation_report.json
+spsa_state.json
+spsa_minus_*.json
+spsa_plus_*.json
+sb_input.txt
+
+# Auto-pending (safe-auto-coding)
+.auto_pending/
 
 # Trae specs (development)
 .trae/

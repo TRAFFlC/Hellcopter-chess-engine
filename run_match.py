@@ -1,90 +1,26 @@
 import os
 import sys
+import platform
 import argparse
 import subprocess
 import shutil
-import platform
 import json
 import tempfile
 from datetime import datetime
+
+from match_utils import find_cutechess, create_temp_uci_adapter_with_env
 
 
 def resolve_config(base_dir, config_ref):
     if not config_ref:
         return None
-    
+
     config_path = os.path.join(base_dir, "configs", f"{config_ref}.json")
     if os.path.isfile(config_path):
         return config_path
-    
+
     if os.path.isfile(config_ref):
         return config_ref
-    
-    return None
-
-
-def create_temp_uci_adapter(base_dir, config_path):
-    from config import load_and_resolve_config
-    
-    temp_dir = tempfile.mkdtemp(prefix="hellcopter_match_")
-    dest_params = os.path.join(temp_dir, "engine_params.json")
-    
-    resolved = load_and_resolve_config(config_path)
-    with open(dest_params, "w", encoding="utf-8") as f:
-        json.dump(resolved, f, indent=2)
-    
-    dest_params_fwd = dest_params.replace("\\", "/")
-    base_dir_fwd = base_dir.replace("\\", "/")
-    
-    script_path = os.path.join(temp_dir, "uci_adapter.py")
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write("import os\n")
-        f.write("import sys\n\n")
-        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
-        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
-        f.write("from uci_engine import UCIEngine\n\n")
-        f.write('if __name__ == "__main__":\n')
-        f.write("    uci = UCIEngine()\n")
-        f.write("    uci.run()\n")
-    
-    return script_path, temp_dir
-
-
-def find_cutechess(cli_path, base_dir):
-    if cli_path:
-        if os.path.isfile(cli_path):
-            return cli_path
-        print(f"Error: specified cutechess-cli path not found: {cli_path}")
-        sys.exit(1)
-
-    found = shutil.which("cutechess-cli")
-    if found:
-        return found
-
-    candidates = [
-        os.path.join(base_dir, "cutechess-cli.exe"),
-        os.path.join(base_dir, "cutechess-cli"),
-        os.path.join(base_dir, "cutechess", "cutechess-cli.exe"),
-        os.path.join(base_dir, "cutechess", "cutechess-cli"),
-    ]
-
-    if platform.system() == "Windows":
-        program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
-        program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
-        candidates.extend([
-            os.path.join(program_files, "cutechess-cli", "cutechess-cli.exe"),
-            os.path.join(program_files_x86, "cutechess-cli", "cutechess-cli.exe"),
-        ])
-    else:
-        candidates.extend([
-            os.path.join(base_dir, "cutechess-cli"),
-            "/usr/local/bin/cutechess-cli",
-            "/usr/bin/cutechess-cli",
-        ])
-
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
 
     return None
 
@@ -178,7 +114,7 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script=None
     python_exe = sys.executable or "python"
     if uci_script is None:
         uci_script = os.path.join(base_dir, "uci_engine.py")
-    
+
     engine_name = f"Hellcopter-{args.config}" if args.config else "Hellcopter"
 
     each_opts = [f"tc={args.tc}"]
@@ -190,7 +126,8 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script=None
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         config_tag = args.config if args.config else "default"
-        match_dir = os.path.join(base_dir, "match_records", f"{timestamp}-hellcopter-{config_tag}-{args.opponent}")
+        match_dir = os.path.join(
+            base_dir, "match_records", f"{timestamp}-hellcopter-{config_tag}-{args.opponent}")
         os.makedirs(match_dir, exist_ok=True)
         pgn_path = os.path.join(match_dir, "match.pgn")
 
@@ -270,7 +207,8 @@ def run_elo_calc(base_dir, pgn_file, match_output):
     if wins or losses or draws:
         try:
             result = subprocess.run(
-                [sys.executable or "python", elo_script, str(wins), str(losses), str(draws)],
+                [sys.executable or "python", elo_script,
+                    str(wins), str(losses), str(draws)],
                 capture_output=True,
                 text=True,
                 cwd=base_dir,
@@ -334,14 +272,14 @@ def resolve_openings(base_dir, openings_arg):
         if os.path.isfile(default_epd):
             return default_epd
         return None
-    
+
     if os.path.isabs(openings_arg):
         return openings_arg
-    
+
     path = os.path.join(base_dir, openings_arg)
     if os.path.isfile(path):
         return path
-    
+
     return openings_arg
 
 
@@ -376,31 +314,34 @@ def main():
                         help="SPRT test: elo0,elo1,alpha,beta (e.g. '0,5,0.05,0.05')")
 
     args = parser.parse_args()
-    
+
     if args.tc_standard and args.tc_slow:
         print("Error: --tc-standard and --tc-slow are mutually exclusive")
         sys.exit(1)
-    
+
     args.tc = resolve_time_control(args)
 
-    cutechess, opp_exe, opp_proto = check_dependencies(base_dir, args.cutechess, args.opponent)
+    cutechess, opp_exe, opp_proto = check_dependencies(
+        base_dir, args.cutechess, args.opponent)
 
     uci_script = None
     temp_dir = None
-    
+
     if args.config:
         config_path = resolve_config(base_dir, args.config)
         if config_path is None:
             print(f"Error: Config not found: {args.config}")
             sys.exit(1)
         print(f"Using config: {config_path}")
-        uci_script, temp_dir = create_temp_uci_adapter(base_dir, config_path)
+        uci_script, temp_dir = create_temp_uci_adapter_with_env(
+            base_dir, config_path)
 
     openings_path = resolve_openings(base_dir, args.openings)
     if openings_path:
         print(f"Using openings: {openings_path}")
 
-    cmd = build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script, openings_path)
+    cmd = build_command(cutechess, base_dir, opp_exe,
+                        opp_proto, args, uci_script, openings_path)
 
     returncode, output = run_cutechess(cmd)
 

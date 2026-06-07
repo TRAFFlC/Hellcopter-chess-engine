@@ -79,16 +79,28 @@ typedef struct
     int easy_move_count;
     int prev_best_move_from;
     int prev_best_move_to;
+    int prev_best_promotion;
     int stable_count;
     int panic_flag;
     double start_time;
+    /* Search instability detection */
+    int score_history[4];
+    int best_from_history[4];
+    int best_to_history[4];
+    int best_promo_history[4];
+    int history_count;
+    int instability_count;
+    /* Complexity and endgame factors */
+    double complexity_factor;
+    double endgame_factor;
+    int is_endgame;
 } TimeManager;
 
 typedef struct
 {
     U64 key;
     int16_t depth;
-    int16_t score;
+    int32_t score;   /* int32 to hold MATE_SCORE (900000) without overflow */
     int16_t flag;
     Move best_move;
     uint8_t generation;
@@ -130,6 +142,12 @@ typedef struct
 
     int razoring_prunes;
     int razoring_nodes_saved;
+
+    int time_check_mask;
+    long long tb_hits;
+
+    int static_eval_stack[128];
+    Move se_excluded[128]; /* Singular Extension: excluded move per ply */
 } SearchState;
 
 void board_from_fen(Board *b, const char *fen);
@@ -201,5 +219,8 @@ void set_engine_info_callback(EngineInfoCallback cb);
 /* Global TT management */
 void tt_clear_global(void);
 void tt_resize_global(int hash_mb);
+
+/* Extract ponder move from TT after search completes */
+int extract_ponder_move(const Board *b, Move best_move, Move *ponder_move);
 
 #endif

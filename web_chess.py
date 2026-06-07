@@ -7,16 +7,23 @@ from flask import Flask, jsonify, request, send_from_directory, Response
 
 from chess_logic import INITIAL_BOARD, apply_move, GameState
 from engine_comm import Engine
-from engine_registry import ENGINE_REGISTRY, ENGINE_PATH
+from engine_registry import ENGINE_REGISTRY, ENGINE_PATH, _detect_syzygy_path, resolve_engine
 from match_manager import match_state, match_board_to_dict, match_lock, run_engine_match
 from sse_hub import sse_add_listener, sse_remove_listener, sse_notify
 
 app = Flask(__name__, static_folder="web_static", static_url_path="/static")
 
 DEFAULT_MOVE_TIME = 3000
+DEFAULT_ENGINE_ID = os.environ.get("HELLCOPTER_ENGINE", "hellcopter")
 
 game = GameState(move_time=DEFAULT_MOVE_TIME)
-engine = Engine(ENGINE_PATH)
+
+_engine_obj, _engine_entry = resolve_engine(DEFAULT_ENGINE_ID)
+if _engine_obj:
+    engine = _engine_obj
+else:
+    engine = Engine(ENGINE_PATH)
+    engine.syzygy_path = _detect_syzygy_path()
 
 
 @app.route("/")
@@ -57,12 +64,24 @@ def make_move():
         move_time = game.move_time
 
     def engine_think():
-        best = engine.get_best_move(game.move_history, move_time)
+        try:
+            best = engine.get_best_move(game.move_history, move_time)
+        except Exception:
+            best = None
         with game.lock:
             game.engine_thinking = False
-            if best:
-                game.make_move(best)
+            if best and best != "0000" and len(best) >= 4:
+                try:
+                    game.make_move(best)
+                    game.check_game_over()
+                except Exception:
+                    game.game_over = True
+                    game.game_result = "引擎返回了非法走法"
+            else:
                 game.check_game_over()
+                if not game.game_over:
+                    game.game_over = True
+                    game.game_result = "引擎无法找到走法"
 
     t = threading.Thread(target=engine_think, daemon=True)
     t.start()
@@ -89,12 +108,24 @@ def new_game():
             game.engine_thinking = True
 
         def engine_first():
-            best = engine.get_best_move([], move_time)
+            try:
+                best = engine.get_best_move([], move_time)
+            except Exception:
+                best = None
             with game.lock:
                 game.engine_thinking = False
-                if best:
-                    game.make_move(best)
+                if best and best != "0000" and len(best) >= 4:
+                    try:
+                        game.make_move(best)
+                        game.check_game_over()
+                    except Exception:
+                        game.game_over = True
+                        game.game_result = "引擎返回了非法走法"
+                else:
                     game.check_game_over()
+                    if not game.game_over:
+                        game.game_over = True
+                        game.game_result = "引擎无法找到走法"
 
         t = threading.Thread(target=engine_first, daemon=True)
         t.start()
@@ -240,15 +271,19 @@ def start_match():
 def stop_match():
     with match_lock:
         match_state["active"] = False
+        if not match_state.get("game_over"):
+            match_state["game_over"] = True
+            match_state["game_result"] = "手动停止对弈"
     return jsonify(match_board_to_dict())
 
 
 if __name__ == "__main__":
+    engine_name = _engine_entry["name"] if _engine_entry else "Unknown"
     if not engine.start():
-        print("警告: Chess3Super 引擎无法启动，人机对弈模式不可用")
+        print(f"警告: {engine_name} 引擎无法启动，人机对弈模式不可用")
         print("引擎对弈模式仍可正常使用")
     else:
-        print("Chess3Super 引擎已就绪")
+        print(f"{engine_name} 引擎已就绪")
 
     os.makedirs("web_static", exist_ok=True)
 

@@ -29,17 +29,31 @@ class UCIEngine:
             'tournament_mode': False
         }
         self._load_opening_book()
+        self._init_syzygy()
 
     def send(self, msg):
         print(msg, flush=True)
     
     def _load_opening_book(self):
-        if getattr(sys, 'frozen', False):
-            base_path = sys._MEIPASS
+        if self._book_config['path']:
+            book_path = self._book_config['path']
+        elif getattr(sys, 'frozen', False):
+            # exe 模式：检查多个候选路径
+            candidates = [
+                os.path.join(sys._MEIPASS, "Goi5.1.bin"),
+                os.path.join(sys._MEIPASS, "dist", "Goi5.1.bin"),
+                os.path.join(os.path.dirname(sys.executable), "Goi5.1.bin"),
+            ]
+            book_path = ""
+            for p in candidates:
+                if os.path.isfile(p):
+                    book_path = p
+                    break
+            if not book_path:
+                book_path = candidates[0]  # fallback
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
-        
-        book_path = self._book_config['path'] or os.path.join(base_path, "dist", "book.bin")
+            book_path = os.path.join(base_path, "dist", "Goi5.1.bin")
         
         self.book_manager.configure(
             mode=self._book_config['mode'],
@@ -51,6 +65,33 @@ class UCIEngine:
             exit_bonus_time=self._book_config['exit_bonus_time'],
             tournament_mode=self._book_config['tournament_mode']
         )
+
+    def _init_syzygy(self):
+        # 候选路径列表
+        candidates = []
+        
+        if getattr(sys, 'frozen', False):
+            # exe 模式：优先检查 exe 所在目录，再检查临时解压目录
+            exe_dir = os.path.dirname(sys.executable)
+            candidates.append(os.path.join(exe_dir, "syzygy"))
+            candidates.append(os.path.join(sys._MEIPASS, "dist", "syzygy"))
+            candidates.append(os.path.join(sys._MEIPASS, "syzygy"))
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            candidates.append(os.path.join(base_path, "dist", "syzygy"))
+        
+        for syzygy_path in candidates:
+            if os.path.isdir(syzygy_path) and any(
+                f.endswith(".rtbw") for f in os.listdir(syzygy_path)
+            ):
+                result = engine_wrapper.init_syzygy(syzygy_path)
+                if result > 0:
+                    self.send(f"info string Syzygy loaded: {syzygy_path} (TB_LARGEST={result})")
+                    return
+                else:
+                    self.send(f"info string Syzygy path found but failed to load: {syzygy_path}")
+        
+        self.send("info string Syzygy not found")
 
     def cmd_uci(self):
         self.send("id name Hellcopter")
@@ -124,11 +165,20 @@ class UCIEngine:
         self.stop_event.clear()
 
         current_ply = self.board.fullmove_number * 2 - (2 if self.board.turn == chess.WHITE else 1)
+        
+        # 诊断日志：记录开局库查找
+        self.send(f"info string [DIAG] cmd_go: book_loaded={self.book_manager.loaded}, mode={self.book_manager._mode}, ply={current_ply}")
+        
         book_move = self.book_manager.get_book_move(self.board, current_ply)
+        
+        # 诊断日志：记录开局库结果
+        self.send(f"info string [DIAG] cmd_go: book_move={book_move}")
+        
         if book_move:
             try:
                 move = chess.Move.from_uci(book_move)
                 if move in self.board.legal_moves:
+                    # Book hit: return immediately without searching
                     self.send(f"info depth 0 score cp 0 nodes 0 time 0 pv {book_move}")
                     self.send(f"bestmove {book_move}")
                     return
@@ -149,6 +199,13 @@ class UCIEngine:
 
         infinite = "infinite" in tokens
         optimal_time, max_time, remaining, inc = self._compute_time(params)
+        
+        # 出书后的时间调整：刚离开开局库时大幅减少思考时间
+        # 开局库相当于标准答案，不需要过度思考
+        book_exit_factor = self.book_manager.get_book_exit_time_factor()
+        if book_exit_factor < 1.0:
+            optimal_time *= book_exit_factor
+            max_time *= book_exit_factor
         
         exit_bonus = self.book_manager.get_exit_bonus_time(optimal_time)
         if exit_bonus > 0:
@@ -268,10 +325,14 @@ class UCIEngine:
                     except:
                         depth = 1
                     time_ms = int(elapsed * 1000)
-                    if abs(score) >= 30000:
-                        mate_in = (32767 - abs(score) + 1) // 2
-                        if score < 0:
-                            mate_in = -mate_in
+                    MATE_SCORE = 900000
+                    if score > MATE_SCORE - 100:
+                        # Winning mate: convert ply distance to full moves
+                        mate_in = (MATE_SCORE - score + 1) // 2
+                        self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
+                    elif score < -(MATE_SCORE - 100):
+                        # Losing mate: negative full moves
+                        mate_in = -((MATE_SCORE + score + 1) // 2)
                         self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
                     else:
                         self.send(f"info depth {depth} score cp {score} nodes {nodes} time {time_ms}")
@@ -312,6 +373,9 @@ class UCIEngine:
         name = tokens[name_idx]
         value = tokens[value_idx] if value_idx >= 0 else ""
         
+        # 诊断日志：记录所有选项变更
+        self.send(f"info string [DIAG] setoption: name={name} value={value}")
+        
         if name == "OwnBook":
             self._book_config['own_book'] = value.lower() == 'true'
         elif name == "BookPath":
@@ -328,6 +392,14 @@ class UCIEngine:
             self._book_config['exit_bonus_time'] = int(value) / 100.0
         elif name == "TournamentMode":
             self._book_config['tournament_mode'] = value.lower() == 'true'
+        elif name == "SyzygyPath":
+            if value:
+                result = engine_wrapper.init_syzygy(value)
+                if result > 0:
+                    self.send(f"info string Syzygy loaded: {value} (TB_LARGEST={result})")
+                else:
+                    self.send(f"info string Syzygy failed to load: {value}")
+            return
         
         self._load_opening_book()
 

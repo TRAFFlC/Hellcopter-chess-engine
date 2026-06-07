@@ -6,6 +6,8 @@ import subprocess
 import re
 from datetime import datetime
 
+from match_utils import find_cutechess as _find_cutechess, create_temp_uci_adapter_with_env
+
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
 VERSIONS = ["v1.0.0", "v1.0.1", "v1.1.0", "v1.2.0"]
@@ -14,40 +16,20 @@ ROUNDS = 11
 TC = "9+0.1"
 
 def create_temp_uci_adapter(temp_dir, params_json_path, label):
-    import json as _json
-    from config import load_and_resolve_config
-    dest_params = os.path.join(temp_dir, "engine_params.json")
-    resolved = load_and_resolve_config(params_json_path)
-    with open(dest_params, "w", encoding="utf-8") as f:
-        _json.dump(resolved, f, indent=2)
-
-    dest_params_fwd = dest_params.replace("\\", "/")
-    base_dir_fwd = base_dir.replace("\\", "/")
-    script_path = os.path.join(base_dir, f"_uci_engine_{label}.py")
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write("import os\n")
-        f.write("import sys\n\n")
-        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
-        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
-        f.write("from uci_engine import UCIEngine\n\n")
-        f.write('if __name__ == "__main__":\n')
-        f.write("    uci = UCIEngine()\n")
-        f.write("    uci.run()\n")
-    
+    """兼容性包装函数，调用match_utils中的实现"""
+    # 使用环境变量方式，返回脚本路径
+    script_path, _ = create_temp_uci_adapter_with_env(base_dir, params_json_path, label)
     return script_path
 
 def find_cutechess():
-    candidates = [
-        os.path.join(base_dir, "cutechess-cli.exe"),
-        os.path.join(base_dir, "cutechess-cli.EXE"),
-        "cutechess-cli",
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    raise FileNotFoundError("cutechess-cli not found")
+    """查找cutechess-cli，使用match_utils中的实现"""
+    result = _find_cutechess(base_dir=base_dir)
+    if result is None:
+        raise FileNotFoundError("cutechess-cli not found")
+    return result
 
 def resolve_config(config_ref):
+    """解析配置文件路径"""
     if os.path.isabs(config_ref) and os.path.exists(config_ref):
         return config_ref
     if config_ref.startswith("v") or config_ref.startswith("V"):

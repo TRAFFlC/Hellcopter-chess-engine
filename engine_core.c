@@ -57,6 +57,12 @@ typedef struct
     int razoring_margin;
     int mate_score;
     int delta;
+    int endgame_phase_threshold;
+    int endgame_depth_bonus;
+    int endgame_nmr_bonus;
+    int king_activity_weight;
+    int qs_max_depth_mg;
+    int qs_max_depth_eg;
     int threading_enabled;
     int num_threads;
     int loaded; /* Flag: 1 if parameters loaded from file, 0 if using defaults */
@@ -580,7 +586,7 @@ static int is_clearly_winning(const Board *b, int static_eval)
     return 0;
 }
 
-static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check, int static_eval)
 {
     if (depth < 1 || move_num < 1)
         return 0;
@@ -608,7 +614,7 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
 
     {
         int npm = s->board.npm[0] + s->board.npm[1];
-        if (npm <= ENDGAME_PHASE_THRESHOLD)
+        if (npm <= g_runtime_params.endgame_phase_threshold)
         {
             reduction -= 1;
             if (move->promotion)
@@ -616,14 +622,11 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
         }
     }
 
-    /* In clearly winning positions, reduce LMR to avoid missing forced mates */
-    {
-        int static_eval = evaluate(&s->board);
-        if (s->board.side_to_move == BLACK)
-            static_eval = -static_eval;
-        if (is_clearly_winning(&s->board, static_eval))
-            reduction = (reduction > 1) ? reduction - 1 : 0;
-    }
+    /* In clearly winning positions, reduce LMR to avoid missing forced mates.
+     * Uses the pre-computed static_eval passed from negamax instead of
+     * calling evaluate() again, saving significant computation in the hot path. */
+    if (is_clearly_winning(&s->board, static_eval))
+        reduction = (reduction > 1) ? reduction - 1 : 0;
 
     int hist_val = s->history[move->from][move->to];
     if (hist_val > 500)

@@ -16,9 +16,25 @@ TSCP_PATH = os.path.join(BASE_DIR, "test_engines", "TSCP 1607", "tscp181.exe")
 CHESS3SUPER_PATH = ENGINE_PATH
 HELLCOPTER_EXE_PATH = os.path.join(BASE_DIR, "dist", "Hellcopter.exe")
 
+SYZYGY_PATH = os.path.join(BASE_DIR, "dist", "syzygy")
+
+
+def _detect_syzygy_path():
+    if os.path.isdir(SYZYGY_PATH) and any(
+        f.endswith(".rtbw") for f in os.listdir(SYZYGY_PATH)
+    ):
+        return SYZYGY_PATH
+    return None
+
 
 def _make_hellcopter(name):
-    return Engine(HELLCOPTER_EXE_PATH, protocol="uci")
+    env = os.environ.copy()
+    params_path = os.path.join(BASE_DIR, "engine_params.json")
+    if os.path.isfile(params_path):
+        env["ENGINE_PARAMS"] = params_path
+    eng = Engine(HELLCOPTER_EXE_PATH, protocol="uci", init_env=env)
+    eng._syzygy_path = _detect_syzygy_path()
+    return eng
 
 
 ENGINE_REGISTRY = [
@@ -64,6 +80,8 @@ def resolve_engine(engine_id, extra_options=None):
                         eng.set_option("UCI_LimitStrength", "true")
                     elif k == "UCI_Elo":
                         eng.set_option("UCI_Elo", str(v))
+                if eng._syzygy_path:
+                    eng.syzygy_path = eng._syzygy_path
                 return eng, entry
 
             init_opts = {}
@@ -79,5 +97,11 @@ def resolve_engine(engine_id, extra_options=None):
                 eng = Engine(entry["path"], entry.get("args", []), entry.get("protocol", "auto"), init_opts)
             else:
                 eng = Engine(entry["path"], entry.get("args", []), entry.get("protocol", "auto"))
+
+            if entry.get("protocol") == "uci":
+                sz = _detect_syzygy_path()
+                if sz:
+                    eng.syzygy_path = sz
+
             return eng, entry
     return None, None

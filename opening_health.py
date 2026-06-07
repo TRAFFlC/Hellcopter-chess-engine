@@ -190,20 +190,20 @@ class OpeningAnalyzer:
     
     def _compute_king_safety(self, board) -> float:
         """计算王安全分数"""
-        score = 1.0
-        
+        score = 0.8
+
         for color in [chess.WHITE, chess.BLACK]:
             king_sq = board.king(color)
             if king_sq is None:
                 continue
-            
+
             if color == chess.WHITE:
                 if chess.square_rank(king_sq) == 0:
                     score += 0.1
             else:
                 if chess.square_rank(king_sq) == 7:
                     score += 0.1
-        
+
         return min(score, 1.0)
 
 
@@ -270,6 +270,8 @@ class OpeningRegressionTester:
                 severity=1.0 - metrics.development_score,
                 description=f"Poor development score: {metrics.development_score:.2f}"
             ))
+            if strict:
+                passed = False
         
         baseline = self._baseline_metrics.get(name)
         if baseline:
