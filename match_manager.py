@@ -121,6 +121,9 @@ def _engine_get_move_with_ponder(eng, move_history, wtime, btime, winc, binc,
     if pondering:
         print(f"[MATCH-DBG] {tag} -> path C: stop ponder")
         eng.stop_ponder()
+        if not _engine_is_alive(eng):
+            print(f"[MATCH-DBG] {tag} -> path C: engine died during ponder!")
+            return None, None
         print(f"[MATCH-DBG] {tag} -> path C: calling get_best_move_with_time")
         best = eng.get_best_move_with_time(
             move_history, wtime, btime, winc, binc)

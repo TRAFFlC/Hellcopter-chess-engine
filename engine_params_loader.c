@@ -1,4 +1,11 @@
 /* engine_params_loader.c — JSON 解析器与参数加载（从 engine_core.c 拆分） */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <ctype.h>
+#include <string.h>
+#include "engine_params.h"
+#include "engine_core.h"
 /* ============================================================================
  * JSON PARSING HELPERS
  * ============================================================================
@@ -219,8 +226,61 @@ static const char *parse_json_int_array(const char *json, int *out_array, int ma
 
 /* ============================================================================
  * PARAMETER LOADING FUNCTION
- * ============================================================================
- */
+ * ============================================================================ */
+
+/* Initialize runtime params with compile-time defaults from engine_params.h.
+ * Called when no config file is available, ensuring the engine always has
+ * valid parameters (especially qs_max_depth_mg/eg which must be > 0). */
+static void init_runtime_params_defaults(void)
+{
+    g_runtime_params.piece_values[0] = 0;
+    g_runtime_params.piece_values[1] = PAWN_VALUE;
+    g_runtime_params.piece_values[2] = KNIGHT_VALUE;
+    g_runtime_params.piece_values[3] = BISHOP_VALUE;
+    g_runtime_params.piece_values[4] = ROOK_VALUE;
+    g_runtime_params.piece_values[5] = QUEEN_VALUE;
+    g_runtime_params.piece_values[6] = KING_VALUE;
+
+    memcpy(g_runtime_params.mg_pst[0], mg_pawn, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[0], eg_pawn, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[1], mg_knight, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[1], eg_knight, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[2], mg_bishop, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[2], eg_bishop, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[3], mg_rook, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[3], eg_rook, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[4], mg_queen, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[4], eg_queen, 64 * sizeof(int));
+    memcpy(g_runtime_params.mg_pst[5], mg_king, 64 * sizeof(int));
+    memcpy(g_runtime_params.eg_pst[5], eg_king, 64 * sizeof(int));
+
+    g_runtime_params.bishop_pair_bonus = BISHOP_PAIR_BONUS;
+    g_runtime_params.doubled_pawn_penalty = DOUBLED_PAWN_PENALTY;
+    g_runtime_params.isolated_pawn_penalty = ISOLATED_PAWN_PENALTY;
+    memcpy(g_runtime_params.passed_pawn_bonus, passed_pawn_bonus, 8 * sizeof(int));
+    g_runtime_params.open_file_bonus = OPEN_FILE_BONUS;
+    g_runtime_params.semi_open_file_bonus = SEMI_OPEN_FILE_BONUS;
+    g_runtime_params.null_move_reduction = NULL_MOVE_REDUCTION;
+    g_runtime_params.null_move_min_depth = NULL_MOVE_MIN_DEPTH;
+    g_runtime_params.lmr_enabled = LMR_ENABLED;
+    g_runtime_params.lmr_min_depth = LMR_MIN_DEPTH;
+    g_runtime_params.lmr_move_threshold = LMR_MOVE_THRESHOLD;
+    g_runtime_params.futility_enabled = FUTILITY_ENABLED;
+    g_runtime_params.futility_margin_base = FUTILITY_MARGIN_BASE;
+    g_runtime_params.razoring_enabled = RAZORING_ENABLED;
+    g_runtime_params.razoring_margin = RAZORING_MARGIN;
+    g_runtime_params.mate_score = MATE_SCORE;
+    g_runtime_params.delta = DELTA;
+    g_runtime_params.endgame_phase_threshold = ENDGAME_PHASE_THRESHOLD;
+    g_runtime_params.endgame_depth_bonus = ENDGAME_DEPTH_BONUS;
+    g_runtime_params.endgame_nmr_bonus = ENDGAME_NMR_BONUS;
+    g_runtime_params.king_activity_weight = KING_ACTIVITY_WEIGHT;
+    g_runtime_params.qs_max_depth_mg = QS_MAX_DEPTH_MG;
+    g_runtime_params.qs_max_depth_eg = QS_MAX_DEPTH_EG;
+    g_runtime_params.threading_enabled = THREADING_ENABLED;
+    g_runtime_params.num_threads = NUM_THREADS;
+    g_runtime_params.loaded = 1; /* Defaults initialized, safe to use */
+}
 
 #ifdef _WIN32
 __declspec(dllexport)

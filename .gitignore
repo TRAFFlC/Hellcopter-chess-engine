@@ -89,6 +89,12 @@ spsa_minus_*.json
 spsa_plus_*.json
 sb_input.txt
 
+# Syzygy endgame tablebases (large binary files)
+EGTB/
+
+# Qoder/AI tool cache
+.qoder/
+
 # Auto-pending (safe-auto-coding)
 .auto_pending/
 

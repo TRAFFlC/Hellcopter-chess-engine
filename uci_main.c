@@ -1,4 +1,5 @@
 #include "engine_core.h"
+#include "engine_params.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -431,14 +432,14 @@ static double compute_time(int wtime, int btime, int winc, int binc, int movetim
         time_fraction = 1.2;
     }
 
-    double time_limit = remaining / estimated_moves_left + inc * 0.85;
+    double time_limit = remaining / estimated_moves_left + inc * 0.6;
     if (time_limit > remaining * 0.5 + inc * 0.5) time_limit = remaining * 0.5 + inc * 0.5;
     time_limit *= time_fraction;
 
-    if (inc > 0 && time_limit < inc * 0.85) time_limit = inc * 0.85;
+    if (inc > 0 && time_limit < inc * 0.7) time_limit = inc * 0.7;
     if (remaining < inc * 5 && inc > 0)
     {
-        if (time_limit < inc * 0.85) time_limit = inc * 0.85;
+        if (time_limit < inc * 0.7) time_limit = inc * 0.7;
         if (time_limit > remaining + inc * 0.9 - 0.05)
             time_limit = remaining + inc * 0.9 - 0.05;
     }
@@ -451,8 +452,8 @@ static void uci_info_callback(int depth, int score, int nodes, int time_ms, cons
 {
     if (depth < 0) {
         printf("%s\n", pv_str);
-    } else if (abs(score) >= 30000) {
-        int mate_in = (32767 - abs(score) + 1) / 2;
+    } else if (abs(score) >= MATE_SCORE - 100) {
+        int mate_in = (MATE_SCORE - abs(score) + 1) / 2;
         if (score < 0) mate_in = -mate_in;
         printf("info depth %d score mate %d nodes %d time %d pv %s\n",
                depth, mate_in, nodes, time_ms, pv_str);
@@ -492,11 +493,24 @@ static void run_search(double time_limit, int max_depth)
 
     clock_t start = clock();
     int nodes = 0;
-    Move result = find_best_move_c(
-        fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, &nodes,
-        g_position_history_count > 0 ? g_position_history : NULL,
-        g_position_history_count
-    );
+    Move result;
+    extern int get_threading_enabled(void);
+    if (get_threading_enabled())
+    {
+        result = find_best_move_smp(
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, &nodes,
+            g_position_history_count > 0 ? g_position_history : NULL,
+            g_position_history_count
+        );
+    }
+    else
+    {
+        result = find_best_move_c(
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, &nodes,
+            g_position_history_count > 0 ? g_position_history : NULL,
+            g_position_history_count
+        );
+    }
     clock_t end = clock();
     int time_ms = (int)((double)(end - start) / CLOCKS_PER_SEC * 1000);
 
@@ -531,9 +545,9 @@ static void run_search(double time_limit, int max_depth)
     if (g_ponder_mode) {
         while (!g_ponderhit_received && !get_engine_abort()) {
 #ifdef _WIN32
-            Sleep(1);
+            Sleep(10);
 #else
-            usleep(1000);
+            usleep(10000);
 #endif
         }
         if (g_ponderhit_received) {
@@ -542,12 +556,15 @@ static void run_search(double time_limit, int max_depth)
             set_engine_abort(0);
             return;
         }
-        /* Aborted by stop: output the bestmove from the ponder search */
+        /* Aborted by stop: DON'T output bestmove here.
+           cmd_stop() will output it after waiting for this thread to finish.
+           This avoids duplicate bestmove output. */
+        return;
     }
 
     if (depth > 0) {
         if (abs(score) >= 30000) {
-            int mate_in = (32767 - abs(score) + 1) / 2;
+            int mate_in = (MATE_SCORE - abs(score) + 1) / 2;
             if (score < 0) mate_in = -mate_in;
             printf("info depth %d score mate %d nodes %d time %d pv %s\n",
                    depth, mate_in, nodes, time_ms, uci_move);
@@ -589,13 +606,23 @@ static void wait_for_search_thread(void)
 {
 #ifdef _WIN32
     if (g_search_thread != NULL) {
-        WaitForSingleObject(g_search_thread, INFINITE);
+        /* 最多等待3秒，避免C层搜索不响应abort时无限阻塞 */
+        DWORD result = WaitForSingleObject(g_search_thread, 3000);
+        if (result == WAIT_TIMEOUT) {
+            fprintf(stderr, "WARNING: search thread did not stop within 3s\n");
+        }
         CloseHandle(g_search_thread);
         g_search_thread = NULL;
     }
 #else
     if (g_search_thread_active) {
-        pthread_join(g_search_thread_id, NULL);
+        /* 最多等待3秒 */
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 3;
+        if (pthread_timedjoin_np(g_search_thread_id, NULL, &ts) != 0) {
+            fprintf(stderr, "WARNING: search thread did not stop within 3s\n");
+        }
         g_search_thread_active = 0;
     }
 #endif
@@ -611,6 +638,7 @@ static void cmd_uci(void)
     printf("option name BookPath type string default \n");
     printf("option name BookRandomness type spin default 20 min 0 max 100\n");
     printf("option name SyzygyPath type string default dist/syzygy\n");
+    printf("option name Threads type spin default 4 min 1 max 64\n");
     printf("uciok\n");
     fflush(stdout);
 }
@@ -674,6 +702,19 @@ static void cmd_setoption(const char *args)
             {
                 fprintf(stderr, "SyzygyPath failed to load: %s\n", p);
             }
+        }
+    } else if (strncmp(p, "Threads", 7) == 0 && (p[7] == ' ' || p[7] == '\0')) {
+        p += 7;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        {
+            int val = atoi(p);
+            if (val < 1) val = 1;
+            if (val > 64) val = 64;
+            set_num_threads(val);
+            fprintf(stderr, "Threads set to %d\n", val);
         }
     }
 }
@@ -831,8 +872,26 @@ static void cmd_go(const char *args)
     }
 
     double time_limit;
-    if (g_go_infinite || g_ponder_mode) {
+    if (g_go_infinite) {
         time_limit = 1e9;
+    } else if (g_ponder_mode) {
+        /* Dynamic ponder budget: use opponent's clock to limit ponder search.
+         * ponder_budget = opponent_remaining * 0.5
+         * clamped to [normal_time * 5, opponent_remaining * 0.8]
+         * This prevents ponder from running forever while allowing deep search. */
+        double normal_time = compute_time(
+            g_go_params_wtime, g_go_params_btime,
+            g_go_params_winc, g_go_params_binc,
+            g_go_params_movetime
+        );
+        int opp_ms = (g_board.side_to_move == WHITE) ? g_go_params_btime : g_go_params_wtime;
+        double opp_sec = (opp_ms > 0) ? opp_ms / 1000.0 : 60.0;
+        double ponder_budget = opp_sec * 0.5;
+        double ponder_min = normal_time * 5.0;
+        double ponder_max = opp_sec * 0.8;
+        if (ponder_budget < ponder_min) ponder_budget = ponder_min;
+        if (ponder_budget > ponder_max) ponder_budget = ponder_max;
+        time_limit = ponder_budget;
     } else if (g_go_params_wtime == 0 && g_go_params_btime == 0 && g_go_params_movetime == 0) {
         time_limit = 30.0;
     } else {
@@ -898,10 +957,15 @@ static void cmd_stop(void)
                 printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
             else
                 printf("bestmove %s\n", g_last_best_move);
-            fflush(stdout);
+        } else {
+            printf("bestmove 0000\n");
         }
+        fflush(stdout);
         g_ponder_mode = 0;
         g_ponderhit_received = 0;
+    } else if (g_search_running) {
+        /* Non-ponder search: wait for thread and let it output bestmove */
+        wait_for_search_thread();
     }
 }
 
@@ -931,6 +995,12 @@ static void cmd_ponderhit(void)
         g_go_params_winc, g_go_params_binc,
         g_go_params_movetime
     );
+
+    /* Preserve TT entries from ponder search: skip generation increment in find_best_move_c */
+    set_preserve_tt_generation(1);
+
+    /* Preserve heuristic tables (killers/history/countermove/followup) from ponder search */
+    set_preserve_heuristics(1);
 
     set_engine_abort(0);
     run_search(time_limit, g_go_params_depth);

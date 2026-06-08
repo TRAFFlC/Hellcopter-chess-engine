@@ -165,7 +165,7 @@ class VelvetEngine:
                 if mate_match:
                     is_mate = True
                     score_mate = int(mate_match.group(1))
-                    score_cp = 32767 if score_mate > 0 else -32767
+                    score_cp = 900000 if score_mate > 0 else -900000
                 elif score_match:
                     is_mate = False
                     score_cp = int(score_match.group(1))
@@ -186,9 +186,9 @@ def parse_hellcopter_score(comment: str) -> Optional[int]:
     if mate_match:
         mate_in = int(mate_match.group(1))
         if mate_in > 0:
-            return 32767 - (mate_in - 1) * 2
+            return 900000 - (mate_in - 1) * 2
         else:
-            return -32767 - (mate_in + 1) * 2
+            return -900000 - (mate_in + 1) * 2
     cp_match = re.search(r"([+-]?\d+(?:\.\d+)?)", comment)
     if cp_match:
         val = float(cp_match.group(1))
@@ -313,9 +313,9 @@ def analyze_game(
                 analysis.velvet_mate_in = velvet_result["score_mate"]
                 if velvet_result["is_mate"] and velvet_result["score_mate"]:
                     if velvet_result["score_mate"] > 0:
-                        analysis.velvet_score = 32767
+                        analysis.velvet_score = 900000
                     else:
-                        analysis.velvet_score = -32767
+                        analysis.velvet_score = -900000
                 if analysis.velvet_score is not None:
                     if board.turn == chess.BLACK:
                         adjusted_velvet_score = -analysis.velvet_score

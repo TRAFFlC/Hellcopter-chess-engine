@@ -464,32 +464,90 @@ evaluate(Board *b)
         }
     }
 
-    for (side = 0; side < 2; side++)
+    /* Precompute pawn attacks, knight attacks, and piece counts for both sides */
+    U64 pawn_attacks[2] = {0, 0};
+    U64 knight_attacks_bb[2] = {0, 0};
+    int piece_counts[2][7] = {{0}};
+
+    for (int s = 0; s < 2; s++)
     {
-        int sign = (side == WHITE) ? 1 : -1;
-        for (pt = PAWN; pt <= KING; pt++)
+        U64 pawns = b->pieces[s][PAWN];
+        while (pawns)
         {
-            U64 bb = b->pieces[side][pt];
-            while (bb)
+            int sq = lsb_index(pawns);
+            pawns &= pawns - 1;
+            if (s == WHITE)
+                pawn_attacks[s] |= shift_north(shift_east(1ULL << sq)) | shift_north(shift_west(1ULL << sq));
+            else
+                pawn_attacks[s] |= shift_south(shift_east(1ULL << sq)) | shift_south(shift_west(1ULL << sq));
+        }
+        U64 knights = b->pieces[s][KNIGHT];
+        while (knights)
+        {
+            int sq = lsb_index(knights);
+            knights &= knights - 1;
+            knight_attacks_bb[s] |= knight_attacks[sq];
+        }
+        for (int pt2 = PAWN; pt2 <= QUEEN; pt2++)
+            piece_counts[s][pt2] = count_bits(b->pieces[s][pt2]);
+    }
+
+    /* Use incremental PST+material score as base */
+    if (g_runtime_params.loaded)
+    {
+        /* Fallback: recompute PST+material when runtime params are active */
+        for (side = 0; side < 2; side++)
+        {
+            int sign = (side == WHITE) ? 1 : -1;
+            for (pt = PAWN; pt <= KING; pt++)
             {
-                int sq = lsb_index(bb);
-                bb &= bb - 1;
-                int psq = (side == WHITE) ? (sq ^ 56) : sq;
-                int mg, eg;
-                if (g_runtime_params.loaded)
+                U64 bb = b->pieces[side][pt];
+                while (bb)
                 {
-                    mg = g_runtime_params.mg_pst[pt - 1][psq];
-                    eg = g_runtime_params.eg_pst[pt - 1][psq];
+                    int sq = lsb_index(bb);
+                    bb &= bb - 1;
+                    int psq = (side == WHITE) ? (sq ^ 56) : sq;
+                    int mg = g_runtime_params.mg_pst[pt - 1][psq];
+                    int eg = g_runtime_params.eg_pst[pt - 1][psq];
+                    int tapered = (mg * phase + eg * (24 - phase)) / 24;
+                    score += sign * (piece_values[pt] + tapered);
                 }
-                else
-                {
-                    mg = mg_pst[pt][psq];
-                    eg = eg_pst[pt][psq];
-                }
-                int tapered = (mg * phase + eg * (24 - phase)) / 24;
-                score += sign * (piece_values[pt] + tapered);
             }
         }
+    }
+    else
+    {
+        score = (b->mg_score * phase_weight + b->eg_score * (256 - phase_weight)) / 256;
+#ifdef DEBUG_INCREMENTAL
+        /* Verify incremental score matches full recomputation */
+        {
+            int full_score = 0;
+            int s2, pt2;
+            for (s2 = 0; s2 < 2; s2++)
+            {
+                int sign2 = (s2 == WHITE) ? 1 : -1;
+                for (pt2 = PAWN; pt2 <= KING; pt2++)
+                {
+                    U64 bb2 = b->pieces[s2][pt2];
+                    while (bb2)
+                    {
+                        int sq2 = lsb_index(bb2);
+                        bb2 &= bb2 - 1;
+                        int psq2 = (s2 == WHITE) ? (sq2 ^ 56) : sq2;
+                        int mg2 = mg_pst[pt2][psq2];
+                        int eg2 = eg_pst[pt2][psq2];
+                        int tapered2 = (mg2 * phase + eg2 * (24 - phase)) / 24;
+                        full_score += sign2 * (piece_values[pt2] + tapered2);
+                    }
+                }
+            }
+            if (full_score != score)
+            {
+                fprintf(stderr, "INCREMENTAL MISMATCH: incremental=%d full=%d mg=%d eg=%d phase=%d\n",
+                        score, full_score, b->mg_score, b->eg_score, phase);
+            }
+        }
+#endif
     }
 
     {
@@ -572,7 +630,7 @@ evaluate(Board *b)
     for (side = 0; side < 2; side++)
     {
         int sign = (side == WHITE) ? 1 : -1;
-        if (count_bits(b->pieces[side][BISHOP]) >= 2)
+        if (piece_counts[side][BISHOP] >= 2)
         {
             score += sign * BISHOP_PAIR_BONUS;
         }
@@ -874,27 +932,8 @@ evaluate(Board *b)
             own_pieces_bb |= b->pieces[side][pt];
 
         U64 enemy_attacks = 0;
-        U64 opp_pawns = b->pieces[opp][PAWN];
-        while (opp_pawns)
-        {
-            int sq = lsb_index(opp_pawns);
-            opp_pawns &= opp_pawns - 1;
-            if (opp == WHITE)
-            {
-                enemy_attacks |= shift_north(shift_east(1ULL << sq)) | shift_north(shift_west(1ULL << sq));
-            }
-            else
-            {
-                enemy_attacks |= shift_south(shift_east(1ULL << sq)) | shift_south(shift_west(1ULL << sq));
-            }
-        }
-        U64 opp_knights = b->pieces[opp][KNIGHT];
-        while (opp_knights)
-        {
-            int sq = lsb_index(opp_knights);
-            opp_knights &= opp_knights - 1;
-            enemy_attacks |= knight_attacks[sq];
-        }
+        enemy_attacks |= pawn_attacks[opp];
+        enemy_attacks |= knight_attacks_bb[opp];
         {
             int bi;
             for (bi = 0; bi < nb[opp]; bi++)
@@ -913,20 +952,7 @@ evaluate(Board *b)
         enemy_attacks |= king_attacks[b->king_sq[opp]];
 
         U64 own_defended = 0;
-        U64 own_pawns = b->pieces[side][PAWN];
-        while (own_pawns)
-        {
-            int sq = lsb_index(own_pawns);
-            own_pawns &= own_pawns - 1;
-            if (side == WHITE)
-            {
-                own_defended |= shift_north(shift_east(1ULL << sq)) | shift_north(shift_west(1ULL << sq));
-            }
-            else
-            {
-                own_defended |= shift_south(shift_east(1ULL << sq)) | shift_south(shift_west(1ULL << sq));
-            }
-        }
+        own_defended |= pawn_attacks[side];
         own_defended |= king_attacks[b->king_sq[side]];
 
         U64 hanging = own_pieces_bb & enemy_attacks & ~own_defended;
@@ -1045,64 +1071,9 @@ evaluate(Board *b)
         U64 enemy_pawns = b->pieces[opp][PAWN];
         U64 friendly_pawns = b->pieces[side][PAWN];
 
-        U64 enemy_pawn_attacks = 0;
-        {
-            U64 temp = enemy_pawns;
-            while (temp)
-            {
-                int sq = lsb_index(temp);
-                temp &= temp - 1;
-                if (opp == WHITE)
-                {
-                    if (file_of(sq) > 0 && sq + 7 < 64)
-                        enemy_pawn_attacks |= 1ULL << (sq + 7);
-                    if (file_of(sq) < 7 && sq + 9 < 64)
-                        enemy_pawn_attacks |= 1ULL << (sq + 9);
-                }
-                else
-                {
-                    if (file_of(sq) > 0 && sq - 9 >= 0)
-                        enemy_pawn_attacks |= 1ULL << (sq - 9);
-                    if (file_of(sq) < 7 && sq - 7 >= 0)
-                        enemy_pawn_attacks |= 1ULL << (sq - 7);
-                }
-            }
-        }
-
-        U64 own_pawn_defense = 0;
-        {
-            U64 temp = friendly_pawns;
-            while (temp)
-            {
-                int sq = lsb_index(temp);
-                temp &= temp - 1;
-                if (side == WHITE)
-                {
-                    if (file_of(sq) > 0 && sq + 7 < 64)
-                        own_pawn_defense |= 1ULL << (sq + 7);
-                    if (file_of(sq) < 7 && sq + 9 < 64)
-                        own_pawn_defense |= 1ULL << (sq + 9);
-                }
-                else
-                {
-                    if (file_of(sq) > 0 && sq - 9 >= 0)
-                        own_pawn_defense |= 1ULL << (sq - 9);
-                    if (file_of(sq) < 7 && sq - 7 >= 0)
-                        own_pawn_defense |= 1ULL << (sq - 7);
-                }
-            }
-        }
-
-        U64 enemy_knight_attacks = 0;
-        {
-            U64 temp = b->pieces[opp][KNIGHT];
-            while (temp)
-            {
-                int sq = lsb_index(temp);
-                temp &= temp - 1;
-                enemy_knight_attacks |= knight_attacks[sq];
-            }
-        }
+        U64 enemy_pawn_attacks = pawn_attacks[opp];
+        U64 own_pawn_defense = pawn_attacks[side];
+        U64 enemy_knight_attacks = knight_attacks_bb[opp];
 
         U64 knights = b->pieces[side][KNIGHT];
         while (knights)
@@ -1403,10 +1374,10 @@ evaluate(Board *b)
     }
 
     {
-        int w_minors = count_bits(b->pieces[WHITE][KNIGHT]) + count_bits(b->pieces[WHITE][BISHOP]);
-        int b_minors = count_bits(b->pieces[BLACK][KNIGHT]) + count_bits(b->pieces[BLACK][BISHOP]);
-        int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
-        int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
+        int w_minors = piece_counts[WHITE][KNIGHT] + piece_counts[WHITE][BISHOP];
+        int b_minors = piece_counts[BLACK][KNIGHT] + piece_counts[BLACK][BISHOP];
+        int w_pawns = piece_counts[WHITE][PAWN];
+        int b_pawns = piece_counts[BLACK][PAWN];
 
         int minor_diff = w_minors - b_minors;
         int pawn_diff = w_pawns - b_pawns;
@@ -1461,8 +1432,8 @@ evaluate(Board *b)
         int mop_up_strong_side = -1;
         for (pt = KNIGHT; pt <= QUEEN; pt++)
         {
-            white_non_pawn_material += count_bits(b->pieces[WHITE][pt]) * piece_values[pt];
-            black_non_pawn_material += count_bits(b->pieces[BLACK][pt]) * piece_values[pt];
+            white_non_pawn_material += piece_counts[WHITE][pt] * piece_values[pt];
+            black_non_pawn_material += piece_counts[BLACK][pt] * piece_values[pt];
         }
         int material_balance = white_non_pawn_material - black_non_pawn_material;
 
@@ -1613,16 +1584,16 @@ evaluate(Board *b)
     }
 
     {
-        int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
-        int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
-        int w_knights = count_bits(b->pieces[WHITE][KNIGHT]);
-        int b_knights = count_bits(b->pieces[BLACK][KNIGHT]);
-        int w_bishops = count_bits(b->pieces[WHITE][BISHOP]);
-        int b_bishops = count_bits(b->pieces[BLACK][BISHOP]);
-        int w_rooks = count_bits(b->pieces[WHITE][ROOK]);
-        int b_rooks = count_bits(b->pieces[BLACK][ROOK]);
-        int w_queens = count_bits(b->pieces[WHITE][QUEEN]);
-        int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
+        int w_pawns = piece_counts[WHITE][PAWN];
+        int b_pawns = piece_counts[BLACK][PAWN];
+        int w_knights = piece_counts[WHITE][KNIGHT];
+        int b_knights = piece_counts[BLACK][KNIGHT];
+        int w_bishops = piece_counts[WHITE][BISHOP];
+        int b_bishops = piece_counts[BLACK][BISHOP];
+        int w_rooks = piece_counts[WHITE][ROOK];
+        int b_rooks = piece_counts[BLACK][ROOK];
+        int w_queens = piece_counts[WHITE][QUEEN];
+        int b_queens = piece_counts[BLACK][QUEEN];
         int total_pawns = w_pawns + b_pawns;
 
         /* ============================================================
@@ -1927,16 +1898,16 @@ evaluate(Board *b)
     }
 
     {
-        int w_bishops = count_bits(b->pieces[WHITE][BISHOP]);
-        int b_bishops = count_bits(b->pieces[BLACK][BISHOP]);
-        int w_knights = count_bits(b->pieces[WHITE][KNIGHT]);
-        int b_knights = count_bits(b->pieces[BLACK][KNIGHT]);
-        int w_rooks = count_bits(b->pieces[WHITE][ROOK]);
-        int b_rooks = count_bits(b->pieces[BLACK][ROOK]);
-        int w_queens = count_bits(b->pieces[WHITE][QUEEN]);
-        int b_queens = count_bits(b->pieces[BLACK][QUEEN]);
-        int w_pawns = count_bits(b->pieces[WHITE][PAWN]);
-        int b_pawns = count_bits(b->pieces[BLACK][PAWN]);
+        int w_bishops = piece_counts[WHITE][BISHOP];
+        int b_bishops = piece_counts[BLACK][BISHOP];
+        int w_knights = piece_counts[WHITE][KNIGHT];
+        int b_knights = piece_counts[BLACK][KNIGHT];
+        int w_rooks = piece_counts[WHITE][ROOK];
+        int b_rooks = piece_counts[BLACK][ROOK];
+        int w_queens = piece_counts[WHITE][QUEEN];
+        int b_queens = piece_counts[BLACK][QUEEN];
+        int w_pawns = piece_counts[WHITE][PAWN];
+        int b_pawns = piece_counts[BLACK][PAWN];
 
         if (w_bishops == 1 && b_bishops == 1 && w_knights == 0 && b_knights == 0 && w_rooks == 0 && b_rooks == 0 && w_queens == 0 && b_queens == 0)
         {

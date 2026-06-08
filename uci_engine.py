@@ -17,6 +17,7 @@ class UCIEngine:
         self.position_history = []
         self.search_thread = None
         self.stop_event = threading.Event()
+        self._search_gen = 0  # 搜索代际计数器，防止过期搜索输出 bestmove
         self.book_manager = book_provider.BookManager()
         self._book_config = {
             'mode': 'internal',
@@ -163,6 +164,8 @@ class UCIEngine:
     def cmd_go(self, args):
         self._stop_search()
         self.stop_event.clear()
+        self._search_gen += 1
+        gen = self._search_gen
 
         current_ply = self.board.fullmove_number * 2 - (2 if self.board.turn == chess.WHITE else 1)
         
@@ -232,7 +235,7 @@ class UCIEngine:
             target=self._search_worker,
             args=(board_copy, hist_copy, optimal_time, max_depth, infinite,
                   time_left_for_engine, increment_for_engine,
-                  moves_to_go_for_engine, move_number_for_engine),
+                  moves_to_go_for_engine, move_number_for_engine, gen),
             daemon=True,
         )
         self.search_thread.start()
@@ -296,7 +299,8 @@ class UCIEngine:
         return optimal, max_time, remaining, inc
 
     def _search_worker(self, board, pos_hist, time_limit, max_depth, infinite,
-                        time_left=0.0, increment=0.0, moves_to_go=0, move_number=0):
+                        time_left=0.0, increment=0.0, moves_to_go=0, move_number=0,
+                        gen=0):
         if infinite:
             search_time = 2.0
         else:
@@ -314,6 +318,10 @@ class UCIEngine:
             uci_move, score, nodes = None, 0, 0
 
         elapsed = time.perf_counter() - search_start
+
+        # 检查代际计数器：如果已有新搜索启动，跳过输出
+        if gen != self._search_gen:
+            return
 
         if uci_move and len(uci_move) >= 4:
             try:
@@ -345,16 +353,20 @@ class UCIEngine:
             self.send("bestmove 0000")
 
     def _stop_search(self):
+        self._search_gen += 1
         self.stop_event.set()
         self.eng.search_aborted = True
         engine_wrapper.set_engine_abort(1)
         if self.search_thread is not None and self.search_thread.is_alive():
-            self.search_thread.join()
+            self.search_thread.join(timeout=3.0)
+            if self.search_thread.is_alive():
+                self.send("info string WARNING: search thread did not stop within 3s")
         engine_wrapper.set_engine_abort(0)
         self.search_thread = None
 
     def cmd_stop(self):
         self._stop_search()
+        self.send("bestmove 0000")
 
     def cmd_setoption(self, args):
         tokens = args.split()

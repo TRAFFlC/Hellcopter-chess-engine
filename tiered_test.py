@@ -16,6 +16,7 @@ import subprocess
 import shutil
 import tempfile
 import re
+import math
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -51,6 +52,82 @@ TIERS = {
 }
 
 TIER_ORDER = ["quick", "fast", "standard"]
+
+
+class SPRT:
+    """Sequential Probability Ratio Test for engine match validation.
+
+    Tests H0: elo <= elo0 vs H1: elo >= elo1.
+    Returns 'accept' (H1 accepted, improvement confirmed),
+    'reject' (H0 accepted, no improvement), or 'continue'.
+    """
+
+    def __init__(self, elo0: float = 0.0, elo1: float = 10.0,
+                 alpha: float = 0.05, beta: float = 0.05):
+        self.elo0 = elo0
+        self.elo1 = elo1
+        self.alpha = alpha
+        self.beta = beta
+        self.lower_bound = math.log(beta / (1 - alpha))
+        self.upper_bound = math.log((1 - beta) / alpha)
+
+    @staticmethod
+    def _elo_to_bayes_elo(elo: float, draw_elo: float = 300.0) -> float:
+        """Convert logistic Elo to BayesElo (approximate)."""
+        return elo * math.log(10) / 400.0 * (1 + math.exp(-draw_elo / 400.0))
+
+    def result(self, wins: int, losses: int, draws: int) -> str:
+        """Compute SPRT statistic and return 'accept', 'reject', or 'continue'."""
+        n = wins + losses + draws
+        if n == 0:
+            return "continue"
+
+        # Use logistic model: score = 1/(1+10^(-elo/400))
+        # Likelihood ratio under BayesElo model
+        w = wins / n if n > 0 else 0
+        l = losses / n if n > 0 else 0
+        d = draws / n if n > 0 else 0
+
+        # Approximate BayesElo from observed score
+        score = (wins + 0.5 * draws) / n
+
+        # Log-likelihood ratio
+        # Under H0: elo = elo0, under H1: elo = elo1
+        # Using normal approximation for the score distribution
+        # Var(score) ≈ score*(1-score)/n (simplified)
+        if score <= 0 or score >= 1:
+            # Edge cases: if score is 0 or 1, can't compute meaningful LR
+            if score >= 1 and self.elo1 > 0:
+                return "accept"
+            if score <= 0 and self.elo0 <= 0:
+                return "reject"
+            return "continue"
+
+        # Compute log-likelihood ratio using logistic model
+        # p(elo) = 1 / (1 + 10^(-elo/400))
+        p0 = 1.0 / (1.0 + 10.0 ** (-self.elo0 / 400.0))
+        p1 = 1.0 / (1.0 + 10.0 ** (-self.elo1 / 400.0))
+
+        # Log-likelihood for multinomial (W, D, L) under each hypothesis
+        # Using draw_ratio from observed data
+        draw_ratio = draws / n if n > 0 else 0.3
+
+        # Simplified: use score-based LR
+        # LLR = n * (score - (p0+p1)/2) * (log(p1/(1-p1)) - log(p0/(1-p0)))
+        llr = n * (score - (p0 + p1) / 2.0) * (
+            math.log(p1 / (1 - p1)) - math.log(p0 / (1 - p0))
+        )
+
+        if llr >= self.upper_bound:
+            return "accept"
+        elif llr <= self.lower_bound:
+            return "reject"
+        return "continue"
+
+    def describe(self) -> str:
+        return (f"SPRT(elo0={self.elo0}, elo1={self.elo1}, "
+                f"alpha={self.alpha}, beta={self.beta})")
+
 
 OPPONENTS = {
     "monarch": {
@@ -102,6 +179,7 @@ class TierResult:
     passed: bool = False
     message: str = ""
     pgn_path: Optional[str] = None
+    sprt_result: Optional[str] = None  # "accept", "reject", or None
 
 
 @dataclass
@@ -212,21 +290,22 @@ def run_single_tier(
     tier_key: str,
     cutechess_path: Path,
     record_dir: Optional[Path] = None,
-) -> Tuple[int, int, int, Optional[Path]]:
+    sprt: Optional[SPRT] = None,
+) -> Tuple[int, int, int, Optional[Path], Optional[str]]:
     tier = TIERS[tier_key]
     tc = tier["tc"]
     rounds = tier["rounds"]
-    
+
     temp_dir = Path(tempfile.mkdtemp(prefix=f"chess_tiered_{tier_key}_"))
     script_path = create_temp_uci_adapter(temp_dir, config_path, tier_key)
-    
+
     python_exe = sys.executable or "python"
-    
+
     if record_dir:
         pgn_path = record_dir / f"{tier_key}.pgn"
     else:
         pgn_path = temp_dir / "match.pgn"
-    
+
     cmd = [
         str(cutechess_path),
         "-engine",
@@ -245,15 +324,23 @@ def run_single_tier(
         "-pgnout", str(pgn_path),
         "-repeat",
     ]
-    
+
+    # Add SPRT parameters to cutechess-cli if enabled
+    if sprt is not None:
+        sprt_str = (f"elo0={sprt.elo0},elo1={sprt.elo1},"
+                    f"alpha={sprt.alpha},beta={sprt.beta}")
+        cmd.extend(["-sprt", sprt_str])
+
     print(f"\n{'='*60}")
     print(f"运行 {tier['name']} 测试 ({tier_key})")
     print(f"{'='*60}")
     print(f"时间控制: {tc}")
     print(f"轮数: {rounds}")
     print(f"阈值: {tier['threshold']*100:.0f}%")
+    if sprt:
+        print(f"SPRT: {sprt.describe()}")
     print(f"{'='*60}\n")
-    
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -261,9 +348,10 @@ def run_single_tier(
         text=True,
         bufsize=1,
     )
-    
+
     wins = losses = draws = 0
-    
+    sprt_result = None
+
     for line in process.stdout:
         print(line.rstrip())
         match = re.search(r"Score.*?:\s+(\d+)\s*-\s*(\d+)\s*-\s*(\d+)", line)
@@ -271,16 +359,27 @@ def run_single_tier(
             wins = int(match.group(1))
             losses = int(match.group(2))
             draws = int(match.group(3))
-    
+        # Detect SPRT termination from cutechess output
+        if sprt and "SPRT" in line:
+            if "accept" in line.lower() or "H1" in line:
+                sprt_result = "accept"
+            elif "reject" in line.lower() or "H0" in line:
+                sprt_result = "reject"
+
     process.wait()
-    
+
+    # If cutechess didn't report SPRT result but we have SPRT enabled,
+    # compute it ourselves from the final score
+    if sprt and sprt_result is None:
+        sprt_result = sprt.result(wins, losses, draws)
+
     shutil.rmtree(temp_dir, ignore_errors=True)
     if script_path.exists():
         script_path.unlink()
-    
+
     actual_pgn = pgn_path if pgn_path.exists() else None
-    
-    return wins, losses, draws, actual_pgn
+
+    return wins, losses, draws, actual_pgn, sprt_result
 
 
 def calculate_win_rate(wins: int, losses: int, draws: int) -> float:
@@ -297,10 +396,19 @@ def calculate_elo(win_rate: float) -> float:
     return -400 * log((1 - win_rate) / win_rate) / log(10)
 
 
-def evaluate_tier_result(tier_key: str, win_rate: float) -> Tuple[bool, str]:
+def evaluate_tier_result(tier_key: str, win_rate: float,
+                         sprt_result: Optional[str] = None) -> Tuple[bool, str]:
     tier = TIERS[tier_key]
     threshold = tier["threshold"]
-    
+
+    # If SPRT is enabled, use its result as primary decision
+    if sprt_result is not None:
+        if sprt_result == "accept":
+            return True, f"SPRT接受H1（改进确认，Elo>={TIERS[tier_key].get('sprt_elo1', 10)}）"
+        elif sprt_result == "reject":
+            return False, "SPRT拒绝H1（无显著改进）"
+        # "continue" falls through to threshold-based evaluation
+
     if win_rate < threshold:
         if tier_key == "quick":
             return False, "修改可能有大问题"
@@ -353,16 +461,18 @@ def print_tier_result(result: TierResult):
     tier = TIERS[result.tier]
     total = result.wins + result.losses + result.draws
     elo = calculate_elo(result.win_rate)
-    
+
     status_icon = "✓" if result.passed else "✗"
     status_color = "通过" if result.passed else "失败"
-    
+
     print(f"\n{'='*60}")
     print(f"{tier['name']} 测试结果")
     print(f"{'='*60}")
     print(f"胜-负-和: {result.wins}-{result.losses}-{result.draws} (共{total}局)")
     print(f"胜率: {result.win_rate*100:.1f}%")
     print(f"Elo差值: {elo:+.1f}")
+    if result.sprt_result:
+        print(f"SPRT: {result.sprt_result}")
     print(f"状态: {status_icon} {status_color}")
     print(f"信息: {result.message}")
     print(f"{'='*60}")
@@ -415,6 +525,7 @@ def save_report_json(report: TestReport, output_path: Path):
                 "passed": r.passed,
                 "message": r.message,
                 "pgn_path": str(r.pgn_path) if r.pgn_path else None,
+                "sprt_result": r.sprt_result,
             }
             for r in report.results
         ],
@@ -434,31 +545,32 @@ def run_tiered_test(
     tier: Optional[str] = None,
     full: bool = False,
     cutechess_path: Optional[str] = None,
+    sprt: Optional[SPRT] = None,
 ) -> TestReport:
     config_path = resolve_config(config)
     opponent_exe, opponent_proto = get_opponent_path(opponent)
     cutechess = find_cutechess(cutechess_path)
-    
+
     report = TestReport(
         config=config,
         opponent=opponent,
         start_time=datetime.now().isoformat(),
         full_mode=full,
     )
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     record_dir = MATCH_RECORDS_DIR / f"{timestamp}-tiered-{config}-{opponent}"
     record_dir.mkdir(parents=True, exist_ok=True)
-    
+
     if full:
         tiers_to_run = TIER_ORDER
     else:
         tiers_to_run = [tier] if tier else ["standard"]
-    
+
     failed_pgn = None
-    
+
     for tier_key in tiers_to_run:
-        wins, losses, draws, pgn_path = run_single_tier(
+        wins, losses, draws, pgn_path, sprt_result = run_single_tier(
             config_path,
             opponent_exe,
             opponent_proto,
@@ -466,11 +578,12 @@ def run_tiered_test(
             tier_key,
             cutechess,
             record_dir,
+            sprt=sprt,
         )
-        
+
         win_rate = calculate_win_rate(wins, losses, draws)
-        passed, message = evaluate_tier_result(tier_key, win_rate)
-        
+        passed, message = evaluate_tier_result(tier_key, win_rate, sprt_result)
+
         result = TierResult(
             tier=tier_key,
             wins=wins,
@@ -480,11 +593,12 @@ def run_tiered_test(
             passed=passed,
             message=message,
             pgn_path=str(pgn_path) if pgn_path else None,
+            sprt_result=sprt_result,
         )
-        
+
         report.results.append(result)
         print_tier_result(result)
-        
+
         if not passed:
             failed_pgn = pgn_path
             report.final_status = "失败"
@@ -493,19 +607,19 @@ def run_tiered_test(
     else:
         report.final_status = "成功"
         report.final_message = "所有测试层级通过"
-    
+
     report.end_time = datetime.now().isoformat()
-    
+
     if failed_pgn and failed_pgn.exists():
         velvet_output = run_velvet_analysis(failed_pgn, record_dir)
         if velvet_output:
             print(f"\nVelvet 分析报告: {velvet_output}")
-    
+
     report_json_path = record_dir / "tiered_report.json"
     save_report_json(report, report_json_path)
-    
+
     print_final_report(report)
-    
+
     return report
 
 
@@ -556,25 +670,49 @@ def main():
         "--cutechess",
         help="cutechess-cli 可执行文件路径"
     )
-    
+    parser.add_argument(
+        "--sprt",
+        type=str,
+        default=None,
+        help="启用SPRT验证: elo0,elo1,alpha,beta (例如 '0,10,0.05,0.05')"
+    )
+
     args = parser.parse_args()
-    
+
+    # Parse SPRT parameters if provided
+    sprt = None
+    if args.sprt:
+        parts = args.sprt.split(",")
+        if len(parts) != 4:
+            parser.error("SPRT格式: elo0,elo1,alpha,beta (例如 '0,10,0.05,0.05')")
+        try:
+            sprt = SPRT(
+                elo0=float(parts[0]),
+                elo1=float(parts[1]),
+                alpha=float(parts[2]),
+                beta=float(parts[3]),
+            )
+        except ValueError:
+            parser.error("SPRT值必须是数字")
+
     if not args.tier and not args.full:
         args.tier = "standard"
         print("未指定测试层级，默认使用 standard 层级")
-    
+
     print(f"\n{'#'*60}")
     print("分层测试框架")
     print(f"{'#'*60}")
     print(f"配置版本: {args.config}")
     print(f"对手引擎: {args.opponent}")
+    if sprt:
+        print(f"SPRT验证: {sprt.describe()}")
     if args.full:
         print(f"测试模式: 完整流程 (quick -> fast -> standard)")
     else:
         tier = TIERS[args.tier]
         print(f"测试模式: 单层级 ({tier['name']})")
     print(f"{'#'*60}")
-    
+
     try:
         report = run_tiered_test(
             config=args.config,
@@ -582,6 +720,7 @@ def main():
             tier=args.tier,
             full=args.full,
             cutechess_path=args.cutechess,
+            sprt=sprt,
         )
         
         if report.final_status == "成功":

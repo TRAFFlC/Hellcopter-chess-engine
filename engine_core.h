@@ -47,6 +47,8 @@ typedef struct
     int king_sq[2];
     int phase;
     int npm[2];
+    int mg_score;  /* 中局增量评估分数 (白方视角) */
+    int eg_score;  /* 残局增量评估分数 (白方视角) */
 } Board;
 
 typedef struct
@@ -66,6 +68,8 @@ typedef struct
     int mailbox_ep;
     int ep_capture_sq;
     int fullmove_number;
+    int mg_score;
+    int eg_score;
 } UndoInfo;
 
 typedef struct
@@ -76,7 +80,6 @@ typedef struct
     double increment;
     int moves_to_go;
     int move_number;
-    int easy_move_count;
     int prev_best_move_from;
     int prev_best_move_to;
     int prev_best_promotion;
@@ -90,10 +93,9 @@ typedef struct
     int best_promo_history[4];
     int history_count;
     int instability_count;
-    /* Complexity and endgame factors */
-    double complexity_factor;
-    double endgame_factor;
     int is_endgame;
+    double endgame_factor;
+    double complexity_factor;
 } TimeManager;
 
 typedef struct
@@ -124,7 +126,7 @@ typedef struct
     Move move_stack[128];
     Move pv_table[128][64];
     int pv_length[128];
-    int nodes;
+    long long nodes;
     double start_time;
     double time_limit;
     int aborted;
@@ -148,7 +150,39 @@ typedef struct
 
     int static_eval_stack[128];
     Move se_excluded[128]; /* Singular Extension: excluded move per ply */
+
+    /* SMP tracking (Task 5, 6, 8) */
+    int thread_id;
+    long long tt_hits;
+    long long tt_misses;
+    int tt_contention_count;
 } SearchState;
+
+/* Heuristic snapshot for ponderhit context preservation (Task 3) */
+typedef struct {
+    Move killers[64][2];
+    int history[64][64];
+    Move countermove[2][64][64];
+    Move followup[2][64][64];
+    int valid;
+} HeuristicSnapshot;
+
+void save_heuristic_snapshot(const SearchState *s);
+void restore_heuristic_snapshot(SearchState *s);
+void set_preserve_heuristics(int flag);
+
+/* SMP statistics (Task 5) */
+typedef struct {
+    long long tt_hits_per_thread[64];
+    long long tt_misses_per_thread[64];
+    long long nodes_per_thread[64];
+    int depth_per_thread[64];
+    int tt_contention_per_thread[64];
+    int num_threads;
+} SMP_Stats;
+
+SMP_Stats get_smp_stats(void);
+void reset_smp_stats(void);
 
 void board_from_fen(Board *b, const char *fen);
 void board_to_fen(const Board *b, char *fen, size_t fen_size);
@@ -170,6 +204,10 @@ U64 get_attacks(const Board *b, int sq, int side);
 
 /* Parameter loading function */
 int load_params_from_file(const char *filename);
+
+/* Thread count setter for UCI Threads option */
+void set_num_threads(int n);
+int get_threading_enabled(void);
 
 /* LMR statistics structure */
 typedef struct
@@ -219,6 +257,7 @@ void set_engine_info_callback(EngineInfoCallback cb);
 /* Global TT management */
 void tt_clear_global(void);
 void tt_resize_global(int hash_mb);
+void set_preserve_tt_generation(int flag);
 
 /* Extract ponder move from TT after search completes */
 int extract_ponder_move(const Board *b, Move best_move, Move *ponder_move);

@@ -71,6 +71,19 @@ typedef struct
 /* Global runtime parameters - initialized to defaults */
 static RuntimeParams g_runtime_params = {0};
 
+void set_num_threads(int n)
+{
+    if (n < 1) n = 1;
+    if (n > 64) n = 64;
+    g_runtime_params.num_threads = n;
+    g_runtime_params.threading_enabled = (n > 1) ? 1 : 0;
+}
+
+int get_threading_enabled(void)
+{
+    return g_runtime_params.threading_enabled;
+}
+
 /* Piece values array - using values from engine_params.h or runtime params */
 static const int piece_values[7] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, KING_VALUE};
 
@@ -541,16 +554,16 @@ static int move_gives_check(Board *b, const Move *move)
  * @param depth The current search depth
  * @return 1 if the move is a killer move, 0 otherwise
  */
-static int is_killer_move(const SearchState *s, const Move *move, int depth)
+static int is_killer_move(const SearchState *s, const Move *move, int ply)
 {
-    if (depth >= 64)
+    if (ply >= 64)
         return 0;
 
     int i;
     for (i = 0; i < 2; i++)
     {
-        if (s->killers[depth][i].from == move->from &&
-            s->killers[depth][i].to == move->to)
+        if (s->killers[ply][i].from == move->from &&
+            s->killers[ply][i].to == move->to)
         {
             return 1;
         }
@@ -562,12 +575,12 @@ static int mvv_lva(const Board *b, const Move *m);
 static int move_gives_check(Board *b, const Move *move);
 
 static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
-                            int move_num, int in_check, int is_endgame)
+                            int move_num, int in_check, int is_endgame, int ply)
 {
     if (!g_runtime_params.lmr_enabled)
         return 0;
 
-    if (depth < g_runtime_params.lmr_min_depth)
+    if (ply < g_runtime_params.lmr_min_depth)
         return 0;
 
     if (move_num < g_runtime_params.lmr_move_threshold)
@@ -586,12 +599,11 @@ static int is_clearly_winning(const Board *b, int static_eval)
     return 0;
 }
 
-static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check, int static_eval)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check, int static_eval, int ply)
 {
     if (depth < 1 || move_num < 1)
         return 0;
-
-    int reduction = lmr_table[depth < 63 ? depth : 63][move_num < 63 ? move_num : 63];
+    int reduction = lmr_table[ply < 127 ? ply : 127][move_num < 63 ? move_num : 63];
 
     if (is_pv_node)
         reduction -= 1;
@@ -636,8 +648,8 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
 
     if (reduction < 0)
         reduction = 0;
-    if (reduction >= depth)
-        reduction = depth - 1;
+    if (reduction >= ply)
+        reduction = ply - 1;
 
     return reduction;
 }
@@ -670,12 +682,12 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
  */
 static int should_apply_futility_pruning(SearchState *s, const Move *move,
                                          int depth, int move_num, int in_check,
-                                         int alpha, int is_endgame, int static_eval)
+                                         int alpha, int is_endgame, int static_eval, int ply)
 {
     if (!g_runtime_params.futility_enabled)
         return 0;
 
-    if (depth > 5 || depth <= 0)
+    if (ply > 5 || ply <= 0)
         return 0;
 
     if (move_num == 0)
@@ -966,6 +978,30 @@ board_from_fen(Board *b, const char *fen)
             phase = 24;
         b->phase = phase;
     }
+
+    /* Initialize incremental PST+material scores */
+    {
+        int mg = 0, eg = 0;
+        int s, pt2;
+        for (s = 0; s < 2; s++)
+        {
+            int sign = (s == WHITE) ? 1 : -1;
+            for (pt2 = PAWN; pt2 <= KING; pt2++)
+            {
+                U64 bb = b->pieces[s][pt2];
+                while (bb)
+                {
+                    int sq = lsb_index(bb);
+                    bb &= bb - 1;
+                    int psq = (s == WHITE) ? (sq ^ 56) : sq;
+                    mg += sign * (piece_values[pt2] + mg_pst[pt2][psq]);
+                    eg += sign * (piece_values[pt2] + eg_pst[pt2][psq]);
+                }
+            }
+        }
+        b->mg_score = mg;
+        b->eg_score = eg;
+    }
 }
 
 void board_to_fen(const Board *b, char *fen, size_t fen_size)
@@ -1098,16 +1134,10 @@ static int is_square_attacked(const Board *b, int sq, int by_side)
 
 int is_check(const Board *b, int side)
 {
-    int king_sq = -1;
-    U64 kbb = b->pieces[side][KING];
-    while (kbb)
-    {
-        king_sq = __builtin_ctzll(kbb);
-        kbb &= kbb - 1;
-    }
-    if (king_sq < 0)
+    int ksq = b->king_sq[side];
+    if (ksq < 0 || ksq > 63)
         return 0;
-    return is_square_attacked(b, king_sq, 1 - side);
+    return is_square_attacked(b, ksq, 1 - side);
 }
 
 static int g_last_search_depth = 0;
@@ -1296,7 +1326,7 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
             if (f > 0)
             {
                 int to = sq + 7;
-                if ((enemy & (1ULL << to)) || (b->en_passant == to))
+                if (to < 64 && ((enemy & (1ULL << to)) || (b->en_passant == to)))
                 {
                     int cap = (b->en_passant == to) ? PAWN : piece_on_square(b, to);
                     if (rank_of(to) == 7)
@@ -1318,7 +1348,7 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
             if (f < 7)
             {
                 int to = sq + 9;
-                if ((enemy & (1ULL << to)) || (b->en_passant == to))
+                if (to < 64 && ((enemy & (1ULL << to)) || (b->en_passant == to)))
                 {
                     int cap = (b->en_passant == to) ? PAWN : piece_on_square(b, to);
                     if (rank_of(to) == 7)
@@ -1369,7 +1399,7 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
             if (f > 0)
             {
                 int to = sq - 9;
-                if ((enemy & (1ULL << to)) || (b->en_passant == to))
+                if (to >= 0 && ((enemy & (1ULL << to)) || (b->en_passant == to)))
                 {
                     int cap = (b->en_passant == to) ? PAWN : piece_on_square(b, to);
                     if (rank_of(to) == 0)
@@ -1391,7 +1421,7 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
             if (f < 7)
             {
                 int to = sq - 7;
-                if ((enemy & (1ULL << to)) || (b->en_passant == to))
+                if (to >= 0 && ((enemy & (1ULL << to)) || (b->en_passant == to)))
                 {
                     int cap = (b->en_passant == to) ? PAWN : piece_on_square(b, to);
                     if (rank_of(to) == 0)
@@ -1564,7 +1594,14 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     U64 to_bb = 1ULL << m->to;
     int pt = piece_on_square(b, m->from);
     if (pt == EMPTY)
+    {
+        /* Mark undo as skipped so unmake_move knows not to modify the board.
+         * We still switch side_to_move to keep the call balanced. */
+        undo->castling_rights = -1; /* Sentinel: make_move was skipped */
+        b->side_to_move = opp;
+        b->eval_score = EVAL_SCORE_INVALID;
         return;
+    }
 
     undo->castling_rights = b->castling_rights;
     undo->en_passant = b->en_passant;
@@ -1583,6 +1620,8 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     undo->mailbox_ep = 0;
     undo->ep_capture_sq = -1;
     undo->captured_piece = 0;
+    undo->mg_score = b->mg_score;
+    undo->eg_score = b->eg_score;
 
     int old_castling = b->castling_rights;
     int old_ep = b->en_passant;
@@ -1793,10 +1832,95 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
 
     b->side_to_move = opp;
     b->eval_score = EVAL_SCORE_INVALID;
+
+    /* Incremental PST+material score update */
+    {
+        int sign = (side == WHITE) ? 1 : -1;
+        int psq_from = (side == WHITE) ? (m->from ^ 56) : m->from;
+        int psq_to = (side == WHITE) ? (m->to ^ 56) : m->to;
+
+        /* 1. Moving piece from->to: PST change only (material unchanged for non-promotion) */
+        b->mg_score += sign * (mg_pst[pt][psq_to] - mg_pst[pt][psq_from]);
+        b->eg_score += sign * (eg_pst[pt][psq_to] - eg_pst[pt][psq_from]);
+
+        /* 2. Capture: remove captured piece's material+PST */
+        if (m->capture)
+        {
+            if (undo->ep_capture_sq >= 0)
+            {
+                /* En passant: captured pawn is at ep_cap_sq, not at m->to */
+                int ep_sq = undo->ep_capture_sq;
+                int sign_opp = (opp == WHITE) ? 1 : -1;
+                int psq_ep = (opp == WHITE) ? (ep_sq ^ 56) : ep_sq;
+                b->mg_score -= sign_opp * (piece_values[PAWN] + mg_pst[PAWN][psq_ep]);
+                b->eg_score -= sign_opp * (piece_values[PAWN] + eg_pst[PAWN][psq_ep]);
+            }
+            else
+            {
+                /* Regular capture: remove captured piece at m->to */
+                int cap_pt = m->capture;
+                int sign_opp = (opp == WHITE) ? 1 : -1;
+                int psq_cap = (opp == WHITE) ? (m->to ^ 56) : m->to;
+                b->mg_score -= sign_opp * (piece_values[cap_pt] + mg_pst[cap_pt][psq_cap]);
+                b->eg_score -= sign_opp * (piece_values[cap_pt] + eg_pst[cap_pt][psq_cap]);
+            }
+        }
+
+        /* 3. Promotion: replace pawn with promoted piece at m->to */
+        if (m->promotion)
+        {
+            int promo = m->promotion;
+            b->mg_score += sign * ((piece_values[promo] + mg_pst[promo][psq_to]) - (piece_values[PAWN] + mg_pst[PAWN][psq_to]));
+            b->eg_score += sign * ((piece_values[promo] + eg_pst[promo][psq_to]) - (piece_values[PAWN] + eg_pst[PAWN][psq_to]));
+        }
+
+        /* 4. Castling: move rook */
+        if (pt == KING)
+        {
+            if (side == WHITE)
+            {
+                if (m->from == 4 && m->to == 6)
+                {
+                    /* White kingside: rook h1(7) -> f1(5) */
+                    b->mg_score += mg_pst[ROOK][5 ^ 56] - mg_pst[ROOK][7 ^ 56];
+                    b->eg_score += eg_pst[ROOK][5 ^ 56] - eg_pst[ROOK][7 ^ 56];
+                }
+                else if (m->from == 4 && m->to == 2)
+                {
+                    /* White queenside: rook a1(0) -> d1(3) */
+                    b->mg_score += mg_pst[ROOK][3 ^ 56] - mg_pst[ROOK][0 ^ 56];
+                    b->eg_score += eg_pst[ROOK][3 ^ 56] - eg_pst[ROOK][0 ^ 56];
+                }
+            }
+            else
+            {
+                if (m->from == 60 && m->to == 62)
+                {
+                    /* Black kingside: rook h8(63) -> f8(61) */
+                    b->mg_score -= mg_pst[ROOK][61] - mg_pst[ROOK][63];
+                    b->eg_score -= eg_pst[ROOK][61] - eg_pst[ROOK][63];
+                }
+                else if (m->from == 60 && m->to == 58)
+                {
+                    /* Black queenside: rook a8(56) -> d8(59) */
+                    b->mg_score -= mg_pst[ROOK][59] - mg_pst[ROOK][56];
+                    b->eg_score -= eg_pst[ROOK][59] - eg_pst[ROOK][56];
+                }
+            }
+        }
+    }
 }
 
 void unmake_move(Board *b, const Move *m, const UndoInfo *undo)
 {
+    /* If make_move was skipped (piece_on_square returned EMPTY),
+     * just restore side_to_move and return without modifying the board. */
+    if (undo->castling_rights == -1)
+    {
+        b->side_to_move = 1 - b->side_to_move;
+        return;
+    }
+
     int side = 1 - b->side_to_move;
     int opp = 1 - side;
     U64 from_bb = 1ULL << m->from;
@@ -1868,6 +1992,8 @@ void unmake_move(Board *b, const Move *m, const UndoInfo *undo)
     b->king_sq[1] = undo->king_sq[1];
     b->npm[0] = undo->npm[0];
     b->npm[1] = undo->npm[1];
+    b->mg_score = undo->mg_score;
+    b->eg_score = undo->eg_score;
     b->side_to_move = side;
 
     b->mailbox[m->from] = undo->mailbox_from;

@@ -305,7 +305,8 @@ class Engine:
             return
         self.send("stop")
         # 消费引擎返回的 bestmove 响应，避免残留行污染后续搜索
-        deadline = time.time() + 5
+        # 超时设为6秒，匹配C版wait_for_search_thread的3秒+余量
+        deadline = time.time() + 6
         while time.time() < deadline:
             line = self.readline(timeout=1.0)
             if line is not None and line.startswith("bestmove"):

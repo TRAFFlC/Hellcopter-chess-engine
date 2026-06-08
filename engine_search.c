@@ -131,11 +131,13 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
     int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
     TT_Cluster *cluster = &s->tt[idx];
     int i;
+    int found_key = 0;
     for (i = 0; i < 4; i++)
     {
         TT_Entry *e = &cluster->entries[i];
         if (e->key == (key >> 32))
         {
+            found_key = 1;
             *out_move = e->best_move;
             if (e->depth >= depth)
             {
@@ -147,11 +149,20 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
                 if (out_tt_score)
                     *out_tt_score = score;
                 if (e->flag == 0)
+                {
+                    s->tt_hits++;
                     return score;
+                }
                 if (e->flag == 1 && score <= alpha)
+                {
+                    s->tt_hits++;
                     return score;
+                }
                 if (e->flag == 2 && score >= beta)
+                {
+                    s->tt_hits++;
                     return score;
+                }
             }
             else
             {
@@ -165,6 +176,7 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
                     *out_tt_score = score;
                 }
             }
+            s->tt_misses++;
             return INF + 1;
         }
     }
@@ -177,6 +189,8 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
             break;
         }
     }
+    if (!found_key)
+        s->tt_misses++;
     return INF + 1;
 }
 
@@ -225,6 +239,13 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
             worst_val = val;
             replace_idx = i;
         }
+    }
+    /* Track TT contention: if we're replacing an entry from current generation,
+     * it means multiple threads are competing for the same cluster slot. */
+    {
+        TT_Entry *victim = &cluster->entries[replace_idx];
+        if ((int)(victim->generation & 0xFF) == (int)(s->tt_generation & 0xFF) && victim->key != 0)
+            s->tt_contention_count++;
     }
     {
         TT_Entry *e = &cluster->entries[replace_idx];
@@ -460,7 +481,21 @@ static int see(Board *b, int from, int to)
         gain[gain_count++] = next_value;
 
         if (next_piece == KING)
-            break;
+        {
+            /* If the king captures, the opponent cannot recapture.
+             * The side that used the king wins the exchange, so return
+             * the net gain directly. Minimax settlement would incorrectly
+             * subtract the king's value. */
+            int g = gain_count - 1;
+            while (g > 0)
+            {
+                gain[g - 1] = gain[g - 1] - gain[g];
+                if (gain[g - 1] < 0)
+                    gain[g - 1] = 0;
+                g--;
+            }
+            return gain[0];
+        }
 
         current_sq = next_attacker_sq;
         stm = 1 - stm;
@@ -538,6 +573,63 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         return tt_hit;
     }
 
+    /* Syzygy TB probe in quiescence search (Task 4.1a).
+     * Only at QS entry (qs_depth == 0) to avoid repeated probes in recursive QS.
+     * Provides exact WDL scores for endgame positions, replacing heuristic eval. */
+    if (TB_LARGEST > 0 && qs_depth == 0)
+    {
+        U64 qs_all_white = s->board.pieces[WHITE][PAWN] | s->board.pieces[WHITE][KNIGHT] |
+                           s->board.pieces[WHITE][BISHOP] | s->board.pieces[WHITE][ROOK] |
+                           s->board.pieces[WHITE][QUEEN] | s->board.pieces[WHITE][KING];
+        U64 qs_all_black = s->board.pieces[BLACK][PAWN] | s->board.pieces[BLACK][KNIGHT] |
+                           s->board.pieces[BLACK][BISHOP] | s->board.pieces[BLACK][ROOK] |
+                           s->board.pieces[BLACK][QUEEN] | s->board.pieces[BLACK][KING];
+        int qs_total = count_bits(qs_all_white) + count_bits(qs_all_black);
+        int qs_w_bishops = count_bits(s->board.pieces[WHITE][BISHOP]);
+        int qs_b_bishops = count_bits(s->board.pieces[BLACK][BISHOP]);
+        int qs_w_knights = count_bits(s->board.pieces[WHITE][KNIGHT]);
+        int qs_b_knights = count_bits(s->board.pieces[BLACK][KNIGHT]);
+        int qs_total_pawns = count_bits(s->board.pieces[WHITE][PAWN] | s->board.pieces[BLACK][PAWN]);
+        int qs_is_kbnk = (qs_w_bishops + qs_b_bishops == 1 && qs_w_knights + qs_b_knights == 1 && qs_total_pawns == 0);
+        if (qs_total <= (int)TB_LARGEST && qs_total >= 3 && s->board.castling_rights == 0 && !qs_is_kbnk)
+        {
+            unsigned qs_ep = 0;
+            if (s->board.en_passant >= 0 && s->board.en_passant < 64)
+                qs_ep = (unsigned)s->board.en_passant + 1;
+            unsigned qs_wdl = tb_probe_wdl(
+                qs_all_white, qs_all_black,
+                s->board.pieces[WHITE][KING] | s->board.pieces[BLACK][KING],
+                s->board.pieces[WHITE][QUEEN] | s->board.pieces[BLACK][QUEEN],
+                s->board.pieces[WHITE][ROOK] | s->board.pieces[BLACK][ROOK],
+                s->board.pieces[WHITE][BISHOP] | s->board.pieces[BLACK][BISHOP],
+                s->board.pieces[WHITE][KNIGHT] | s->board.pieces[BLACK][KNIGHT],
+                s->board.pieces[WHITE][PAWN] | s->board.pieces[BLACK][PAWN],
+                0, 0, qs_ep,
+                s->board.side_to_move == WHITE);
+            if (qs_wdl != TB_RESULT_FAILED)
+            {
+                int qs_tb_score;
+                if (qs_wdl == TB_WIN)
+                    qs_tb_score = MATE_SCORE - 200 - ply;
+                else if (qs_wdl == TB_CURSED_WIN)
+                    qs_tb_score = MATE_SCORE - 2000 - ply;
+                else if (qs_wdl == TB_DRAW)
+                    qs_tb_score = 0;
+                else if (qs_wdl == TB_BLESSED_LOSS)
+                    qs_tb_score = -(MATE_SCORE - 2000) + ply;
+                else
+                    qs_tb_score = -(MATE_SCORE - 200) + ply;
+                s->tb_hits++;
+                /* TB result is exact — store in TT with EXACT flag and return */
+                {
+                    Move zero_move = {0};
+                    tt_store(s, pos_key, 0, qs_tb_score, 0, zero_move, ply);
+                }
+                return qs_tb_score;
+            }
+        }
+    }
+
     int stand_pat_val = 0;
     if (!in_check)
     {
@@ -584,12 +676,12 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             moves[i].score = 100000;
         }
     }
-    sort_moves(moves, n);
 
     int legal_count = 0;
     Move best_qs_move = {0};
     for (i = 0; i < n; i++)
     {
+        pick_next_move(moves, n, i);
         if (!in_check && moves[i].capture && !moves[i].promotion)
         {
             Board temp_board = s->board;
@@ -729,23 +821,29 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 }
 
                 int tb_score;
+                /* DTZ optimization (Task 4.1b): use 2*ply multiplier for
+                 * TB_WIN/TB_LOSS to create a steeper gradient that more
+                 * strongly prefers faster wins and slower losses.
+                 * Root search already uses DTZ-based scoring (100000-2*dtz).
+                 * The 2*ply multiplier in negamax ensures intermediate
+                 * TB-probed nodes also favor shorter paths to the win. */
                 if (wdl == TB_WIN)
-                    tb_score = 100000 - ply;
+                    tb_score = MATE_SCORE - 200 - 2 * ply;
                 else if (wdl == TB_CURSED_WIN)
-                    tb_score = 90000 - ply;
+                    tb_score = MATE_SCORE - 2000 - ply;
                 else if (wdl == TB_DRAW)
                     tb_score = 0;
                 else if (wdl == TB_BLESSED_LOSS)
-                    tb_score = -(90000) + ply;
+                    tb_score = -(MATE_SCORE - 2000) + ply;
                 else
-                    tb_score = -(100000) + ply;
+                    tb_score = -(MATE_SCORE - 200) + 2 * ply;
+                s->tb_hits++;
                 if (tb_score >= beta)
                     return beta;
                 if (tb_score > alpha)
                     alpha = tb_score;
             }
-        tb_done:
-            ;
+        tb_done:;
         }
     }
 
@@ -958,11 +1056,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         else
         {
             int k1, k2;
-            if (depth < 64)
+            if (ply < 64)
             {
                 for (k1 = 0; k1 < 2; k1++)
                 {
-                    if (s->killers[depth][k1].from == moves[i].from && s->killers[depth][k1].to == moves[i].to)
+                    if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
                     {
                         moves[i].score = 40000 - k1 * 1000;
                         break;
@@ -998,11 +1096,9 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 moves[i].score += 50000;
             if (is_endgame)
             {
-                /* Reduced check bonus: checks are important but shouldn't dominate
-                 * over other good moves like captures and pawn pushes.
-                 * Old value was 15000, reduced to 5000 to avoid blind checking. */
-                if (move_gives_check(&s->board, &moves[i]))
-                    moves[i].score += 5000;
+                /* Check bonus removed from scoring phase — move_gives_check()
+                 * does full make/unmake which is too expensive per-move.
+                 * Checks will still be found during search naturally. */
                 if (!moves[i].capture && !moves[i].promotion)
                 {
                     int from_piece = piece_on_square(&s->board, moves[i].from);
@@ -1064,7 +1160,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
     }
 
-    int best_score = -INF;
+    int best_score = -MATE_SCORE;
     Move best_move = {0};
     int flag = 1;
 
@@ -1178,7 +1274,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             moves[i].from == s->se_excluded[ply].from && moves[i].to == s->se_excluded[ply].to)
             continue;
 
-        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame, static_eval))
+        if (should_apply_futility_pruning(s, &moves[i], depth, i, in_check, alpha, is_endgame, static_eval, ply))
         {
             int estimated_nodes_saved = (1 << depth) - 1;
             s->futility_prunes++;
@@ -1186,16 +1282,14 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
-        if (!in_check && !is_pv_node && depth <= 5 && i >= 3 + depth * depth && !moves[i].capture && !moves[i].promotion && !move_gives_check(b, &moves[i]) && static_eval < 2000)
-        {
-            continue;
-        }
-
         if (!in_check && moves[i].capture && !moves[i].promotion && depth <= 8 &&
             legal_count >= 1 && (beta - alpha <= 1))
         {
-            int see_val = see(b, moves[i].from, moves[i].to);
-            if (see_val < -depth * 40)
+            /* Extract SEE value from move score (computed during scoring phase):
+             * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  → see_val >= 0, never pruned
+             * SEE <  0: score = 200000 + see_val                → see_val = score - 200000 */
+            int cached_see = (moves[i].score >= 1000000) ? 0 : (moves[i].score - 200000);
+            if (cached_see < -depth * 60)
                 continue;
         }
 
@@ -1203,7 +1297,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             depth <= 3 && legal_count > 3 + depth * depth &&
             (beta - alpha <= 1) &&
             s->history[moves[i].from][moves[i].to] < 0 &&
-            !move_gives_check(b, &moves[i]) &&
             !is_endgame)
         {
             continue;
@@ -1217,6 +1310,15 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
         legal_count++;
+
+        /* Late Move Pruning: prune quiet moves that are unlikely to improve alpha
+         * Uses legal_count (actual legal moves searched) instead of loop index
+         * to avoid pruning important moves when many pseudo-legal moves are illegal */
+        if (!in_check && !is_pv_node && depth <= 5 && legal_count >= 6 + depth * depth && !moves[i].capture && !moves[i].promotion && static_eval < 2000)
+        {
+            unmake_move(b, &moves[i], &undo);
+            continue;
+        }
 
         /* Promotion extension: extend search by 1 ply when a pawn promotes.
          * This ensures critical promotion lines (often leading to mates) are
@@ -1264,11 +1366,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         else
         {
             int is_pv_node = (beta - alpha > 1);
-            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame);
+            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame, ply);
 
             if (apply_lmr)
             {
-                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check, static_eval);
+                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check, static_eval, ply);
 
                 int estimated_nodes_saved = (1 << reduction) - 1;
 
@@ -1327,16 +1429,16 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 if (alpha >= beta)
                 {
                     flag = 2;
-                    if (!moves[i].capture && depth < 64)
+                    if (!moves[i].capture && ply < 128)
                     {
-                        if (moves[i].from != s->killers[depth][0].from || moves[i].to != s->killers[depth][0].to)
+                        if (moves[i].from != s->killers[ply][0].from || moves[i].to != s->killers[ply][0].to)
                         {
                             /* Only shift if the new move is also different from killer[1],
                              * otherwise we'd duplicate killer[1] into killer[0]. */
-                            if (moves[i].from != s->killers[depth][1].from || moves[i].to != s->killers[depth][1].to)
+                            if (moves[i].from != s->killers[ply][1].from || moves[i].to != s->killers[ply][1].to)
                             {
-                                s->killers[depth][1] = s->killers[depth][0];
-                                s->killers[depth][0] = moves[i];
+                                s->killers[ply][1] = s->killers[ply][0];
+                                s->killers[ply][0] = moves[i];
                             }
                         }
                         s->history[moves[i].from][moves[i].to] += depth * depth;

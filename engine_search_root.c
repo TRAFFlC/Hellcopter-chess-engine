@@ -3,6 +3,86 @@
 /* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
 extern unsigned TB_LARGEST;
 
+/* Ponder TT preservation flag: when set, find_best_move_c skips the TT generation increment
+ * so that TT entries from the ponder search are retained for the ponderhit search. */
+static volatile int g_preserve_tt_generation = 0;
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+set_preserve_tt_generation(int flag)
+{
+    g_preserve_tt_generation = flag;
+}
+
+/* ============================================================================
+ * HEURISTIC SNAPSHOT — Ponderhit context preservation (Task 4.2a)
+ * ============================================================================ */
+static HeuristicSnapshot g_heuristic_snapshot = { .valid = 0 };
+static volatile int g_preserve_heuristics = 0;
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+set_preserve_heuristics(int flag)
+{
+    g_preserve_heuristics = flag;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+save_heuristic_snapshot(const SearchState *s)
+{
+    if (!g_preserve_heuristics) return;
+    memcpy(g_heuristic_snapshot.killers, s->killers, sizeof(s->killers));
+    memcpy(g_heuristic_snapshot.history, s->history, sizeof(s->history));
+    memcpy(g_heuristic_snapshot.countermove, s->countermove, sizeof(s->countermove));
+    memcpy(g_heuristic_snapshot.followup, s->followup, sizeof(s->followup));
+    g_heuristic_snapshot.valid = 1;
+    g_preserve_heuristics = 0;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+restore_heuristic_snapshot(SearchState *s)
+{
+    if (!g_heuristic_snapshot.valid) return;
+    memcpy(s->killers, g_heuristic_snapshot.killers, sizeof(s->killers));
+    memcpy(s->history, g_heuristic_snapshot.history, sizeof(s->history));
+    memcpy(s->countermove, g_heuristic_snapshot.countermove, sizeof(s->countermove));
+    memcpy(s->followup, g_heuristic_snapshot.followup, sizeof(s->followup));
+    g_heuristic_snapshot.valid = 0;  /* One-time use */
+}
+
+/* ============================================================================
+ * SMP STATISTICS (Task 6.1)
+ * ============================================================================ */
+static SMP_Stats g_smp_stats;
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+SMP_Stats
+get_smp_stats(void)
+{
+    return g_smp_stats;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+reset_smp_stats(void)
+{
+    memset(&g_smp_stats, 0, sizeof(g_smp_stats));
+}
+
 static void init_time_manager(TimeManager *tm, double time_left, double inc, int moves_to_go, int move_number, double start_time)
 {
     tm->remaining = time_left;
@@ -10,7 +90,6 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
     tm->moves_to_go = moves_to_go;
     tm->move_number = move_number;
     tm->start_time = start_time;
-    tm->easy_move_count = 0;
     tm->prev_best_move_from = -1;
     tm->prev_best_move_to = -1;
     tm->prev_best_promotion = 0;
@@ -20,6 +99,9 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
     /* Initialize instability detection */
     tm->history_count = 0;
     tm->instability_count = 0;
+    tm->is_endgame = 0;
+    tm->endgame_factor = 1.0;
+    tm->complexity_factor = 1.0;
     for (int i = 0; i < 4; i++)
     {
         tm->score_history[i] = 0;
@@ -28,19 +110,15 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
         tm->best_promo_history[i] = 0;
     }
 
-    /* Initialize complexity and endgame factors */
-    tm->complexity_factor = 1.0;
-    tm->endgame_factor = 1.0;
-    tm->is_endgame = 0;
-
-    int estimated_moves = 25;
+    /* Estimated remaining moves — simple phase-based estimation.
+     * When moves_to_go is provided by the GUI, use it directly. */
+    int estimated_moves;
     if (moves_to_go > 0)
     {
-        estimated_moves = moves_to_go + 5;
+        estimated_moves = moves_to_go;
     }
     else
     {
-        /* More nuanced move estimation based on game phase */
         if (move_number < 10)
             estimated_moves = 35 - move_number;
         else if (move_number < 20)
@@ -55,49 +133,24 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
             estimated_moves = 12;
     }
 
-    tm->optimal_time = time_left / estimated_moves + inc * 0.85;
-    if (tm->optimal_time > time_left * 0.6 + inc * 0.5)
-        tm->optimal_time = time_left * 0.6 + inc * 0.5;
+    /* Core time allocation formula:
+     * optimum = time_left / estimated_moves + increment × 0.5
+     * maximum = min(time_left × 0.4, optimum × 4) */
+    tm->optimal_time = time_left / estimated_moves + inc * 0.5;
+    tm->max_time = time_left * 0.4;
+    if (tm->max_time > tm->optimal_time * 4)
+        tm->max_time = tm->optimal_time * 4;
 
-    tm->max_time = time_left * 0.6 + inc * 0.5;
-    if (tm->max_time < tm->optimal_time * 3)
-        tm->max_time = tm->optimal_time * 3;
-    if (tm->max_time > time_left + inc * 0.9 - 0.05)
-        tm->max_time = time_left + inc * 0.9 - 0.05;
-
-    if (inc > 0 && time_left < inc * 5)
-    {
-        double inc_based_optimal = inc * 0.85;
-        double inc_based_max = inc * 0.95;
-        if (tm->optimal_time < inc_based_optimal)
-            tm->optimal_time = inc_based_optimal;
-        if (tm->max_time < inc_based_max)
-            tm->max_time = inc_based_max;
-    }
-
-    /* Opening time discount - save time for later */
-    if (move_number <= 10)
-        tm->optimal_time *= 0.85;
-    else if (move_number <= 20)
-        tm->optimal_time *= 0.95;
-
-    /* Extreme time pressure mode: remaining < 1 second
-     * In this mode, we need to be very careful not to timeout.
-     * Strategy: use minimal time, rely on increment if available.
-     */
+    /* Extreme time pressure: remaining < 1 second */
     if (time_left < 1.0)
     {
-        /* Use at most half of remaining time or increment */
         double extreme_time = time_left * 0.4;
         if (inc > 0)
-            extreme_time = inc * 0.8; /* Rely on increment */
-
+            extreme_time = inc * 0.8;
         if (tm->optimal_time > extreme_time)
             tm->optimal_time = extreme_time;
         if (tm->max_time > time_left * 0.8)
             tm->max_time = time_left * 0.8;
-
-        /* Ensure we leave some buffer to avoid timeout */
         if (tm->max_time > time_left - 0.05)
             tm->max_time = time_left - 0.05;
     }
@@ -117,14 +170,23 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     ensure_engine_tables_initialized();
     if (!params_loaded)
     {
+        int loaded_ok = 0;
         const char *env_path = getenv("ENGINE_PARAMS");
         if (env_path && env_path[0] != '\0')
         {
-            load_params_from_file(env_path);
+            loaded_ok = load_params_from_file(env_path);
         }
-        else
+        if (!loaded_ok)
         {
-            load_params_from_file("engine_params.json");
+            loaded_ok = load_params_from_file("engine_params.json");
+        }
+        if (!loaded_ok)
+        {
+            init_runtime_params_defaults();
+            fprintf(stderr, "Using default params: qs_mg=%d qs_eg=%d endgame_thresh=%d pst_mg_pawn_0=%d pst_eg_pawn_0=%d\n",
+                    g_runtime_params.qs_max_depth_mg, g_runtime_params.qs_max_depth_eg,
+                    g_runtime_params.endgame_phase_threshold,
+                    g_runtime_params.mg_pst[0][0], g_runtime_params.eg_pst[0][0]);
         }
         params_loaded = 1;
     }
@@ -140,12 +202,15 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     s->start_time = get_time();
     s->aborted = 0;
     s->nodes = 0;
+    s->thread_id = 0;  /* Main thread */
     g_engine_abort_flag = 0; /* Ensure abort flag is clear before starting search */
     {
         int si;
         for (si = 0; si < 128; si++)
             s->static_eval_stack[si] = EVAL_SCORE_INVALID;
     }
+    /* Restore heuristics from previous ponder search (if ponderhit path) */
+    restore_heuristic_snapshot(s);
 
     TimeManager tm;
     init_time_manager(&tm, time_left > 0 ? time_left : time_limit, increment, moves_to_go, move_number, s->start_time);
@@ -162,7 +227,12 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     else if (tm.optimal_time < 5.0)
         s->time_check_mask = 255;
     tt_init_global(128);
-    tt_clear_global();
+    if (g_preserve_tt_generation) {
+        /* Ponderhit path: keep TT entries from ponder search, just sync generation */
+        g_preserve_tt_generation = 0;
+    } else {
+        g_tt_generation++;  /* 替换 tt_clear_global()，递增世代让旧条目自然老化 */
+    }
     s->tt = g_tt;
     s->tt_cluster_count = g_tt_cluster_count;
     s->tt_generation = g_tt_generation;
@@ -190,15 +260,15 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     }
 
     Move best_move = {0};
-    int best_score = -INF;
-    int prev_score = -INF;
+    int best_score = -MATE_SCORE;
+    int prev_score = -MATE_SCORE;
     int depth;
     int i;
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
     int early_terminate = 0;
     for (i = 0; i < MAX_MOVES; i++)
-        root_scores[i] = -INF;
+        root_scores[i] = -MATE_SCORE;
 
     if (g_perturb_enabled)
         perturb_rng_seed();
@@ -349,7 +419,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
 
     {
         Move tt_root_move = {0};
-        int tt_root_val = tt_probe(s, s->board.hash, 1, -INF, INF, &tt_root_move, 0, NULL);
+        int tt_root_val = tt_probe(s, s->board.hash, 1, -MATE_SCORE, MATE_SCORE, &tt_root_move, 0, NULL);
         if (tt_root_move.from != 0 || tt_root_move.to != 0)
         {
             int tt_idx = -1;
@@ -504,63 +574,43 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     else
         effective_max_depth = max_depth + depth_bonus;
 
-    /* Complexity and endgame detection for time management */
+    /* Search pre-adjustments: compute legal_count and phase for downstream use,
+     * and apply check-based time reduction. */
     {
         int legal_count = generate_legal_moves(&s->board, s->move_stack);
         int phase = s->board.phase;
+        (void)legal_count;
+        (void)phase;
 
-        /* Endgame detection */
-        if (phase <= 6)
-        {
-            tm.is_endgame = 1;
-            tm.endgame_factor = 1.15; /* More time in endgame - positions are critical */
-        }
-        else if (phase <= 10)
-        {
-            tm.is_endgame = 1;
-            tm.endgame_factor = 1.1;
-        }
-
-        /* Complexity factor based on legal moves count */
-        if (legal_count > 35)
-        {
-            tm.complexity_factor = 1.3; /* Very complex position */
-        }
-        else if (legal_count > 28)
-        {
-            tm.complexity_factor = 1.15; /* Complex position */
-        }
-        else if (legal_count < 10)
-        {
-            tm.complexity_factor = 0.8; /* Simple position, few legal moves */
-        }
-        else if (legal_count < 15)
-        {
-            tm.complexity_factor = 0.9; /* Relatively simple */
-        }
-
-        /* Check if in check - add more time */
+        /* When in check: reduce time — forced moves mean fewer choices,
+         * so less thinking time is needed (fixes the old bug that added time). */
         if (is_check(&s->board, s->board.side_to_move))
         {
-            tm.complexity_factor *= 1.2;
+            tm.optimal_time *= 0.85;
+        }
+
+        /* EGTB guard: if Syzygy tablebases cover this position (piece count ≤ TB_LARGEST),
+         * skip any endgame time bonus. Currently no endgame bonus is applied,
+         * but this check ensures future additions respect EGTB coverage. */
+        if (TB_LARGEST > 0)
+        {
+            U64 all_w = s->board.pieces[WHITE][PAWN] | s->board.pieces[WHITE][KNIGHT] |
+                        s->board.pieces[WHITE][BISHOP] | s->board.pieces[WHITE][ROOK] |
+                        s->board.pieces[WHITE][QUEEN] | s->board.pieces[WHITE][KING];
+            U64 all_b = s->board.pieces[BLACK][PAWN] | s->board.pieces[BLACK][KNIGHT] |
+                        s->board.pieces[BLACK][BISHOP] | s->board.pieces[BLACK][ROOK] |
+                        s->board.pieces[BLACK][QUEEN] | s->board.pieces[BLACK][KING];
+            int total_pc = count_bits(all_w) + count_bits(all_b);
+            if (total_pc <= (int)TB_LARGEST)
+            {
+                /* No endgame time bonus when EGTB covers this position */
+            }
         }
     }
 
     int window = 50;
     int aw_hits = 0;
     int aw_fails = 0;
-
-    /* Extreme time pressure: limit max depth to avoid timeout */
-    int extreme_time_mode = (tm.remaining < 1.0 && tm.remaining > 0);
-    if (extreme_time_mode)
-    {
-        /* In extreme time pressure, limit depth to 6-8 */
-        int extreme_depth = 8;
-        if (tm.increment >= 0.1)
-            extreme_depth = 10; /* With increment, we can search deeper */
-        if (effective_max_depth > extreme_depth)
-            effective_max_depth = extreme_depth;
-    }
 
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
@@ -573,13 +623,13 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
         int nodes_before = s->nodes;
 
         Move current_best = {0};
-        int current_score = -INF;
+        int current_score = -MATE_SCORE;
         int alpha, beta;
 
         if (depth <= 1)
         {
-            alpha = -INF;
-            beta = INF;
+            alpha = -MATE_SCORE;
+            beta = MATE_SCORE;
 
             for (i = 0; i < legal_moves_count; i++)
             {
@@ -628,25 +678,24 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
              * 1. Fail-high re-searches are expensive and may time out
              * 2. TT entries from narrow-window searches can pollute later searches
              * 3. The score jump from "winning" to "mate" can be very large */
-            if (abs(best_score) > MATE_SCORE - 100 || abs(best_score) > 1500)
+            if (abs(best_score) > MATE_SCORE - 100)
             {
-                alpha = -INF;
-                beta = INF;
+                alpha = -MATE_SCORE;
+                beta = MATE_SCORE;
             }
             else
             {
                 alpha = best_score - window;
                 beta = best_score + window;
             }
-
             while (1)
             {
-                if (alpha < -INF)
-                    alpha = -INF;
-                if (beta > INF)
-                    beta = INF;
+                if (alpha < -MATE_SCORE)
+                    alpha = -MATE_SCORE;
+                if (beta > MATE_SCORE)
+                    beta = MATE_SCORE;
 
-                current_score = -INF;
+                current_score = -MATE_SCORE;
                 current_best = (Move){0};
 
                 for (i = 0; i < legal_moves_count; i++)
@@ -717,17 +766,60 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     break;
                 }
 
-                /* If window gets too large, fall back to full window */
+                /* If window gets too large, fall back to full window
+                 * and re-search to get a reliable score. */
                 if (window > 500)
                 {
-                    alpha = -INF;
-                    beta = INF;
+                    alpha = -MATE_SCORE;
+                    beta = MATE_SCORE;
+
+                    current_score = -MATE_SCORE;
+                    current_best = (Move){0};
+
+                    for (i = 0; i < legal_moves_count; i++)
+                    {
+                        UndoInfo undo;
+                        make_move(b, &root_moves[i], &undo);
+                        int score;
+                        if (i == 0)
+                        {
+                            score = -negamax(s, depth - 1, -MATE_SCORE, MATE_SCORE, 0, 1);
+                        }
+                        else
+                        {
+                            score = -negamax(s, depth - 1, -MATE_SCORE, -alpha, 0, 1);
+                            if (!s->aborted && score > alpha)
+                            {
+                                score = -negamax(s, depth - 1, -MATE_SCORE, -alpha, 0, 1);
+                            }
+                        }
+                        unmake_move(b, &root_moves[i], &undo);
+
+                        if (s->aborted)
+                            break;
+
+                        root_scores[i] = score;
+                        root_moves[i].score = score;
+
+                        if (score > current_score)
+                        {
+                            current_score = score;
+                            current_best = root_moves[i];
+                            if (score > alpha)
+                            {
+                                alpha = score;
+                                s->pv_table[0][0] = root_moves[i];
+                                memcpy(&s->pv_table[0][1], s->pv_table[1], s->pv_length[1] * sizeof(Move));
+                                s->pv_length[0] = s->pv_length[1] + 1;
+                            }
+                        }
+                    }
                     break;
                 }
             }
         }
 
-        if (!s->aborted && current_score > -INF)
+        if (!s->aborted && current_score > -MATE_SCORE)
         {
             best_move = current_best;
             best_move.score = current_score;
@@ -830,7 +922,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
             }
             /* In clearly winning positions, keep full window to avoid
              * missing forced mates due to narrow aspiration. */
-            if (abs(best_score) > 1500)
+            if (abs(best_score) > MATE_SCORE - 100)
                 window = 500; /* effectively full window after first iteration */
             else
                 window = 25;
@@ -873,72 +965,48 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 }
             }
 
-            /* Early termination: stable best move with improving score */
-            if (tm.stable_count >= 3 && current_score >= prev_score - 10)
+            /* Easy move: best_move stable ≥ 3 layers and score stable (change < 10) */
+            if (tm.stable_count >= 3 && abs(current_score - prev_score) < 10 && current_score > -50)
             {
                 double em_elapsed = get_time() - tm.start_time;
-                if (em_elapsed >= tm.optimal_time * 0.3)
-                {
+                if (em_elapsed >= tm.optimal_time * 0.5)
                     early_terminate = 1;
-                }
             }
 
-            if (tm.stable_count >= 5 && current_score >= prev_score - 20)
-            {
-                double em_elapsed = get_time() - tm.start_time;
-                if (em_elapsed >= tm.optimal_time * 0.2)
-                {
-                    early_terminate = 1;
-                }
-            }
-
-            /* Improved panic mode: detect score volatility */
+            /* Stability-driven dynamic time adjustment */
             {
                 int score_drop = prev_score - current_score;
-                if (score_drop >= 25 && depth >= 4)
+                int best_move_changed = (tm.stable_count == 0 && tm.history_count > 0);
+                double time_limit;
+
+                /* Panic: score drop ≥ 100 → use maximum time */
+                if (score_drop >= 100)
                 {
+                    time_limit = tm.max_time;
                     tm.panic_flag = 1;
                 }
-                /* Recover from panic when score stabilizes or improves */
-                if (tm.panic_flag && current_score >= prev_score + 15)
+                /* Hard move: best_move changed or score drop ≥ 50 */
+                else if (best_move_changed || score_drop >= 50)
                 {
+                    time_limit = tm.optimal_time * 2.5;
                     tm.panic_flag = 0;
                 }
-            }
-
-            /* Dynamic time limit adjustment based on search state */
-            {
-                double base_limit = tm.optimal_time * 1.5;
-                double final_limit;
-
-                if (tm.panic_flag)
+                /* Normal: slightly above optimal */
+                else
                 {
-                    /* Panic: give more time to find a good move */
-                    base_limit = tm.optimal_time * 3.0;
-                }
-                else if (tm.instability_count >= 3 && depth >= 6)
-                {
-                    /* Unstable search: best move keeps changing, need more time */
-                    base_limit = tm.optimal_time * 2.5;
-                    tm.instability_count = 0; /* Reset after adjustment */
-                }
-                else if (current_score > 500 && depth >= 6)
-                {
-                    /* Winning position: can afford to spend less time */
-                    base_limit = tm.optimal_time * 1.2;
-                }
-                else if (tm.is_endgame)
-                {
-                    /* Endgame: slightly less time as positions are more concrete */
-                    base_limit = tm.optimal_time * tm.endgame_factor;
+                    time_limit = tm.optimal_time * 1.1;
+                    tm.panic_flag = 0;
                 }
 
-                /* Apply complexity factor */
-                base_limit *= tm.complexity_factor;
-
-                /* Clamp to max_time */
-                final_limit = (base_limit < tm.max_time) ? base_limit : tm.max_time;
-                s->time_limit = final_limit;
+                /* Safety cap using actual remaining time */
+                double actual_remaining = tm.remaining - (get_time() - tm.start_time);
+                if (actual_remaining < 0.01) actual_remaining = 0.01;
+                double safety_cap = actual_remaining * 0.25 + tm.increment * 0.5;
+                if (safety_cap > tm.max_time)
+                    safety_cap = tm.max_time;
+                if (time_limit > safety_cap)
+                    time_limit = safety_cap;
+                s->time_limit = time_limit;
             }
 
             prev_score = current_score;
@@ -999,6 +1067,8 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     if (out_nodes)
         *out_nodes = s->nodes;
     g_tt_generation = s->tt_generation;
+    /* Save heuristics for potential ponderhit reuse */
+    save_heuristic_snapshot(s);
     free(s_ptr);
     return best_move;
 }
@@ -1015,14 +1085,19 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
     static int params_loaded_scores = 0;
     if (!params_loaded_scores)
     {
+        int loaded_ok = 0;
         const char *env_path = getenv("ENGINE_PARAMS");
         if (env_path && env_path[0] != '\0')
         {
-            load_params_from_file(env_path);
+            loaded_ok = load_params_from_file(env_path);
         }
-        else
+        if (!loaded_ok)
         {
-            load_params_from_file("engine_params.json");
+            loaded_ok = load_params_from_file("engine_params.json");
+        }
+        if (!loaded_ok)
+        {
+            init_runtime_params_defaults();
         }
         params_loaded_scores = 1;
     }
@@ -1060,8 +1135,8 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
     int alpha, beta;
     for (depth = 1; depth <= max_depth; depth++)
     {
-        alpha = -INF;
-        beta = INF;
+        alpha = -MATE_SCORE;
+        beta = MATE_SCORE;
         for (i = 0; i < legal_moves_count; i++)
         {
             UndoInfo undo;
@@ -1114,8 +1189,19 @@ get_root_move_scores(const char *fen, double time_limit, int max_depth,
 
 /* ============================================================================
  * LAZY SMP MULTI-THREADED SEARCH
- * ============================================================================
- */
+ * ============================================================================ */
+
+/* Lazy SMP globals.
+ *
+ * Strategy: Each thread independently does iterative deepening on all
+ * root moves. Thread diversity comes from:
+ * 1. Different start_depth (1 + thread_id % 4)
+ * 2. Fisher-Yates shuffle of root moves for helpers
+ * 3. Shared TT naturally causes divergence as search progresses
+ *
+ * This is the simplest and most robust Lazy SMP approach. Dynamic work
+ * distribution and shared alpha were tested but showed no improvement
+ * over this simple approach for typical chess positions. */
 
 typedef struct
 {
@@ -1157,6 +1243,7 @@ static void smp_worker_search(LazySMPWorker *w)
     s->time_limit = w->time_limit;
     s->aborted = 0;
     s->nodes = 0;
+    s->thread_id = w->thread_id;  /* Task 6.2.1: thread diversity */
     s->tt = w->shared_tt;
     s->tt_cluster_count = w->tt_cluster_count;
     s->tt_generation = g_tt_generation;
@@ -1168,6 +1255,9 @@ static void smp_worker_search(LazySMPWorker *w)
         memcpy(s->game_history, w->game_history, sizeof(U64) * limit);
         s->game_history_count = limit;
     }
+    /* Worker 0 (main thread) restores heuristics from ponder search */
+    if (w->thread_id == 0)
+        restore_heuristic_snapshot(s);
 
     {
         U64 root_key = s->board.hash;
@@ -1200,14 +1290,34 @@ static void smp_worker_search(LazySMPWorker *w)
         return;
     }
 
+    /* Simple Lazy SMP: each thread independently searches all root moves.
+     * Diversity from: start_depth offset, Fisher-Yates shuffle, shared TT. */
+
+    /* Start depth offset provides search diversity: helpers start from
+     * a deeper depth, which causes them to explore different TT states
+     * and produce slightly different search trees than thread 0. */
     int start_depth = 1 + (w->thread_id % 4);
     int depth_step = 1;
     int smp_max_depth = w->max_depth;
     if (smp_max_depth <= 0)
-        smp_max_depth = 100; /* Unlimited - let time control the search */
+        smp_max_depth = 100;
+
+    /* Thread diversity: shuffle non-TT root moves for helpers */
+    if (w->thread_id > 0 && legal_count > 2)
+    {
+        U64 seed = (U64)w->thread_id * 0x9E3779B97F4A7C15ULL ^ s->board.hash;
+        for (i = legal_count - 1; i > 1; i--)
+        {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            int j = 1 + (int)((seed >> 33) % (unsigned)(i));
+            Move tmp = root_moves[i];
+            root_moves[i] = root_moves[j];
+            root_moves[j] = tmp;
+        }
+    }
 
     Move best_move = root_moves[0];
-    int best_score = -INF;
+    int best_score = -MATE_SCORE;
     w->best_move = best_move;
     w->best_score = best_score;
 
@@ -1224,8 +1334,8 @@ static void smp_worker_search(LazySMPWorker *w)
 
         int nodes_before = s->nodes;
         Move current_best = {0};
-        int current_score = -INF;
-        int alpha = -INF, beta = INF;
+        int current_score = -MATE_SCORE;
+        int alpha = -MATE_SCORE, beta = MATE_SCORE;
 
         for (i = 0; i < legal_count; i++)
         {
@@ -1260,7 +1370,7 @@ static void smp_worker_search(LazySMPWorker *w)
             }
         }
 
-        if (!s->aborted && !smp_get_stop() && current_score > -INF)
+        if (!s->aborted && !smp_get_stop() && current_score > -MATE_SCORE)
         {
             best_move = current_best;
             best_move.score = current_score;
@@ -1270,15 +1380,19 @@ static void smp_worker_search(LazySMPWorker *w)
             w->best_move = best_move;
             w->best_score = best_score;
 
+            /* Move the best move to position 0 for the next depth's ordering */
             for (int j = 0; j < legal_count; j++)
             {
                 if (root_moves[j].from == current_best.from &&
                     root_moves[j].to == current_best.to &&
                     root_moves[j].promotion == current_best.promotion)
                 {
-                    Move tmp = root_moves[0];
-                    root_moves[0] = root_moves[j];
-                    root_moves[j] = tmp;
+                    if (j != 0)
+                    {
+                        Move tmp = root_moves[0];
+                        root_moves[0] = root_moves[j];
+                        root_moves[j] = tmp;
+                    }
                     break;
                 }
             }
@@ -1317,14 +1431,19 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     ensure_engine_tables_initialized();
     if (!params_loaded_smp)
     {
+        int loaded_ok = 0;
         const char *env_path = getenv("ENGINE_PARAMS");
         if (env_path && env_path[0] != '\0')
         {
-            load_params_from_file(env_path);
+            loaded_ok = load_params_from_file(env_path);
         }
-        else
+        if (!loaded_ok)
         {
-            load_params_from_file("engine_params.json");
+            loaded_ok = load_params_from_file("engine_params.json");
+        }
+        if (!loaded_ok)
+        {
+            init_runtime_params_defaults();
         }
         params_loaded_smp = 1;
     }
@@ -1343,7 +1462,12 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
 
     int tt_cluster_count_smp;
     tt_init_global(128);
-    tt_clear_global();
+    if (g_preserve_tt_generation) {
+        /* Ponderhit path: keep TT entries from ponder search */
+        g_preserve_tt_generation = 0;
+    } else {
+        g_tt_generation++;  /* 替换 tt_clear_global()，递增世代让旧条目自然老化 */
+    }
     TT_Cluster *shared_tt = g_tt;
     tt_cluster_count_smp = g_tt_cluster_count;
 
@@ -1362,10 +1486,29 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     double smp_max;
     if (time_left > 0)
     {
-        smp_optimal = time_limit;
+        /* Use the same formula as init_time_manager for consistency */
+        int estimated_moves;
+        if (moves_to_go > 0)
+            estimated_moves = moves_to_go;
+        else
+        {
+            if (move_number < 10)
+                estimated_moves = 35 - move_number;
+            else if (move_number < 20)
+                estimated_moves = 25;
+            else if (move_number < 30)
+                estimated_moves = 22;
+            else if (move_number < 40)
+                estimated_moves = 18;
+            else if (move_number < 60)
+                estimated_moves = 15;
+            else
+                estimated_moves = 12;
+        }
+        smp_optimal = time_left / estimated_moves + increment * 0.5;
         smp_max = time_left * 0.4;
-        if (smp_max < smp_optimal * 3)
-            smp_max = smp_optimal * 3;
+        if (smp_max > smp_optimal * 4)
+            smp_max = smp_optimal * 4;
         if (smp_max > time_left - 0.1)
             smp_max = time_left - 0.1;
     }
@@ -1387,7 +1530,7 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
         workers[i].thread_id = i;
         workers[i].num_threads = num_threads;
         workers[i].completed_depth = 0;
-        workers[i].best_score = -INF;
+        workers[i].best_score = -MATE_SCORE;
         workers[i].nodes = 0;
         workers[i].aborted = 0;
         memset(&workers[i].best_move, 0, sizeof(Move));
@@ -1450,15 +1593,109 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     int best_score = workers[0].best_score;
     int total_nodes = workers[0].nodes;
 
+    /* Task 6.1: Save per-thread SMP statistics */
+    reset_smp_stats();
+    g_smp_stats.num_threads = num_threads;
+    for (int i = 0; i < num_threads; i++)
+    {
+        g_smp_stats.nodes_per_thread[i] = workers[i].nodes;
+        g_smp_stats.depth_per_thread[i] = workers[i].completed_depth;
+        fprintf(stderr, "  [SMP] Thread %d: %lld nodes, depth %d\n",
+                i, (long long)workers[i].nodes, workers[i].completed_depth);
+    }
+
+    /* Task 6.2.3: Weighted voting mechanism for SMP result merging.
+     * All workers that reached best_depth or best_depth-1 participate.
+     * Vote weight = completed_depth. This favors consensus among workers
+     * while still giving more weight to deeper searches. */
     for (int i = 1; i < num_threads; i++)
     {
         total_nodes += workers[i].nodes;
-        if (workers[i].completed_depth > best_depth ||
-            (workers[i].completed_depth == best_depth && workers[i].best_score > best_score))
-        {
-            best_move = workers[i].best_move;
+        if (workers[i].completed_depth > best_depth)
             best_depth = workers[i].completed_depth;
-            best_score = workers[i].best_score;
+    }
+
+    /* Build vote table */
+    typedef struct { int from, to, promo; int total_weight; int best_score; int max_depth; } MoveVote;
+    MoveVote votes[MAX_MOVES];
+    int vote_count = 0;
+
+    for (int i = 0; i < num_threads; i++)
+    {
+        if (workers[i].completed_depth < best_depth - 1) continue;
+        int weight = workers[i].completed_depth > 0 ? workers[i].completed_depth : 1;
+        int found = 0;
+        for (int v = 0; v < vote_count; v++)
+        {
+            if (votes[v].from == workers[i].best_move.from &&
+                votes[v].to == workers[i].best_move.to &&
+                votes[v].promo == workers[i].best_move.promotion)
+            {
+                votes[v].total_weight += weight;
+                if (workers[i].best_score > votes[v].best_score)
+                    votes[v].best_score = workers[i].best_score;
+                if (workers[i].completed_depth > votes[v].max_depth)
+                    votes[v].max_depth = workers[i].completed_depth;
+                found = 1;
+                break;
+            }
+        }
+        if (!found && vote_count < MAX_MOVES)
+        {
+            votes[vote_count].from = workers[i].best_move.from;
+            votes[vote_count].to = workers[i].best_move.to;
+            votes[vote_count].promo = workers[i].best_move.promotion;
+            votes[vote_count].total_weight = weight;
+            votes[vote_count].best_score = workers[i].best_score;
+            votes[vote_count].max_depth = workers[i].completed_depth;
+            vote_count++;
+        }
+    }
+
+    /* Select move with highest total vote weight */
+    if (vote_count > 0)
+    {
+        int best_weight = -1;
+        int best_vote_idx = 0;
+        for (int v = 0; v < vote_count; v++)
+        {
+            if (votes[v].total_weight > best_weight)
+            {
+                best_weight = votes[v].total_weight;
+                best_vote_idx = v;
+            }
+        }
+        /* Find the worker with the deepest search for this winning move */
+        for (int i = 0; i < num_threads; i++)
+        {
+            if (workers[i].best_move.from == votes[best_vote_idx].from &&
+                workers[i].best_move.to == votes[best_vote_idx].to &&
+                workers[i].best_move.promotion == votes[best_vote_idx].promo)
+            {
+                if (workers[i].completed_depth >= best_depth)
+                {
+                    best_move = workers[i].best_move;
+                    best_score = workers[i].best_score;
+                    break;
+                }
+            }
+        }
+    }
+    else
+    {
+        /* Fallback: use original deepest-worker selection */
+        best_move = workers[0].best_move;
+        best_score = workers[0].best_score;
+        best_depth = workers[0].completed_depth;
+        for (int i = 1; i < num_threads; i++)
+        {
+            if (workers[i].completed_depth > best_depth ||
+                (workers[i].completed_depth == best_depth && workers[i].best_score > best_score))
+            {
+                best_move = workers[i].best_move;
+                best_depth = workers[i].completed_depth;
+                best_score = workers[i].best_score;
+            }
         }
     }
 

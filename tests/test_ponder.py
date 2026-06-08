@@ -150,7 +150,7 @@ class TestPonder(unittest.TestCase):
         self.assertNotEqual(func_start, -1, "未找到cmd_ponderhit函数")
         
         # 提取函数内容（简化版本，只检查关键逻辑）
-        func_content = content[func_start:func_start + 1000]
+        func_content = content[func_start:func_start + 1500]
         
         # 验证关键逻辑
         self.assertIn("g_ponderhit_received = 1", func_content, "未设置g_ponderhit_received标志")
