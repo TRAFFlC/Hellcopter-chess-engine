@@ -18,12 +18,49 @@ DEFAULT_ENGINE_ID = os.environ.get("HELLCOPTER_ENGINE", "hellcopter")
 
 game = GameState(move_time=DEFAULT_MOVE_TIME)
 
+# 游戏代际计数器，用于防止新游戏开始后旧引擎搜索结果被误用
+_game_gen = 0
+# 当前引擎思考线程引用，用于 new_game 时等待其完成
+_engine_thread = None
+
 _engine_obj, _engine_entry = resolve_engine(DEFAULT_ENGINE_ID)
 if _engine_obj:
     engine = _engine_obj
 else:
     engine = Engine(ENGINE_PATH)
     engine.syzygy_path = _detect_syzygy_path()
+
+_engine_started = False
+
+
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """引擎健康检查端点"""
+    engine_alive = engine.is_alive() if engine.process else False
+    dll_loaded = False
+    try:
+        import engine_wrapper
+        dll_loaded = engine_wrapper.is_loaded()
+    except Exception:
+        pass
+    return jsonify({
+        "engine_alive": engine_alive,
+        "dll_loaded": dll_loaded,
+        "engine_started": _engine_started,
+        "engine_path": getattr(engine, 'engine_path', 'unknown'),
+    })
+
+
+@app.route("/api/lock_test", methods=["POST"])
+def lock_test():
+    """测试锁是否正常"""
+    import time as _time
+    _t0 = _time.time()
+    acquired = match_lock.acquire(timeout=5)
+    elapsed = _time.time() - _t0
+    if acquired:
+        match_lock.release()
+    return jsonify({"acquired": acquired, "elapsed": round(elapsed, 4)})
 
 
 @app.route("/")
@@ -41,9 +78,11 @@ def get_state():
 def make_move():
     data = request.json
     uci_move = data.get("move", "")
+    print(f"[WEB] make_move: uci={uci_move}")
 
     with game.lock:
         if game.engine_thinking or game.game_over:
+            print(f"[WEB] make_move: rejected, engine_thinking={game.engine_thinking}, game_over={game.game_over}")
             return jsonify({"error": "无法走棋"}), 400
 
         current = "w" if len(game.move_history) % 2 == 0 else "b"
@@ -64,17 +103,32 @@ def make_move():
         move_time = game.move_time
 
     def engine_think():
+        gen = _game_gen
+        print(f"[WEB] engine_think: started, gen={gen}, move_history={game.move_history}")
         try:
             best = engine.get_best_move(game.move_history, move_time)
-        except Exception:
+            print(f"[WEB] engine_think: got best={best}")
+        except Exception as e:
+            print(f"[WEB] engine_think: exception {e}")
             best = None
         with game.lock:
             game.engine_thinking = False
+            if gen != _game_gen:
+                print(f"[WEB] engine_think: gen mismatch {gen}!={_game_gen}, discarding")
+                return
             if best and best != "0000" and len(best) >= 4:
-                try:
-                    game.make_move(best)
-                    game.check_game_over()
-                except Exception:
+                legal = game.get_legal_moves()
+                if best in legal:
+                    try:
+                        game.make_move(best)
+                        game.check_game_over()
+                        print(f"[WEB] engine_think: applied move {best}, history={game.move_history}")
+                    except Exception as e:
+                        print(f"[WEB] engine_think: make_move error {e}")
+                        game.game_over = True
+                        game.game_result = "引擎返回了非法走法"
+                else:
+                    print(f"[WEB] engine_think: illegal move {best}, legal={legal[:5]}...")
                     game.game_over = True
                     game.game_result = "引擎返回了非法走法"
             else:
@@ -85,6 +139,8 @@ def make_move():
 
     t = threading.Thread(target=engine_think, daemon=True)
     t.start()
+    global _engine_thread
+    _engine_thread = t
 
     with game.lock:
         return jsonify(game.to_dict())
@@ -92,33 +148,89 @@ def make_move():
 
 @app.route("/api/new_game", methods=["POST"])
 def new_game():
+    global _game_gen, _engine_thread, _engine_started
     data = request.json or {}
     player_color = data.get("playerColor", "w")
     move_time = data.get("moveTime", DEFAULT_MOVE_TIME)
+    print(f"[WEB] new_game: playerColor={player_color}, moveTime={move_time}")
+
+    # 引擎健康检查
+    if not _engine_started or not engine.is_alive():
+        print(f"[WEB] new_game: engine not alive, attempting restart...")
+        try:
+            if engine.process and engine.is_alive():
+                engine.quit()
+            ok = engine.start()
+            if ok:
+                _engine_started = True
+                print(f"[WEB] new_game: engine restarted successfully")
+            else:
+                print(f"[WEB] new_game: engine restart FAILED")
+                return jsonify({"error": "引擎无法启动，请检查 engine_core.dll 是否存在并重新编译", "gameOver": True, "gameResult": "引擎无法启动"}), 500
+        except Exception as e:
+            print(f"[WEB] new_game: engine restart exception: {e}")
+            return jsonify({"error": f"引擎启动异常: {e}", "gameOver": True, "gameResult": "引擎无法启动"}), 500
 
     with game.lock:
         game.reset()
         game.player_color = player_color
         game.move_time = move_time
+        game.engine_thinking = False
+        _game_gen += 1
+        print(f"[WEB] new_game: game reset, _game_gen={_game_gen}")
 
+    # 如果引擎正在搜索，先发送 stop 中断搜索，然后等待引擎线程完成
+    if engine._searching:
+        print(f"[WEB] new_game: engine is searching, sending stop...")
+        engine.send("stop")
+
+    # 等待引擎思考线程完成（最多3秒）
+    if _engine_thread is not None and _engine_thread.is_alive():
+        print(f"[WEB] new_game: waiting for engine thread to finish...")
+        _engine_thread.join(timeout=3)
+        if _engine_thread.is_alive():
+            print(f"[WEB] new_game: WARNING - engine thread still alive after 3s")
+        else:
+            print(f"[WEB] new_game: engine thread finished")
+    _engine_thread = None
+
+    # 现在引擎已空闲，安全调用 new_game
+    print(f"[WEB] new_game: calling engine.new_game()...")
     engine.new_game()
+    print(f"[WEB] new_game: engine.new_game() done")
 
     if player_color == "b":
         with game.lock:
             game.engine_thinking = True
+        print(f"[WEB] new_game: starting engine_first thread")
 
         def engine_first():
+            gen = _game_gen
+            print(f"[WEB] engine_first: started, gen={gen}")
             try:
                 best = engine.get_best_move([], move_time)
-            except Exception:
+                print(f"[WEB] engine_first: got best={best}")
+            except Exception as e:
+                print(f"[WEB] engine_first: exception {e}")
                 best = None
             with game.lock:
                 game.engine_thinking = False
+                if gen != _game_gen:
+                    print(f"[WEB] engine_first: gen mismatch {gen}!={_game_gen}, discarding")
+                    return
                 if best and best != "0000" and len(best) >= 4:
-                    try:
-                        game.make_move(best)
-                        game.check_game_over()
-                    except Exception:
+                    legal = game.get_legal_moves()
+                    if best in legal:
+                        try:
+                            game.make_move(best)
+                            game.check_game_over()
+                            print(f"[WEB] engine_first: applied move {best}, history={game.move_history}")
+                        except Exception as e:
+                            print(f"[WEB] engine_first: make_move error {e}")
+                            game.game_over = True
+                            game.game_result = "引擎返回了非法走法"
+                    else:
+                        print(f"[WEB] engine_first: illegal move {best}, legal={legal[:5]}...")
                         game.game_over = True
                         game.game_result = "引擎返回了非法走法"
                 else:
@@ -129,9 +241,12 @@ def new_game():
 
         t = threading.Thread(target=engine_first, daemon=True)
         t.start()
+        _engine_thread = t
 
     with game.lock:
-        return jsonify(game.to_dict())
+        result = game.to_dict()
+        print(f"[WEB] new_game: returning, engineThinking={result['engineThinking']}, gameOver={result['gameOver']}")
+        return jsonify(result)
 
 
 @app.route("/api/undo", methods=["POST"])
@@ -207,6 +322,7 @@ def get_engines():
 
 @app.route("/api/match/start", methods=["POST"])
 def start_match():
+    print("[WEB] start_match: BEGIN", flush=True)
     data = request.json or {}
     time_base = data.get("timeBase", 96000)
     time_inc = data.get("timeInc", 800)
@@ -215,9 +331,10 @@ def start_match():
     engine2_id = data.get("engine2Id", "hellcopter")
     engine1_opts = data.get("engine1Options", {})
     engine2_opts = data.get("engine2Options", {})
+    print(f"[WEB] start_match: e1={engine1_id} e2={engine2_id}", flush=True)
 
     with match_lock:
-        if match_state["active"]:
+        if match_state.active:
             return jsonify({"error": "对弈正在进行中"}), 400
 
     extra_opts = {}
@@ -246,34 +363,30 @@ def start_match():
 
     e1_name = next((e["name"] for e in ENGINE_REGISTRY if e["id"] == engine1_id), engine1_id)
     e2_name = next((e["name"] for e in ENGINE_REGISTRY if e["id"] == engine2_id), engine2_id)
+    print(f"[WEB] start_match: calling init_match...", flush=True)
 
-    with match_lock:
-        match_state["active"] = True
-        match_state["game_over"] = False
-        match_state["game_result"] = "正在启动..."
-        match_state["score1"] = 0
-        match_state["score2"] = 0
-        match_state["games_played"] = 0
-        match_state["total_games"] = total_games
-        match_state["time_base"] = time_base
-        match_state["time_inc"] = time_inc
+    match_state.init_match(time_base, time_inc, total_games)
+    print(f"[WEB] start_match: init_match done, getting response_data...", flush=True)
+
+    # 先获取响应数据，再启动线程，避免线程中的锁竞争阻塞响应
+    response_data = match_board_to_dict()
+    print(f"[WEB] start_match: response_data ready, starting thread...", flush=True)
 
     t = threading.Thread(target=run_engine_match, args=(
         engine1_id, engine2_id, e1_name, e2_name,
         time_base, time_inc, total_games, extra_opts
     ), daemon=True)
     t.start()
+    print(f"[WEB] start_match: thread started, returning response", flush=True)
 
-    return jsonify(match_board_to_dict())
+    return jsonify(response_data)
 
 
 @app.route("/api/match/stop", methods=["POST"])
 def stop_match():
-    with match_lock:
-        match_state["active"] = False
-        if not match_state.get("game_over"):
-            match_state["game_over"] = True
-            match_state["game_result"] = "手动停止对弈"
+    match_state.set_active(False)
+    if not match_state.game_over:
+        match_state.set_game_over(True, "手动停止对弈")
     return jsonify(match_board_to_dict())
 
 
@@ -283,6 +396,7 @@ if __name__ == "__main__":
         print(f"警告: {engine_name} 引擎无法启动，人机对弈模式不可用")
         print("引擎对弈模式仍可正常使用")
     else:
+        _engine_started = True
         print(f"{engine_name} 引擎已就绪")
 
     os.makedirs("web_static", exist_ok=True)
@@ -300,6 +414,6 @@ if __name__ == "__main__":
     print("=" * 52)
 
     try:
-        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False, threaded=True)
     finally:
         engine.quit()

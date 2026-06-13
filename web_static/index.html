@@ -178,6 +178,8 @@ body {
       <button class="btn btn-outline" onclick="undoMove()">撤销走法</button>
       <button class="btn btn-outline" onclick="window.location='/match'">引擎对弈</button>
     </div>
+    <div id="debugPanel" style="margin-top:8px;padding:6px;background:#111;border:1px solid #333;border-radius:4px;font-size:11px;color:#8b949e;font-family:monospace;max-height:120px;overflow-y:auto;word-break:break-all;"></div>
+    <div id="errorBanner" style="display:none;margin-top:8px;padding:10px;background:#3d1111;border:1px solid #f85149;border-radius:6px;font-size:13px;color:#f85149;font-weight:600;text-align:center;"></div>
   </div>
 </div>
 
@@ -186,6 +188,23 @@ const PIECE_GLYPHS = {
   K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658', P: '\u2659',
   k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F'
 };
+
+function dbg(msg) {
+  console.log('[DBG] ' + msg);
+  const el = document.getElementById('debugPanel');
+  if (el) { el.innerHTML += msg + '<br>'; el.scrollTop = el.scrollHeight; }
+}
+
+function showError(msg) {
+  dbg('ERROR: ' + msg);
+  const el = document.getElementById('errorBanner');
+  if (el) { el.textContent = msg; el.style.display = 'block'; }
+}
+
+function clearError() {
+  const el = document.getElementById('errorBanner');
+  if (el) { el.style.display = 'none'; }
+}
 
 let state = null, selectedSquare = null, engineThinking = false, pollTimer = null;
 
@@ -279,6 +298,7 @@ function renderHistory() {
 }
 
 function onSquareClick(r, c) {
+  if (!state) { console.error('[DBG] onSquareClick: state is null'); return; }
   if (state.gameOver || engineThinking) return;
   if (state.currentTurn !== state.playerColor) return;
   if (selectedSquare && selectedSquare.r == r && selectedSquare.c == c) {
@@ -313,38 +333,55 @@ function onSquareClick(r, c) {
 async function poll() {
   try {
     const res = await fetch('/api/state');
+    if (!res.ok) throw new Error('API返回 ' + res.status);
     const newState = await res.json();
     if (JSON.stringify(newState) !== JSON.stringify(state)) {
       state = newState; engineThinking = state.engineThinking;
       if (!state.engineThinking) selectedSquare = null;
       render();
     }
-  } catch (e) {}
+  } catch (e) { dbg('poll error: ' + e.message); }
 }
 
 async function makeMove(uci) {
+  dbg('makeMove: ' + uci);
   engineThinking = true; render();
   try {
     const res = await fetch('/api/move', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ move: uci })
     });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error('API ' + res.status + ': ' + errText.substring(0, 200));
+    }
     state = await res.json();
+    if (state.error) { showError('走法错误: ' + state.error); }
+    else { clearError(); dbg('makeMove ok, thinking=' + state.engineThinking); }
     engineThinking = state.engineThinking; selectedSquare = null;
     render();
-  } catch (e) { engineThinking = false; render(); }
+  } catch (e) { showError('走法失败: ' + e.message); engineThinking = false; render(); }
 }
 
 async function newGame(color) {
+  dbg('newGame: color=' + color);
+  clearError();
   engineThinking = false; selectedSquare = null;
+  document.getElementById('status').textContent = '正在启动新对局...';
   try {
     const res = await fetch('/api/new_game', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerColor: color, moveTime: 3000 })
     });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error('API ' + res.status + ': ' + errText.substring(0, 200));
+    }
     state = await res.json();
+    if (state.error) { showError('启动失败: ' + state.error); }
+    else { clearError(); dbg('newGame ok: thinking=' + state.engineThinking + ' turn=' + state.currentTurn + ' color=' + state.playerColor); }
     engineThinking = state.engineThinking; render();
-  } catch (e) {}
+  } catch (e) { showError('无法启动对局: ' + e.message); document.getElementById('status').textContent = '连接失败'; }
 }
 
 async function undoMove() {
@@ -356,7 +393,22 @@ async function undoMove() {
   } catch (e) {}
 }
 
-(async function init() { await poll(); pollTimer = setInterval(poll, 300); })();
+(async function init() {
+  dbg('page init');
+  try {
+    const healthRes = await fetch('/api/health');
+    const health = await healthRes.json();
+    dbg('health: engine=' + health.engine_alive + ' dll=' + health.dll_loaded);
+    if (!health.engine_alive) {
+      showError('引擎未运行! 请重启服务器。engine_alive=' + health.engine_alive);
+    }
+  } catch (e) {
+    showError('无法连接服务器! 请确认 web_chess.py 已启动。' + e.message);
+  }
+  await poll();
+  dbg('first poll done, state=' + (state ? 'ok' : 'null'));
+  pollTimer = setInterval(poll, 300);
+})();
 </script>
 </body>
 </html>

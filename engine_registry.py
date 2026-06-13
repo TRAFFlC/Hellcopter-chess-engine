@@ -32,7 +32,14 @@ def _make_hellcopter(name):
     params_path = os.path.join(BASE_DIR, "engine_params.json")
     if os.path.isfile(params_path):
         env["ENGINE_PARAMS"] = params_path
-    eng = Engine(HELLCOPTER_EXE_PATH, protocol="uci", init_env=env)
+    # 优先使用 Python 直接运行 uci_engine.py（确保使用最新代码和开局库）
+    # 仅在 engine_core.dll 不存在时回退到打包的 exe
+    uci_script = os.path.join(BASE_DIR, "uci_engine.py")
+    if os.path.isfile(uci_script):
+        import sys
+        eng = Engine(sys.executable, engine_args=[uci_script], protocol="uci", init_env=env)
+    else:
+        eng = Engine(HELLCOPTER_EXE_PATH, protocol="uci", init_env=env)
     eng._syzygy_path = _detect_syzygy_path()
     return eng
 

@@ -14,6 +14,9 @@
 #else
 #include <pthread.h>
 #include <stdatomic.h>
+#ifndef LONG
+#define LONG long
+#endif
 #endif
 
 #ifdef _MSC_VER
@@ -23,7 +26,7 @@
 #define POPCNT64(x) ((int)__builtin_popcountll(x))
 #endif
 
-#define INF 1000000
+#define INF INF_SCORE
 #define EVAL_SCORE_INVALID 9999999
 /* MATE_SCORE and DELTA now defined in engine_params.h */
 #define MAX_MOVES 256
@@ -73,8 +76,10 @@ static RuntimeParams g_runtime_params = {0};
 
 void set_num_threads(int n)
 {
-    if (n < 1) n = 1;
-    if (n > 64) n = 64;
+    if (n < 1)
+        n = 1;
+    if (n > 64)
+        n = 64;
     g_runtime_params.num_threads = n;
     g_runtime_params.threading_enabled = (n > 1) ? 1 : 0;
 }
@@ -118,33 +123,18 @@ static U64 zobrist_table[12 * 64 + 1 + 4 + 64];
 static int zobrist_initialized = 0;
 static int attacks_initialized = 0;
 
-static const int knight_mob_mg[9] = {-38, -19, -8, 0, 6, 11, 17, 21, 25};
-static const int knight_mob_eg[9] = {-30, -15, -4, 4, 9, 14, 19, 23, 26};
-static const int bishop_mob_mg[14] = {-30, -15, -6, 0, 6, 11, 15, 19, 22, 25, 27, 29, 29, 30};
-static const int bishop_mob_eg[14] = {-23, -11, -4, 2, 8, 12, 17, 20, 23, 25, 26, 28, 29, 29};
-static const int rook_mob_mg[15] = {-23, -11, -4, 0, 4, 8, 11, 14, 17, 19, 21, 23, 24, 25, 26};
-static const int rook_mob_eg[15] = {-19, -9, -2, 2, 6, 10, 14, 17, 20, 22, 23, 25, 26, 27, 28};
-static const int queen_mob_mg[28] = {-15, -8, -2, 2, 5, 8, 11, 13, 15, 17, 19, 20, 22, 23, 25, 26, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36};
-static const int queen_mob_eg[28] = {-11, -5, -1, 3, 6, 9, 12, 14, 17, 19, 20, 22, 23, 25, 26, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36};
+/* Mobility tables now defined in engine_params.h */
 
-static const int king_danger_table[128] = {
-    0, 0, 0, 0, 0, 0, 5, 10, 15, 25, 35, 50, 70, 95, 125, 160,
-    200, 245, 295, 350, 410, 475, 545, 620, 700, 785, 875, 970, 1070, 1175, 1285, 1400,
-    1520, 1645, 1775, 1910, 2050, 2195, 2345, 2500, 2660, 2825, 2995, 3170, 3350, 3535, 3725, 3920,
-    4120, 4325, 4535, 4750, 4970, 5195, 5425, 5660, 5900, 6145, 6395, 6650, 6910, 7175, 7445, 7720,
-    8000, 8285, 8575, 8870, 9170, 9475, 9785, 10100, 10420, 10745, 11075, 11410, 11750, 12095, 12445, 12800,
-    13160, 13525, 13895, 14270, 14650, 15035, 15425, 15820, 16220, 16625, 17035, 17450, 17870, 18295, 18725, 19160,
-    19600, 20045, 20495, 20950, 21410, 21875, 22345, 22820, 23300, 23785, 24275, 24770, 25270, 25775, 26285, 26800,
-    27320, 27845, 28375, 28910, 29450, 29995, 30545, 31100, 31660, 32225, 32795, 33370, 33950, 34535, 35125, 35720};
+/* king_danger_table now defined in engine_params.h */
 
-static int lmr_table[64][64];
+static int lmr_table[128][64];
 
 static void init_lmr_table(void)
 {
     int d, m;
-    for (d = 1; d < 64; d++)
+    for (d = 1; d < 128; d++)
         for (m = 1; m < 64; m++)
-            lmr_table[d][m] = (int)(0.75 + log((double)d) * log((double)m) / 2.25);
+            lmr_table[d][m] = (int)(LMR_BASE + log((double)d) * log((double)m) / LMR_DIVISOR);
 }
 
 typedef struct
@@ -153,10 +143,10 @@ typedef struct
     int score;
 } PawnTTEntry;
 
-#define PAWN_HASH_SIZE (1 << 18)
+#define PAWN_HASH_SIZE (1 << PAWN_HASH_SIZE_EXP)
 static PawnTTEntry pawn_hash_table[PAWN_HASH_SIZE];
 
-#define MAX_BLUNDER_ENTRIES 10000
+/* MAX_BLUNDER_ENTRIES now defined in engine_params.h */
 
 typedef struct
 {
@@ -586,6 +576,17 @@ static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
     if (move_num < g_runtime_params.lmr_move_threshold)
         return 0;
 
+    /* Exclude good captures (SEE >= 0) from LMR.
+     * Their score is computed during move ordering: score >= 1000000 means
+     * SEE >= 0 (see negamax scoring phase). These moves are tactical and
+     * should be searched at full depth, not reduced. */
+    if (move->capture && move->score >= 1000000)
+        return 0;
+
+    /* Exclude promotions from LMR — they are always critical. */
+    if (move->promotion)
+        return 0;
+
     return 1;
 }
 
@@ -594,7 +595,7 @@ static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
 static int is_clearly_winning(const Board *b, int static_eval)
 {
     /* If we're winning by more than a queen, we're clearly winning */
-    if (static_eval > 2000)
+    if (static_eval > CLEARLY_WINNING_THRESHOLD)
         return 1;
     return 0;
 }
@@ -641,9 +642,9 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
         reduction = (reduction > 1) ? reduction - 1 : 0;
 
     int hist_val = s->history[move->from][move->to];
-    if (hist_val > 500)
+    if (hist_val > LMR_HISTORY_THRESHOLD)
         reduction -= 1;
-    if (hist_val < -500)
+    if (hist_val < -LMR_HISTORY_THRESHOLD)
         reduction += 1;
 
     if (reduction < 0)
@@ -687,7 +688,7 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
     if (!g_runtime_params.futility_enabled)
         return 0;
 
-    if (ply > 5 || ply <= 0)
+    if (depth > 5 || depth <= 0)
         return 0;
 
     if (move_num == 0)
@@ -708,12 +709,12 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
     /* Disable futility pruning in clearly winning positions to avoid
      * missing forced mates. When we're winning by a large margin,
      * even "futile" moves might be part of a mating sequence. */
-    if (static_eval > 2000)
+    if (static_eval > FUTILITY_WINNING_THRESHOLD)
         return 0;
 
     int margin = g_runtime_params.futility_margin_base * depth;
     if (is_endgame)
-        margin = margin * 2 / 3;
+        margin = margin * FUTILITY_EG_MARGIN_NUM / FUTILITY_EG_MARGIN_DEN;
 
     if (static_eval + margin <= alpha)
     {
@@ -782,6 +783,11 @@ static int count_bits(U64 bb)
 
 static int lsb_index(U64 bb)
 {
+    /* Guard against undefined behavior: __builtin_ctzll(0) is UB per C standard.
+     * Return 64 (invalid square) for empty bitboard, which is safer than
+     * unpredictable compiler-optimized behavior. */
+    if (bb == 0)
+        return 64;
     return __builtin_ctzll(bb);
 }
 

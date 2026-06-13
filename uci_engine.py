@@ -201,6 +201,9 @@ class UCIEngine:
                 i += 1
 
         infinite = "infinite" in tokens
+        pondering = "ponder" in tokens
+        if pondering:
+            infinite = True
         optimal_time, max_time, remaining, inc = self._compute_time(params)
         
         # 出书后的时间调整：刚离开开局库时大幅减少思考时间
@@ -302,7 +305,7 @@ class UCIEngine:
                         time_left=0.0, increment=0.0, moves_to_go=0, move_number=0,
                         gen=0):
         if infinite:
-            search_time = 2.0
+            search_time = 3600.0  # ponder/infinite: 搜索直到收到 stop
         else:
             search_time = time_limit
 
@@ -352,8 +355,9 @@ class UCIEngine:
         else:
             self.send("bestmove 0000")
 
-    def _stop_search(self):
-        self._search_gen += 1
+    def _stop_search(self, discard=True):
+        if discard:
+            self._search_gen += 1
         self.stop_event.set()
         self.eng.search_aborted = True
         engine_wrapper.set_engine_abort(1)
@@ -365,8 +369,26 @@ class UCIEngine:
         self.search_thread = None
 
     def cmd_stop(self):
-        self._stop_search()
-        self.send("bestmove 0000")
+        # UCI stop: 如果搜索线程正在运行，让它输出当前找到的最佳走法
+        # 关键：不递增 _search_gen，这样搜索线程的 gen 检查会通过
+        if self.search_thread is not None and self.search_thread.is_alive():
+            # 搜索仍在运行，设置 abort 并等待线程完成
+            self.stop_event.set()
+            self.eng.search_aborted = True
+            engine_wrapper.set_engine_abort(1)
+            self.search_thread.join(timeout=3.0)
+            engine_wrapper.set_engine_abort(0)
+            if self.search_thread.is_alive():
+                # 线程未在3秒内停止，递增 gen 丢弃其结果，输出兜底
+                self._search_gen += 1
+                self.search_thread = None
+                self.send("bestmove 0000")
+            else:
+                # 线程已停止，它应该已经输出了 bestmove（gen 匹配）
+                self.search_thread = None
+        else:
+            # 搜索已完成或未启动，bestmove 已由 _search_worker 输出
+            self.search_thread = None
 
     def cmd_setoption(self, args):
         tokens = args.split()

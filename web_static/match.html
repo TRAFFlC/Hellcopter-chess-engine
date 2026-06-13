@@ -435,6 +435,9 @@ body {
       <span class="fen-text" id="fenText">FEN: --</span>
       <button class="btn-fen" id="btnFen" onclick="copyFEN()" title="复制FEN">📋</button>
     </div>
+
+    <div id="errorBanner" style="display:none;padding:10px;background:#3d1111;border:1px solid #f85149;border-radius:6px;font-size:13px;color:#f85149;font-weight:600;text-align:center;"></div>
+    <div id="debugPanel" style="margin-top:4px;padding:6px;background:#111;border:1px solid #333;border-radius:4px;font-size:11px;color:#8b949e;font-family:monospace;max-height:100px;overflow-y:auto;word-break:break-all;"></div>
   </div>
 </div>
 
@@ -443,6 +446,23 @@ const PIECE_GLYPHS = {
   K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658', P: '\u2659',
   k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F'
 };
+
+function dbg(msg) {
+  console.log('[MATCH-DBG] ' + msg);
+  const el = document.getElementById('debugPanel');
+  if (el) { el.innerHTML += msg + '<br>'; el.scrollTop = el.scrollHeight; }
+}
+
+function showError(msg) {
+  dbg('ERROR: ' + msg);
+  const el = document.getElementById('errorBanner');
+  if (el) { el.textContent = msg; el.style.display = 'block'; }
+}
+
+function clearError() {
+  const el = document.getElementById('errorBanner');
+  if (el) { el.style.display = 'none'; }
+}
 
 let state = null, evtSource = null, engines = [];
 let clockInterval = null;
@@ -626,8 +646,10 @@ document.getElementById('velvetLimitCheck').onchange = function() {
 };
 
 async function startMatch() {
+  clearError();
   const e1Id = document.getElementById('engine1Select').value;
   const e2Id = document.getElementById('engine2Select').value;
+  dbg('startMatch: e1=' + e1Id + ' e2=' + e2Id);
   const limitV = document.getElementById('velvetLimitCheck').checked;
   const body = {
     totalGames: parseInt(document.getElementById('totalGames').value) || 5,
@@ -643,14 +665,28 @@ async function startMatch() {
     body.velvetLimitStrength2 = limitV;
     body.velvetElo2 = parseInt(document.getElementById('velvetEloSlider').value) || 2000;
   }
+  document.getElementById('statusText').textContent = '正在启动对弈...';
   try {
     const res = await fetch('/api/match/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    dbg('startMatch: API status=' + res.status);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error('API ' + res.status + ': ' + errText.substring(0, 200));
+    }
     state = await res.json();
+    if (state.error) {
+      showError('对弈启动失败: ' + state.error);
+    } else {
+      dbg('startMatch: ok, active=' + state.active);
+    }
     render();
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    showError('无法启动对弈: ' + e.message);
+    document.getElementById('statusText').textContent = '启动失败';
+  }
 }
 
 async function stopMatch() {
@@ -659,11 +695,15 @@ async function stopMatch() {
 
 function connectSSE() {
   if (evtSource) evtSource.close();
+  dbg('connectSSE: connecting...');
   evtSource = new EventSource('/api/match/stream');
   evtSource.onmessage = function(e) {
-    try { state = JSON.parse(e.data); render(); } catch (ex) {}
+    try { state = JSON.parse(e.data); render(); } catch (ex) { dbg('SSE parse err: ' + ex.message); }
   };
-  evtSource.onerror = function() { setTimeout(connectSSE, 2000); };
+  evtSource.onerror = function(e) {
+    dbg('SSE error, reconnecting in 2s...');
+    setTimeout(connectSSE, 2000);
+  };
 }
 
 function updateOptionsVisibility() {
@@ -675,7 +715,9 @@ function updateOptionsVisibility() {
 async function loadEngines() {
   try {
     const res = await fetch('/api/engines');
+    if (!res.ok) throw new Error('API ' + res.status);
     engines = await res.json();
+    dbg('loadEngines: got ' + engines.length + ' engines');
     const s1 = document.getElementById('engine1Select');
     const s2 = document.getElementById('engine2Select');
     s1.innerHTML = ''; s2.innerHTML = '';
@@ -691,20 +733,27 @@ async function loadEngines() {
     s1.value = 'monarch';
     const hcIdx = engines.findIndex(e => e.id === 'hellcopter');
     s2.value = hcIdx >= 0 ? 'hellcopter' : (engines[1] ? engines[1].id : '');
+    dbg('loadEngines: s1=' + s1.value + ' s2=' + s2.value);
     s1.onchange = updateOptionsVisibility;
     s2.onchange = updateOptionsVisibility;
     updateOptionsVisibility();
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    dbg('loadEngines err: ' + e.message);
+    showError('无法加载引擎列表: ' + e.message);
+  }
 }
 
 (async function init() {
+  dbg('match page init');
   try {
     const res = await fetch('/api/match/state');
     state = await res.json();
+    dbg('init: got state, active=' + state.active + ' board=' + (state.board ? 'yes' : 'no'));
     if (state.board) render();
-  } catch (e) {}
+  } catch (e) { dbg('init state err: ' + e.message); }
   await loadEngines();
   connectSSE();
+  dbg('init complete');
 })();
 </script>
 </body>

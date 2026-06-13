@@ -9,7 +9,7 @@ static int mvv_lva(const Board *b, const Move *m)
     /* Using piece values from engine_params.h */
     static const int mvv[7] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, KING_VALUE};
     int from_piece = piece_on_square(b, m->from);
-    return mvv[m->capture] * 10 - piece_values[from_piece];
+    return mvv[m->capture] * MVV_LVA_SCALE - piece_values[from_piece];
 }
 
 static int compare_moves_desc(const void *a, const void *b)
@@ -278,7 +278,7 @@ static int see_piece_value(int piece)
     case QUEEN:
         return QUEEN_VALUE;
     case KING:
-        return 10000;
+        return SEE_KING_VALUE;
     default:
         return 0;
     }
@@ -673,7 +673,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         /* Give TT move the highest priority for better move ordering */
         if (tt_move.from != 0 && moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
         {
-            moves[i].score = 100000;
+            moves[i].score = QS_TT_MOVE_SCORE;
         }
     }
 
@@ -695,7 +695,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             int captured_value = piece_values[moves[i].capture];
             if (moves[i].promotion)
                 captured_value += piece_values[moves[i].promotion] - piece_values[PAWN];
-            if (stand_pat_val + captured_value + 200 < alpha)
+            if (stand_pat_val + captured_value + QS_DELTA_MARGIN < alpha)
                 continue;
         }
 
@@ -1039,18 +1039,18 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     {
         if (moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
         {
-            moves[i].score = 2000000;
+            moves[i].score = TT_MOVE_SCORE;
         }
         else if (moves[i].capture)
         {
             int see_val = see(b, moves[i].from, moves[i].to);
             if (see_val >= 0)
             {
-                moves[i].score = 1000000 + see_val * 10 + mvv_lva(b, &moves[i]);
+                moves[i].score = GOOD_CAPTURE_BASE + see_val * MVV_LVA_SCALE + mvv_lva(b, &moves[i]);
             }
             else
             {
-                moves[i].score = 200000 + see_val;
+                moves[i].score = BAD_CAPTURE_BASE + see_val;
             }
         }
         else
@@ -1062,7 +1062,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 {
                     if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
                     {
-                        moves[i].score = 40000 - k1 * 1000;
+                        moves[i].score = KILLER_BASE_SCORE - k1 * KILLER_STEP;
                         break;
                     }
                 }
@@ -1074,7 +1074,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
                 if (cm->from == moves[i].from && cm->to == moves[i].to)
                 {
-                    moves[i].score = 30000;
+                    moves[i].score = COUNTERMOVE_SCORE;
                 }
             }
             if (moves[i].score == 0 && ply >= 3)
@@ -1082,7 +1082,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
                 if (fu->from == moves[i].from && fu->to == moves[i].to)
                 {
-                    moves[i].score = 25000;
+                    moves[i].score = FOLLOWUP_SCORE;
                 }
             }
             if (moves[i].score == 0)
@@ -1093,7 +1093,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
              * A promotion is one of the most critical moves in any position and must
              * be searched early to avoid missing mates or tactical wins. */
             if (moves[i].promotion)
-                moves[i].score += 50000;
+                moves[i].score += PROMOTION_SCORE;
             if (is_endgame)
             {
                 /* Check bonus removed from scoring phase — move_gives_check()
@@ -1132,7 +1132,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                             }
                             if (is_passed)
                             {
-                                int push_bonus = adv_rank * 2000;
+                                int push_bonus = adv_rank * ENDGAME_PASSER_ADVANCE_SCALE;
                                 moves[i].score += push_bonus;
                             }
                         }
@@ -1149,11 +1149,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 {
                     if (moves[i].from == g_blunder_memory[bi].bad_from && moves[i].to == g_blunder_memory[bi].bad_to)
                     {
-                        moves[i].score -= 5000;
+                        moves[i].score += BLUNDER_PENALTY;
                     }
                     if (moves[i].from == g_blunder_memory[bi].good_from && moves[i].to == g_blunder_memory[bi].good_to)
                     {
-                        moves[i].score += 5000;
+                        moves[i].score += BLUNDER_BONUS;
                     }
                 }
             }
@@ -1168,11 +1168,12 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int is_pv_node_rfp = (beta - alpha > 1);
         if (!in_check && !is_pv_node_rfp && depth <= 8 && abs(beta) < MATE_SCORE - 100 && !is_simple_endgame && !(is_endgame && static_eval > 2000))
         {
-            int margin_rfp = depth * depth * 20 + depth * 40;
+            int margin_rfp = depth * depth * RFP_DEPTH_SQ_SCALE + depth * RFP_DEPTH_SCALE;
+            if (margin_rfp > RFP_CAP) margin_rfp = RFP_CAP;
             if (improving)
-                margin_rfp = margin_rfp * 3 / 4;
+                margin_rfp = margin_rfp * RFP_IMPROVING_NUM / RFP_IMPROVING_DEN;
             if (b->phase < 10)
-                margin_rfp = margin_rfp * 3 / 2;
+                margin_rfp = margin_rfp * RFP_LOW_PHASE_NUM / RFP_LOW_PHASE_DEN;
             if (static_eval - margin_rfp >= beta)
             {
                 s->search_history_count = saved_history_count;
@@ -1206,18 +1207,18 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
         b->eval_score = EVAL_SCORE_INVALID;
-        int R = 3 + depth / 6;
-        if (static_eval - beta > 200)
-            R += 1;
+        int R = NMP_BASE_REDUCTION + depth / NMP_DEPTH_DIVISOR;
+        if (static_eval - beta > NMP_HIGH_EVAL_THRESHOLD)
+            R += NMP_HIGH_EVAL_EXTRA_REDUCTION;
         /* In won positions, be more conservative with NMP to avoid
          * pruning away the opponent's defenses (false positive mates)
          * or our own mating continuations (false negative mates). */
-        if (abs(static_eval) > 2000)
-            R = (R > 2) ? R - 2 : 1;
-        else if (abs(static_eval) > 1000)
-            R = (R > 1) ? R - 1 : 1;
-        if (b->phase < 10)
-            R = (R > 1) ? R - 1 : 1;
+        if (abs(static_eval) > NMP_BIG_ADV_THRESHOLD)
+            R = (R + NMP_BIG_ADV_REDUCTION >= 1) ? R + NMP_BIG_ADV_REDUCTION : 1;
+        else if (abs(static_eval) > NMP_MED_ADV_THRESHOLD)
+            R = (R + NMP_MED_ADV_REDUCTION >= 1) ? R + NMP_MED_ADV_REDUCTION : 1;
+        if (b->phase < NMP_LOW_PHASE_THRESHOLD)
+            R = (R + NMP_LOW_PHASE_REDUCTION >= 1) ? R + NMP_LOW_PHASE_REDUCTION : 1;
         if (is_endgame)
             R = (R > 2) ? R - g_runtime_params.endgame_nmr_bonus : 1;
         if (R >= depth)
@@ -1288,13 +1289,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             /* Extract SEE value from move score (computed during scoring phase):
              * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  → see_val >= 0, never pruned
              * SEE <  0: score = 200000 + see_val                → see_val = score - 200000 */
-            int cached_see = (moves[i].score >= 1000000) ? 0 : (moves[i].score - 200000);
-            if (cached_see < -depth * 60)
+            int cached_see = (moves[i].score >= GOOD_CAPTURE_BASE) ? 0 : (moves[i].score - BAD_CAPTURE_BASE);
+            if (cached_see < -depth * SEE_PRUNE_DEPTH_SCALE)
                 continue;
         }
 
         if (!in_check && !moves[i].capture && !moves[i].promotion &&
-            depth <= 3 && legal_count > 3 + depth * depth &&
+            depth <= 3 && legal_count > HISTORY_PRUNE_BASE + depth * depth &&
             (beta - alpha <= 1) &&
             s->history[moves[i].from][moves[i].to] < 0 &&
             !is_endgame)
@@ -1314,7 +1315,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         /* Late Move Pruning: prune quiet moves that are unlikely to improve alpha
          * Uses legal_count (actual legal moves searched) instead of loop index
          * to avoid pruning important moves when many pseudo-legal moves are illegal */
-        if (!in_check && !is_pv_node && depth <= 5 && legal_count >= 6 + depth * depth && !moves[i].capture && !moves[i].promotion && static_eval < 2000)
+        if (!in_check && !is_pv_node && depth <= 5 && legal_count >= LMP_BASE + depth * depth && !moves[i].capture && !moves[i].promotion && static_eval < 2000)
         {
             unmake_move(b, &moves[i], &undo);
             continue;
@@ -1338,7 +1339,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                  * searching the position with the TT move excluded at reduced depth.
                  * If all alternatives score below (tt_score - 2*depth), the TT
                  * move is singular and deserves an extension. */
-                int se_beta = tt_score - 2 * depth;
+                int se_beta = tt_score - SE_BETA_DEPTH_SCALE * depth;
                 int se_depth_limit = depth / 2;
 
                 /* Save PV table before SE search to avoid corruption.
@@ -1411,8 +1412,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (!moves[i].capture && !moves[i].promotion && score <= alpha)
         {
             s->history[moves[i].from][moves[i].to] -= depth * depth;
-            if (s->history[moves[i].from][moves[i].to] < -8000)
-                s->history[moves[i].from][moves[i].to] = -8000;
+            if (s->history[moves[i].from][moves[i].to] < -HISTORY_SCORE_LIMIT)
+                s->history[moves[i].from][moves[i].to] = -HISTORY_SCORE_LIMIT;
         }
 
         if (score > best_score)
@@ -1442,8 +1443,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                             }
                         }
                         s->history[moves[i].from][moves[i].to] += depth * depth;
-                        if (s->history[moves[i].from][moves[i].to] > 8000)
-                            s->history[moves[i].from][moves[i].to] = 8000;
+                        if (s->history[moves[i].from][moves[i].to] > HISTORY_SCORE_LIMIT)
+                            s->history[moves[i].from][moves[i].to] = HISTORY_SCORE_LIMIT;
                     }
                     if (ply >= 1)
                     {

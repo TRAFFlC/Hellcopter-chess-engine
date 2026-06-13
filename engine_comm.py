@@ -21,6 +21,7 @@ class Engine:
         self._reader_alive = False
         self._pondering = False
         self._ponder_move = None
+        self._searching = False
         self.syzygy_path = None
 
     def start(self):
@@ -69,15 +70,54 @@ class Engine:
         self._reader_alive = True
 
         def reader():
+            import ctypes
+            import msvcrt
+            fd = self.process.stdout.fileno()
+            # Get Windows HANDLE from file descriptor
+            handle = msvcrt.get_osfhandle(fd) if sys.platform == "win32" else None
+            buf = b""
             while self._reader_alive:
                 try:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        break
-                    line = line.decode("utf-8", errors="replace").rstrip()
-                    self._line_queue.put(line)
+                    if sys.platform == "win32" and handle is not None:
+                        # Use PeekNamedPipe to check available bytes without blocking
+                        avail = ctypes.c_ulong(0)
+                        ok = ctypes.windll.kernel32.PeekNamedPipe(
+                            handle, None, 0, None,
+                            ctypes.byref(avail), None
+                        )
+                        if ok and avail.value > 0:
+                            chunk = os.read(fd, min(avail.value, 4096))
+                            if not chunk:
+                                break
+                            buf += chunk
+                            while b"\n" in buf:
+                                line, buf = buf.split(b"\n", 1)
+                                decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                                if decoded:
+                                    self._line_queue.put(decoded)
+                        else:
+                            # No data available, sleep briefly to yield GIL
+                            time.sleep(0.01)
+                    else:
+                        # Non-Windows: use os.read which properly releases GIL
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        buf += chunk
+                        while b"\n" in buf:
+                            line, buf = buf.split(b"\n", 1)
+                            decoded = line.decode("utf-8", errors="replace").rstrip("\r")
+                            if decoded:
+                                self._line_queue.put(decoded)
+                except OSError:
+                    break
                 except Exception:
                     break
+            # Flush remaining buffer
+            if buf:
+                decoded = buf.decode("utf-8", errors="replace").rstrip("\r")
+                if decoded:
+                    self._line_queue.put(decoded)
 
         t = threading.Thread(target=reader, daemon=True)
         t.start()
@@ -220,14 +260,30 @@ class Engine:
 
     def get_best_move(self, move_history, move_time):
         if self.protocol == "uci":
+            # 只刷新 info 行，保留 bestmove/readyok 等关键行
+            temp = []
+            while not self._line_queue.empty():
+                try:
+                    line = self._line_queue.get_nowait()
+                    if line.startswith("bestmove") or line.startswith("readyok"):
+                        temp.append(line)
+                    # 丢弃 info 等无关行
+                except queue.Empty:
+                    break
+            for line in temp:
+                self._line_queue.put(line)
+
             self.send("position startpos moves " + " ".join(move_history))
             self.send(f"go movetime {move_time}")
+            self._searching = True
             while True:
                 line = self.readline(timeout=30)
                 if line is None:
+                    self._searching = False
                     return None
                 if line.startswith("bestmove"):
                     best, ponder = self._parse_bestmove(line)
+                    self._searching = False
                     return best
         elif self.protocol == "xboard":
             return self._xboard_get_move(move_time)
@@ -246,8 +302,25 @@ class Engine:
         self._ponder_move = None
         tag = os.path.basename(self.engine_path)
         if self.protocol == "uci":
+            # 清空队列中的残留行，但记录丢弃了什么
+            drained = 0
             while not self._line_queue.empty():
-                try: self._line_queue.get_nowait()
+                try:
+                    stale = self._line_queue.get_nowait()
+                    drained += 1
+                    if stale.startswith("bestmove"):
+                        print(f"[ENGINE-DBG] {tag} get_best_move_with_time: DRAINING STALE bestmove: {stale[:80]}")
+                except: break
+            if drained:
+                print(f"[ENGINE-DBG] {tag} get_best_move_with_time: drained {drained} stale lines before go")
+            # 短暂等待确保 reader 线程处理完残留数据
+            time.sleep(0.02)
+            # 二次清空
+            while not self._line_queue.empty():
+                try:
+                    stale = self._line_queue.get_nowait()
+                    if stale.startswith("bestmove"):
+                        print(f"[ENGINE-DBG] {tag} get_best_move_with_time: DRAINING STALE bestmove (2nd): {stale[:80]}")
                 except: break
             alive_before = self.is_alive()
             pos_cmd = "position startpos moves " + " ".join(move_history)
@@ -256,6 +329,7 @@ class Engine:
             self.send(pos_cmd)
             print(f"[ENGINE-DBG] {tag} send: {go_cmd}")
             self.send(go_cmd)
+            self._searching = True
             deadline = time.time() + 60
             loop_count = 0
             while True:
@@ -264,6 +338,7 @@ class Engine:
                 if not alive:
                     rc = self.process.returncode if self.process else "?"
                     print(f"[ENGINE-DBG] {tag} DIED at loop {loop_count}, exit={rc}")
+                    self._searching = False
                     return None
                 line = self.readline(timeout=3)
                 if line is not None:
@@ -271,9 +346,11 @@ class Engine:
                     if line.startswith("bestmove"):
                         best, ponder = self._parse_bestmove(line)
                         self._ponder_move = ponder
+                        self._searching = False
                         return best
                 if time.time() >= deadline:
                     print(f"[ENGINE-DBG] {tag} TIMEOUT at loop {loop_count}, alive={alive}")
+                    self._searching = False
                     return None
         elif self.protocol == "xboard":
             return self._xboard_get_move_fixed(wtime, btime, winc, binc)
@@ -303,14 +380,35 @@ class Engine:
     def stop_ponder(self):
         if self.protocol != "uci":
             return
+        tag = os.path.basename(self.engine_path)
         self.send("stop")
         # 消费引擎返回的 bestmove 响应，避免残留行污染后续搜索
         # 超时设为6秒，匹配C版wait_for_search_thread的3秒+余量
         deadline = time.time() + 6
+        bestmove_consumed = False
         while time.time() < deadline:
             line = self.readline(timeout=1.0)
-            if line is not None and line.startswith("bestmove"):
+            if line is not None:
+                print(f"[ENGINE-DBG] {tag} stop_ponder recv: {line[:80]}")
+                if line.startswith("bestmove"):
+                    bestmove_consumed = True
+                    break
+            else:
+                print(f"[ENGINE-DBG] {tag} stop_ponder: no data, waiting...")
+        if not bestmove_consumed:
+            print(f"[ENGINE-DBG] {tag} stop_ponder: WARNING - no bestmove received within 6s")
+        # 额外清空队列中可能残留的行（防止竞态条件）
+        time.sleep(0.05)
+        drained = 0
+        while not self._line_queue.empty():
+            try:
+                stale = self._line_queue.get_nowait()
+                drained += 1
+                print(f"[ENGINE-DBG] {tag} stop_ponder drain: {stale[:80]}")
+            except queue.Empty:
                 break
+        if drained:
+            print(f"[ENGINE-DBG] {tag} stop_ponder: drained {drained} stale lines")
         self._pondering = False
         self._ponder_move = None
 
@@ -381,11 +479,30 @@ class Engine:
         self._pondering = False
         self._ponder_move = None
         if self.protocol == "uci":
-            print(f"[ENGINE-DBG] {tag} new_game: send ucinewgame+isready")
+            t0 = time.time()
+            # 只在引擎正在搜索时才发送 stop 并等待 bestmove
+            if self._searching:
+                print(f"[ENGINE-DBG] {tag} new_game: searching, sending stop")
+                self.send("stop")
+                deadline = time.time() + 2
+                while time.time() < deadline:
+                    line = self.readline(timeout=0.5)
+                    if line is not None and line.startswith("bestmove"):
+                        break
+                self._searching = False
+                print(f"[ENGINE-DBG] {tag} new_game: stop done, {time.time()-t0:.3f}s")
+            # 刷新残留输出
+            while not self._line_queue.empty():
+                try:
+                    self._line_queue.get_nowait()
+                except queue.Empty:
+                    break
+            print(f"[ENGINE-DBG] {tag} new_game: queue flushed, {time.time()-t0:.3f}s")
             self.send("ucinewgame")
             self.send("isready")
+            print(f"[ENGINE-DBG] {tag} new_game: sent ucinewgame+isready, {time.time()-t0:.3f}s")
             lines = self._read_until("readyok", timeout=5)
-            print(f"[ENGINE-DBG] {tag} new_game: readyok received, extra_lines={len(lines)-1 if lines else 0}")
+            print(f"[ENGINE-DBG] {tag} new_game: readyok received, total={time.time()-t0:.3f}s, extra_lines={len(lines)-1 if lines else 0}")
             while not self._line_queue.empty():
                 try: self._line_queue.get_nowait()
                 except: break
