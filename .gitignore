@@ -100,3 +100,6 @@ EGTB/
 
 # Trae specs (development)
 .trae/
+
+# Cleanup staging (local backup, not for git)
+.trash_can/
