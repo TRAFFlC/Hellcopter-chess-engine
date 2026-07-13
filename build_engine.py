@@ -187,149 +187,273 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f"#define OPEN_FILE_BONUS {eval_weights.get('open_file_bonus', 15)}\n")
             f.write(
                 f"#define SEMI_OPEN_FILE_BONUS {eval_weights.get('semi_open_file_bonus', 10)}\n")
-            f.write(f"#define ROOK_POTENTIAL_OPEN_FILE {eval_weights.get('rook_potential_open_file', 8)}\n")
-            f.write(f"#define ROOK_POTENTIAL_SEMI_OPEN {eval_weights.get('rook_potential_semi_open', 4)}\n")
-            f.write(f"#define ROOK_ON_7TH_MG_BONUS {eval_weights.get('rook_7th_mg_bonus', 20)}\n")
-            f.write(f"#define ROOK_ON_7TH_EG_BONUS {eval_weights.get('rook_7th_eg_bonus', 30)}\n")
-            f.write(f"#define ROOK_ON_7TH_DOUBLE_BONUS {eval_weights.get('rook_7th_double_bonus', 20)}\n")
-            f.write(f"#define ROOK_ON_7TH_KING_RANK8_BONUS {eval_weights.get('rook_7th_king_rank8_bonus', 25)}\n")
-            f.write(f"#define ROOK_ON_7TH_DOUBLE_KING_RANK8_BONUS {eval_weights.get('rook_7th_double_king_rank8_bonus', 15)}\n")
-            f.write(f"#define BISHOP_MOBILITY_BONUS {eval_weights.get('bishop_mobility_bonus', 15)}\n")
-            f.write(f"#define BISHOP_BAD_PENALTY {eval_weights.get('bishop_bad_penalty', -15)}\n")
-            f.write(f"#define CASTLE_SHORT_BONUS {eval_weights.get('castle_short_bonus', 30)}\n")
-            f.write(f"#define CASTLE_LONG_BONUS {eval_weights.get('castle_long_bonus', 15)}\n")
+            f.write(
+                f"#define ROOK_POTENTIAL_OPEN_FILE {eval_weights.get('rook_potential_open_file', 8)}\n")
+            f.write(
+                f"#define ROOK_POTENTIAL_SEMI_OPEN {eval_weights.get('rook_potential_semi_open', 4)}\n")
+            f.write(
+                f"#define ROOK_ON_7TH_MG_BONUS {eval_weights.get('rook_7th_mg_bonus', 20)}\n")
+            f.write(
+                f"#define ROOK_ON_7TH_EG_BONUS {eval_weights.get('rook_7th_eg_bonus', 30)}\n")
+            f.write(
+                f"#define ROOK_ON_7TH_DOUBLE_BONUS {eval_weights.get('rook_7th_double_bonus', 20)}\n")
+            f.write(
+                f"#define ROOK_ON_7TH_KING_RANK8_BONUS {eval_weights.get('rook_7th_king_rank8_bonus', 25)}\n")
+            f.write(
+                f"#define ROOK_ON_7TH_DOUBLE_KING_RANK8_BONUS {eval_weights.get('rook_7th_double_king_rank8_bonus', 15)}\n")
+            f.write(
+                f"#define BISHOP_MOBILITY_BONUS {eval_weights.get('bishop_mobility_bonus', 15)}\n")
+            f.write(
+                f"#define BISHOP_BAD_PENALTY {eval_weights.get('bishop_bad_penalty', -15)}\n")
+            f.write(
+                f"#define QUEEN_CENTRALIZATION_MG {eval_weights.get('queen_centralization_mg', 15)}\n")
+            f.write(
+                f"#define QUEEN_CENTRALIZATION_EG {eval_weights.get('queen_centralization_eg', 0)}\n")
+            f.write(
+                f"#define CASTLE_SHORT_BONUS {eval_weights.get('castle_short_bonus', 30)}\n")
+            f.write(
+                f"#define CASTLE_LONG_BONUS {eval_weights.get('castle_long_bonus', 15)}\n")
             f.write(f"#define TEMPO_MG {eval_weights.get('tempo_mg', 15)}\n")
             f.write(f"#define TEMPO_EG {eval_weights.get('tempo_eg', 8)}\n\n")
 
             # 通路兵详细参数
             f.write("/* --- Passed Pawn Detail --- */\n")
-            f.write(f"#define PASSED_PAWN_EG_WEIGHT {eval_weights.get('passed_pawn_eg_weight', 2)}\n")
-            f.write(f"#define PASSED_PAWN_EG_PHASE_DENOM {eval_weights.get('passed_pawn_eg_phase_denom', 24)}\n")
-            f.write(f"#define PROMO_THREAT_RANK6_BASE {eval_weights.get('promo_threat_rank6_base', 200)}\n")
-            f.write(f"#define PROMO_THREAT_RANK5_BASE {eval_weights.get('promo_threat_rank5_base', 80)}\n")
-            f.write(f"#define PROMO_THREAT_EG_DIVISOR {eval_weights.get('promo_threat_eg_divisor', 150)}\n")
-            f.write(f"#define PASSED_PAWN_SUPPORTED_BONUS {eval_weights.get('passed_pawn_supported_bonus', 15)}\n")
-            f.write(f"#define PASSED_PAWN_BLOCKED_BASE {eval_weights.get('passed_pawn_blocked_base', -10)}\n")
-            f.write(f"#define PASSED_PAWN_BLOCKED_RANK_SCALE {eval_weights.get('passed_pawn_blocked_rank_scale', 5)}\n")
-            f.write(f"#define PASSED_PAWN_BLOCKED_RANK_DENOM {eval_weights.get('passed_pawn_blocked_rank_denom', 3)}\n")
-            f.write(f"#define PASSED_PAWN_CLEAR_PATH_BASE {eval_weights.get('passed_pawn_clear_path_base', 15)}\n")
-            f.write(f"#define PASSED_PAWN_CLEAR_PATH_RANK_SCALE {eval_weights.get('passed_pawn_clear_path_rank_scale', 8)}\n")
-            f.write(f"#define PASSED_PAWN_KING_DIST_BASE {eval_weights.get('passed_pawn_king_dist_base', 15)}\n")
-            f.write(f"#define PASSED_PAWN_KING_DIST_SCALE {eval_weights.get('passed_pawn_king_dist_scale', 5)}\n")
-            f.write(f"#define CENTER_PAWN_MG_BONUS {eval_weights.get('center_pawn_mg_bonus', 20)}\n")
-            f.write(f"#define CONNECTED_PASSER_BONUS {eval_weights.get('connected_passer_bonus', 30)}\n")
-            f.write(f"#define PAWN_CHAIN_LATERAL_BONUS {eval_weights.get('pawn_chain_lateral_bonus', 15)}\n")
-            f.write(f"#define CENTER_PAWN_PAIR_BONUS {eval_weights.get('center_pawn_pair_bonus', 20)}\n\n")
+            f.write(
+                f"#define PASSED_PAWN_EG_WEIGHT {eval_weights.get('passed_pawn_eg_weight', 2)}\n")
+            f.write(
+                f"#define PASSED_PAWN_EG_PHASE_DENOM {eval_weights.get('passed_pawn_eg_phase_denom', 24)}\n")
+            f.write(
+                f"#define PROMO_THREAT_RANK6_BASE {eval_weights.get('promo_threat_rank6_base', 200)}\n")
+            f.write(
+                f"#define PROMO_THREAT_RANK5_BASE {eval_weights.get('promo_threat_rank5_base', 80)}\n")
+            f.write(
+                f"#define PROMO_THREAT_EG_DIVISOR {eval_weights.get('promo_threat_eg_divisor', 150)}\n")
+            f.write(
+                f"#define PASSED_PAWN_SUPPORTED_BONUS {eval_weights.get('passed_pawn_supported_bonus', 15)}\n")
+            f.write(
+                f"#define PASSED_PAWN_BLOCKED_BASE {eval_weights.get('passed_pawn_blocked_base', -10)}\n")
+            f.write(
+                f"#define PASSED_PAWN_BLOCKED_RANK_SCALE {eval_weights.get('passed_pawn_blocked_rank_scale', 5)}\n")
+            f.write(
+                f"#define PASSED_PAWN_BLOCKED_RANK_DENOM {eval_weights.get('passed_pawn_blocked_rank_denom', 3)}\n")
+            f.write(
+                f"#define PASSED_PAWN_CLEAR_PATH_BASE {eval_weights.get('passed_pawn_clear_path_base', 15)}\n")
+            f.write(
+                f"#define PASSED_PAWN_CLEAR_PATH_RANK_SCALE {eval_weights.get('passed_pawn_clear_path_rank_scale', 8)}\n")
+            f.write(
+                f"#define PASSED_PAWN_KING_DIST_BASE {eval_weights.get('passed_pawn_king_dist_base', 15)}\n")
+            f.write(
+                f"#define PASSED_PAWN_KING_DIST_SCALE {eval_weights.get('passed_pawn_king_dist_scale', 5)}\n")
+            f.write(
+                f"#define CENTER_PAWN_MG_BONUS {eval_weights.get('center_pawn_mg_bonus', 20)}\n")
+            f.write(
+                f"#define CONNECTED_PASSER_BONUS {eval_weights.get('connected_passer_bonus', 30)}\n")
+            f.write(
+                f"#define PAWN_CHAIN_LATERAL_BONUS {eval_weights.get('pawn_chain_lateral_bonus', 15)}\n")
+            f.write(
+                f"#define CENTER_PAWN_PAIR_BONUS {eval_weights.get('center_pawn_pair_bonus', 20)}\n\n")
 
             # 兵结构参数
             f.write("/* --- Pawn Structure --- */\n")
-            f.write(f"#define ISOLATED_OPEN_FILE_MUL_NUM {eval_weights.get('isolated_open_file_multiplier_num', 3)}\n")
-            f.write(f"#define ISOLATED_OPEN_FILE_MUL_DEN {eval_weights.get('isolated_open_file_multiplier_den', 2)}\n")
-            f.write(f"#define BACKWARD_PAWN_PENALTY {eval_weights.get('backward_pawn_penalty', -15)}\n\n")
+            f.write(
+                f"#define ISOLATED_OPEN_FILE_MUL_NUM {eval_weights.get('isolated_open_file_multiplier_num', 3)}\n")
+            f.write(
+                f"#define ISOLATED_OPEN_FILE_MUL_DEN {eval_weights.get('isolated_open_file_multiplier_den', 2)}\n")
+            f.write(
+                f"#define BACKWARD_PAWN_PENALTY {eval_weights.get('backward_pawn_penalty', -15)}\n\n")
 
             # 中心控制
             f.write("/* --- Center Control --- */\n")
-            f.write(f"#define CENTER_CONTROL_PIECE_BONUS {eval_weights.get('center_control_piece_bonus', 8)}\n")
-            f.write(f"#define CENTER_CONTROL_EXTENDED_BONUS {eval_weights.get('center_control_extended_bonus', 3)}\n")
-            f.write(f"#define CENTER_CONTROL_PAWN_BONUS {eval_weights.get('center_control_pawn_bonus', 20)}\n")
-            f.write(f"#define CENTER_CONTROL_PAWN_EXTENDED_BONUS {eval_weights.get('center_control_pawn_extended_bonus', 6)}\n\n")
+            f.write(
+                f"#define CENTER_CONTROL_PIECE_BONUS {eval_weights.get('center_control_piece_bonus', 8)}\n")
+            f.write(
+                f"#define CENTER_CONTROL_EXTENDED_BONUS {eval_weights.get('center_control_extended_bonus', 3)}\n")
+            f.write(
+                f"#define CENTER_CONTROL_PAWN_BONUS {eval_weights.get('center_control_pawn_bonus', 20)}\n")
+            f.write(
+                f"#define CENTER_CONTROL_PAWN_EXTENDED_BONUS {eval_weights.get('center_control_pawn_extended_bonus', 6)}\n\n")
 
             # 悬空棋子/被攻击
             f.write("/* --- Hanging/Attacked Pieces --- */\n")
-            f.write(f"#define HANGING_QUEEN_PENALTY {eval_weights.get('hanging_queen_penalty', 45)}\n")
-            f.write(f"#define HANGING_ROOK_PENALTY {eval_weights.get('hanging_rook_penalty', 30)}\n")
-            f.write(f"#define HANGING_MINOR_PENALTY {eval_weights.get('hanging_minor_penalty', 23)}\n")
-            f.write(f"#define IN_CHECK_PENALTY {eval_weights.get('in_check_penalty', 25)}\n")
-            f.write(f"#define BACK_RANK_MATE_PENALTY {eval_weights.get('back_rank_mate_penalty', -50)}\n")
-            f.write(f"#define BACK_RANK_TRIPLE_PENALTY {eval_weights.get('back_rank_triple_penalty', -25)}\n\n")
+            f.write(
+                f"#define HANGING_QUEEN_PENALTY {eval_weights.get('hanging_queen_penalty', 45)}\n")
+            f.write(
+                f"#define HANGING_ROOK_PENALTY {eval_weights.get('hanging_rook_penalty', 30)}\n")
+            f.write(
+                f"#define HANGING_MINOR_PENALTY {eval_weights.get('hanging_minor_penalty', 23)}\n")
+            f.write(
+                f"#define IN_CHECK_PENALTY {eval_weights.get('in_check_penalty', 25)}\n")
+            f.write(
+                f"#define BACK_RANK_MATE_PENALTY {eval_weights.get('back_rank_mate_penalty', -50)}\n")
+            f.write(
+                f"#define BACK_RANK_TRIPLE_PENALTY {eval_weights.get('back_rank_triple_penalty', -25)}\n\n")
 
             # 马位置/前哨站
             f.write("/* --- Knight Position/Outpost --- */\n")
-            f.write(f"#define KNIGHT_EDGE_PENALTY {eval_weights.get('knight_edge_penalty', -30)}\n")
-            f.write(f"#define KNIGHT_INITIAL_BLOCK_PENALTY {eval_weights.get('knight_initial_block_penalty', -25)}\n")
-            f.write(f"#define OUTPOST_MG_BASE {eval_weights.get('outpost_mg_base', 15)}\n")
-            f.write(f"#define OUTPOST_MG_RANK_SCALE {eval_weights.get('outpost_mg_rank_scale', 5)}\n")
-            f.write(f"#define OUTPOST_EG_BASE {eval_weights.get('outpost_eg_base', 10)}\n")
-            f.write(f"#define OUTPOST_EG_RANK_SCALE {eval_weights.get('outpost_eg_rank_scale', 3)}\n\n")
+            f.write(
+                f"#define KNIGHT_EDGE_PENALTY {eval_weights.get('knight_edge_penalty', -30)}\n")
+            f.write(
+                f"#define KNIGHT_INITIAL_BLOCK_PENALTY {eval_weights.get('knight_initial_block_penalty', -25)}\n")
+            f.write(
+                f"#define OUTPOST_MG_BASE {eval_weights.get('outpost_mg_base', 15)}\n")
+            f.write(
+                f"#define OUTPOST_MG_RANK_SCALE {eval_weights.get('outpost_mg_rank_scale', 5)}\n")
+            f.write(
+                f"#define OUTPOST_EG_BASE {eval_weights.get('outpost_eg_base', 10)}\n")
+            f.write(
+                f"#define OUTPOST_EG_RANK_SCALE {eval_weights.get('outpost_eg_rank_scale', 3)}\n\n")
 
             # 被兵/马攻击
             f.write("/* --- Attacked by Pawn/Knight --- */\n")
-            f.write(f"#define QUEEN_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('queen_attacked_by_pawn_penalty', -25)}\n")
-            f.write(f"#define ROOK_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('rook_attacked_by_pawn_penalty', -20)}\n")
-            f.write(f"#define MINOR_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('minor_attacked_by_pawn_penalty', -15)}\n")
-            f.write(f"#define QUEEN_ATTACKED_BY_PAWN_EXTRA {eval_weights.get('queen_attacked_by_pawn_extra', -5)}\n")
-            f.write(f"#define ROOK_ATTACKED_BY_PAWN_EXTRA {eval_weights.get('rook_attacked_by_pawn_extra', -3)}\n")
-            f.write(f"#define QUEEN_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('queen_attacked_by_knight_penalty', -20)}\n")
-            f.write(f"#define ROOK_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('rook_attacked_by_knight_penalty', -15)}\n")
-            f.write(f"#define MINOR_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('minor_attacked_by_knight_penalty', -13)}\n")
-            f.write(f"#define PIECE_DEFENDED_BY_PAWN_BONUS {eval_weights.get('piece_defended_by_pawn_bonus', 10)}\n\n")
+            f.write(
+                f"#define QUEEN_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('queen_attacked_by_pawn_penalty', -25)}\n")
+            f.write(
+                f"#define ROOK_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('rook_attacked_by_pawn_penalty', -20)}\n")
+            f.write(
+                f"#define MINOR_ATTACKED_BY_PAWN_PENALTY {eval_weights.get('minor_attacked_by_pawn_penalty', -15)}\n")
+            f.write(
+                f"#define QUEEN_ATTACKED_BY_PAWN_EXTRA {eval_weights.get('queen_attacked_by_pawn_extra', -5)}\n")
+            f.write(
+                f"#define ROOK_ATTACKED_BY_PAWN_EXTRA {eval_weights.get('rook_attacked_by_pawn_extra', -3)}\n")
+            f.write(
+                f"#define QUEEN_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('queen_attacked_by_knight_penalty', -20)}\n")
+            f.write(
+                f"#define ROOK_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('rook_attacked_by_knight_penalty', -15)}\n")
+            f.write(
+                f"#define MINOR_ATTACKED_BY_KNIGHT_PENALTY {eval_weights.get('minor_attacked_by_knight_penalty', -13)}\n")
+            f.write(
+                f"#define PIECE_DEFENDED_BY_PAWN_BONUS {eval_weights.get('piece_defended_by_pawn_bonus', 10)}\n\n")
 
             # 叉击/威胁
             f.write("/* --- Fork/Threat --- */\n")
-            f.write(f"#define KNIGHT_FORK_QUEEN_ROOK_PENALTY {eval_weights.get('knight_fork_queen_rook_penalty', -75)}\n")
-            f.write(f"#define KNIGHT_FORK_KING_PENALTY {eval_weights.get('knight_fork_king_penalty', -60)}\n")
-            f.write(f"#define QUEEN_ATTACKED_BY_MINOR_UNDEFENDED {eval_weights.get('queen_attacked_by_minor_undefended', -75)}\n")
-            f.write(f"#define QUEEN_ATTACKED_BY_MINOR_DEFENDED {eval_weights.get('queen_attacked_by_minor_defended', -30)}\n")
-            f.write(f"#define ROOK_ATTACKED_BY_MINOR_UNDEFENDED {eval_weights.get('rook_attacked_by_minor_undefended', -40)}\n")
-            f.write(f"#define ROOK_ATTACKED_BY_MINOR_DEFENDED {eval_weights.get('rook_attacked_by_minor_defended', -15)}\n\n")
+            f.write(
+                f"#define KNIGHT_FORK_QUEEN_ROOK_PENALTY {eval_weights.get('knight_fork_queen_rook_penalty', -75)}\n")
+            f.write(
+                f"#define KNIGHT_FORK_KING_PENALTY {eval_weights.get('knight_fork_king_penalty', -60)}\n")
+            f.write(
+                f"#define QUEEN_ATTACKED_BY_MINOR_UNDEFENDED {eval_weights.get('queen_attacked_by_minor_undefended', -75)}\n")
+            f.write(
+                f"#define QUEEN_ATTACKED_BY_MINOR_DEFENDED {eval_weights.get('queen_attacked_by_minor_defended', -30)}\n")
+            f.write(
+                f"#define ROOK_ATTACKED_BY_MINOR_UNDEFENDED {eval_weights.get('rook_attacked_by_minor_undefended', -40)}\n")
+            f.write(
+                f"#define ROOK_ATTACKED_BY_MINOR_DEFENDED {eval_weights.get('rook_attacked_by_minor_defended', -15)}\n")
+            f.write(
+                f"#define MINOR_ATTACKED_BY_MINOR_UNDEFENDED {eval_weights.get('minor_attacked_by_minor_undefended', -45)}\n")
+            f.write(
+                f"#define MINOR_ATTACKED_BY_MINOR_DEFENDED {eval_weights.get('minor_attacked_by_minor_defended', -18)}\n")
+            f.write(
+                f"#define PIECE_ATTACKED_BY_ROOK_UNDEFENDED {eval_weights.get('piece_attacked_by_rook_undefended', -20)}\n")
+            f.write(
+                f"#define PIECE_ATTACKED_BY_ROOK_DEFENDED {eval_weights.get('piece_attacked_by_rook_defended', -8)}\n")
+            f.write(
+                f"#define PIECE_ATTACKED_BY_BISHOP_UNDEFENDED {eval_weights.get('piece_attacked_by_bishop_undefended', -15)}\n")
+            f.write(
+                f"#define PIECE_ATTACKED_BY_BISHOP_DEFENDED {eval_weights.get('piece_attacked_by_bishop_defended', -6)}\n\n")
 
             # 开局发展
             f.write("/* --- Opening Development --- */\n")
-            f.write(f"#define OPENING_KNIGHT_NOT_DEVELOPED_PENALTY {eval_weights.get('opening_knight_not_developed_penalty', -20)}\n")
-            f.write(f"#define OPENING_BISHOP_NOT_DEVELOPED_PENALTY {eval_weights.get('opening_bishop_not_developed_penalty', -20)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_BASE {eval_weights.get('opening_early_queen_base', 40)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_SCALE {eval_weights.get('opening_early_queen_scale', 10)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_MIN {eval_weights.get('opening_early_queen_min', 10)}\n")
-            f.write(f"#define OPENING_UNDEVELOPED_PENALTY_5 {eval_weights.get('opening_undeveloped_penalty_5', -30)}\n")
-            f.write(f"#define OPENING_UNDEVELOPED_PENALTY_8 {eval_weights.get('opening_undeveloped_penalty_8', -20)}\n")
-            f.write(f"#define OPENING_KING_NOT_CASTLED_PENALTY {eval_weights.get('opening_king_not_castled_penalty', -25)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_ADVANCE_BASE {eval_weights.get('opening_early_queen_advance_base', 50)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_ADVANCE_SCALE {eval_weights.get('opening_early_queen_advance_scale', 10)}\n")
-            f.write(f"#define OPENING_EARLY_QUEEN_ADVANCE_MIN {eval_weights.get('opening_early_queen_advance_min', 20)}\n")
-            f.write(f"#define OPENING_EARLY_ROOK_ADVANCE_PENALTY {eval_weights.get('opening_early_rook_advance_penalty', -15)}\n")
-            f.write(f"#define OPENING_CENTER_PAWN_CONTROL_BONUS {eval_weights.get('opening_center_pawn_control_bonus', 10)}\n")
-            f.write(f"#define OPENING_NO_CENTER_PAWN_PENALTY {eval_weights.get('opening_no_center_pawn_penalty', -35)}\n\n")
+            f.write(
+                f"#define OPENING_KNIGHT_NOT_DEVELOPED_PENALTY {eval_weights.get('opening_knight_not_developed_penalty', -20)}\n")
+            f.write(
+                f"#define OPENING_BISHOP_NOT_DEVELOPED_PENALTY {eval_weights.get('opening_bishop_not_developed_penalty', -20)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_BASE {eval_weights.get('opening_early_queen_base', 40)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_SCALE {eval_weights.get('opening_early_queen_scale', 10)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_MIN {eval_weights.get('opening_early_queen_min', 10)}\n")
+            f.write(
+                f"#define OPENING_UNDEVELOPED_PENALTY_5 {eval_weights.get('opening_undeveloped_penalty_5', -30)}\n")
+            f.write(
+                f"#define OPENING_UNDEVELOPED_PENALTY_8 {eval_weights.get('opening_undeveloped_penalty_8', -20)}\n")
+            f.write(
+                f"#define OPENING_KING_NOT_CASTLED_PENALTY {eval_weights.get('opening_king_not_castled_penalty', -25)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_ADVANCE_BASE {eval_weights.get('opening_early_queen_advance_base', 50)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_ADVANCE_SCALE {eval_weights.get('opening_early_queen_advance_scale', 10)}\n")
+            f.write(
+                f"#define OPENING_EARLY_QUEEN_ADVANCE_MIN {eval_weights.get('opening_early_queen_advance_min', 20)}\n")
+            f.write(
+                f"#define OPENING_EARLY_ROOK_ADVANCE_PENALTY {eval_weights.get('opening_early_rook_advance_penalty', -15)}\n")
+            f.write(
+                f"#define OPENING_CENTER_PAWN_CONTROL_BONUS {eval_weights.get('opening_center_pawn_control_bonus', 10)}\n")
+            f.write(
+                f"#define OPENING_NO_CENTER_PAWN_PENALTY {eval_weights.get('opening_no_center_pawn_penalty', -35)}\n\n")
 
             # 不平衡
             f.write("/* --- Imbalance --- */\n")
-            f.write(f"#define IMBALANCE_MG_BASE {eval_weights.get('imbalance_mg_base', 50)}\n")
-            f.write(f"#define IMBALANCE_MG_SCALE {eval_weights.get('imbalance_mg_scale', 15)}\n")
-            f.write(f"#define IMBALANCE_EG_SCALE {eval_weights.get('imbalance_eg_scale', 20)}\n")
-            f.write(f"#define NO_MINOR_VS_TWO_MINOR_PENALTY {eval_weights.get('no_minor_vs_two_minor_penalty', 80)}\n")
-            f.write(f"#define FIFTY_MOVE_URGENCY_DIVISOR {eval_weights.get('fifty_move_urgency_divisor', 200)}\n\n")
+            f.write(
+                f"#define IMBALANCE_MG_BASE {eval_weights.get('imbalance_mg_base', 50)}\n")
+            f.write(
+                f"#define IMBALANCE_MG_SCALE {eval_weights.get('imbalance_mg_scale', 15)}\n")
+            f.write(
+                f"#define IMBALANCE_EG_SCALE {eval_weights.get('imbalance_eg_scale', 20)}\n")
+            f.write(
+                f"#define NO_MINOR_VS_TWO_MINOR_PENALTY {eval_weights.get('no_minor_vs_two_minor_penalty', 80)}\n")
+            f.write(
+                f"#define FIFTY_MOVE_URGENCY_DIVISOR {eval_weights.get('fifty_move_urgency_divisor', 200)}\n\n")
 
             # Mop-up
             f.write("/* --- Mop-up --- */\n")
-            f.write(f"#define MOPUP_MATERIAL_THRESHOLD {eval_weights.get('mopup_material_threshold', 500)}\n")
-            f.write(f"#define MOPUP_WINNING_KING_ACTIVITY_WEIGHT {eval_weights.get('mopup_winning_king_activity_weight', 15)}\n")
-            f.write(f"#define MOPUP_LOSING_KING_ACTIVITY_WEIGHT {eval_weights.get('mopup_losing_king_activity_weight', 3)}\n")
-            f.write(f"#define MOPUP_KING_ACTIVITY_EARLY_PHASE {eval_weights.get('mopup_king_activity_early_phase_threshold', 8)}\n")
-            f.write(f"#define MOPUP_KING_ACTIVITY_EARLY_WEIGHT {eval_weights.get('mopup_king_activity_early_weight', 25)}\n")
-            f.write(f"#define MOPUP_EDGE_WEIGHT {eval_weights.get('mopup_edge_weight', 120)}\n")
-            f.write(f"#define MOPUP_PROXIMITY_WEIGHT {eval_weights.get('mopup_proximity_weight', 60)}\n")
-            f.write(f"#define MOPUP_OPPOSITION_WEIGHT {eval_weights.get('mopup_opposition_weight', 80)}\n")
-            f.write(f"#define MOPUP_GENERIC_EDGE_SCALE {eval_weights.get('mopup_generic_edge_scale', 80)}\n")
-            f.write(f"#define MOPUP_GENERIC_PROXIMITY_SCALE {eval_weights.get('mopup_generic_proximity_scale', 50)}\n")
-            f.write(f"#define KRK_ROOK_CUTOFF_BONUS {eval_weights.get('krk_rook_cutoff_bonus', 60)}\n")
-            f.write(f"#define KRK_ROOK_FAR_PENALTY {eval_weights.get('krk_rook_far_penalty', -40)}\n")
-            f.write(f"#define KQKR_CORNER_SCALE {eval_weights.get('kqkr_corner_scale', 150)}\n")
-            f.write(f"#define KQKR_PROXIMITY_SCALE {eval_weights.get('kqkr_proximity_scale', 80)}\n")
-            f.write(f"#define KQKR_QUEEN_PROXIMITY_SCALE {eval_weights.get('kqkr_queen_proximity_scale', 50)}\n")
-            f.write(f"#define KQKR_STALEMATE_AVOID_PENALTY {eval_weights.get('kqkr_stalemate_avoid_penalty', -100)}\n")
-            f.write(f"#define KQKR_CORNER_MATE_BONUS {eval_weights.get('kqkr_corner_mate_bonus', 200)}\n")
-            f.write(f"#define KBNK_CORNER_SCALE {eval_weights.get('kbnk_corner_scale', 100)}\n")
-            f.write(f"#define KBNK_PROXIMITY_SCALE {eval_weights.get('kbnk_proximity_scale', 60)}\n")
-            f.write(f"#define KBNK_CORRECT_CORNER_BONUS {eval_weights.get('kbnk_correct_corner_bonus', 300)}\n")
-            f.write(f"#define EXTENDED_MOPUP_EDGE_SCALE {eval_weights.get('extended_mopup_edge_scale', 80)}\n")
-            f.write(f"#define EXTENDED_MOPUP_PROXIMITY_SCALE {eval_weights.get('extended_mopup_proximity_scale', 40)}\n\n")
+            f.write(
+                f"#define MOPUP_MATERIAL_THRESHOLD {eval_weights.get('mopup_material_threshold', 500)}\n")
+            f.write(
+                f"#define MOPUP_WINNING_KING_ACTIVITY_WEIGHT {eval_weights.get('mopup_winning_king_activity_weight', 15)}\n")
+            f.write(
+                f"#define MOPUP_LOSING_KING_ACTIVITY_WEIGHT {eval_weights.get('mopup_losing_king_activity_weight', 3)}\n")
+            f.write(
+                f"#define MOPUP_KING_ACTIVITY_EARLY_PHASE {eval_weights.get('mopup_king_activity_early_phase_threshold', 8)}\n")
+            f.write(
+                f"#define MOPUP_KING_ACTIVITY_EARLY_WEIGHT {eval_weights.get('mopup_king_activity_early_weight', 25)}\n")
+            f.write(
+                f"#define MOPUP_EDGE_WEIGHT {eval_weights.get('mopup_edge_weight', 120)}\n")
+            f.write(
+                f"#define MOPUP_PROXIMITY_WEIGHT {eval_weights.get('mopup_proximity_weight', 60)}\n")
+            f.write(
+                f"#define MOPUP_OPPOSITION_WEIGHT {eval_weights.get('mopup_opposition_weight', 80)}\n")
+            f.write(
+                f"#define MOPUP_GENERIC_EDGE_SCALE {eval_weights.get('mopup_generic_edge_scale', 80)}\n")
+            f.write(
+                f"#define MOPUP_GENERIC_PROXIMITY_SCALE {eval_weights.get('mopup_generic_proximity_scale', 50)}\n")
+            f.write(
+                f"#define KRK_ROOK_CUTOFF_BONUS {eval_weights.get('krk_rook_cutoff_bonus', 60)}\n")
+            f.write(
+                f"#define KRK_ROOK_FAR_PENALTY {eval_weights.get('krk_rook_far_penalty', -40)}\n")
+            f.write(
+                f"#define KQKR_CORNER_SCALE {eval_weights.get('kqkr_corner_scale', 150)}\n")
+            f.write(
+                f"#define KQKR_PROXIMITY_SCALE {eval_weights.get('kqkr_proximity_scale', 80)}\n")
+            f.write(
+                f"#define KQKR_QUEEN_PROXIMITY_SCALE {eval_weights.get('kqkr_queen_proximity_scale', 50)}\n")
+            f.write(
+                f"#define KQKR_STALEMATE_AVOID_PENALTY {eval_weights.get('kqkr_stalemate_avoid_penalty', -100)}\n")
+            f.write(
+                f"#define KQKR_CORNER_MATE_BONUS {eval_weights.get('kqkr_corner_mate_bonus', 200)}\n")
+            f.write(
+                f"#define KBNK_CORNER_SCALE {eval_weights.get('kbnk_corner_scale', 100)}\n")
+            f.write(
+                f"#define KBNK_PROXIMITY_SCALE {eval_weights.get('kbnk_proximity_scale', 60)}\n")
+            f.write(
+                f"#define KBNK_CORRECT_CORNER_BONUS {eval_weights.get('kbnk_correct_corner_bonus', 300)}\n")
+            f.write(
+                f"#define EXTENDED_MOPUP_EDGE_SCALE {eval_weights.get('extended_mopup_edge_scale', 80)}\n")
+            f.write(
+                f"#define EXTENDED_MOPUP_PROXIMITY_SCALE {eval_weights.get('extended_mopup_proximity_scale', 40)}\n\n")
 
             # 残局特殊
             f.write("/* --- Endgame Special --- */\n")
-            f.write(f"#define OPPOSITE_BISHOP_DRAW_FACTOR_NO_PAWN {eval_weights.get('opposite_bishop_draw_factor_no_pawn', 8)}\n")
-            f.write(f"#define OPPOSITE_BISHOP_DRAW_FACTOR_PAWN {eval_weights.get('opposite_bishop_draw_factor_pawn', 12)}\n")
-            f.write(f"#define OPPOSITE_BISHOP_DRAW_DIVISOR {eval_weights.get('opposite_bishop_draw_divisor', 16)}\n")
-            f.write(f"#define ANTI_SIMPLIFY_PER_PIECE_SCALE {eval_weights.get('anti_simplify_per_piece_scale', 2)}\n")
-            f.write(f"#define ANTI_SIMPLIFY_PIECE_THRESHOLD {eval_weights.get('anti_simplify_piece_threshold', 6)}\n\n")
+            f.write(
+                f"#define OPPOSITE_BISHOP_DRAW_FACTOR_NO_PAWN {eval_weights.get('opposite_bishop_draw_factor_no_pawn', 8)}\n")
+            f.write(
+                f"#define OPPOSITE_BISHOP_DRAW_FACTOR_PAWN {eval_weights.get('opposite_bishop_draw_factor_pawn', 12)}\n")
+            f.write(
+                f"#define OPPOSITE_BISHOP_DRAW_DIVISOR {eval_weights.get('opposite_bishop_draw_divisor', 16)}\n")
+            f.write(
+                f"#define ANTI_SIMPLIFY_PER_PIECE_SCALE {eval_weights.get('anti_simplify_per_piece_scale', 2)}\n")
+            f.write(
+                f"#define ANTI_SIMPLIFY_PIECE_THRESHOLD {eval_weights.get('anti_simplify_piece_threshold', 6)}\n\n")
 
             # 搜索参数
             search_params = parameters.get("search_params", {})
@@ -344,8 +468,10 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f"#define NULL_MOVE_REDUCTION {search_params.get('null_move_reduction', 2)}\n")
             f.write(
                 f"#define NULL_MOVE_MIN_DEPTH {search_params.get('null_move_min_depth', 3)}\n")
-            f.write(f"#define NULL_MOVE_VERIFICATION_DEPTH {search_params.get('null_move_verification_depth', 6)}\n")
-            f.write(f"#define NULL_MOVE_VERIFICATION_REDUCTION {search_params.get('null_move_verification_reduction', 5)}\n\n")
+            f.write(
+                f"#define NULL_MOVE_VERIFICATION_DEPTH {search_params.get('null_move_verification_depth', 6)}\n")
+            f.write(
+                f"#define NULL_MOVE_VERIFICATION_REDUCTION {search_params.get('null_move_verification_reduction', 5)}\n\n")
 
             f.write(
                 f"#define LMR_ENABLED {1 if search_params.get('lmr_enabled', False) else 0}\n")
@@ -353,9 +479,12 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f"#define LMR_MIN_DEPTH {search_params.get('lmr_min_depth', 3)}\n")
             f.write(
                 f"#define LMR_MOVE_THRESHOLD {search_params.get('lmr_move_threshold', 2)}\n")
-            f.write(f"#define LMR_BASE {search_params.get('lmr_base', 0.75)}\n")
-            f.write(f"#define LMR_DIVISOR {search_params.get('lmr_divisor', 2.25)}\n")
-            f.write(f"#define LMR_HISTORY_THRESHOLD {search_params.get('lmr_history_threshold', 500)}\n\n")
+            f.write(
+                f"#define LMR_BASE {search_params.get('lmr_base', 0.75)}\n")
+            f.write(
+                f"#define LMR_DIVISOR {search_params.get('lmr_divisor', 2.25)}\n")
+            f.write(
+                f"#define LMR_HISTORY_THRESHOLD {search_params.get('lmr_history_threshold', 500)}\n\n")
 
             f.write(
                 f"#define FUTILITY_ENABLED {1 if search_params.get('futility_enabled', False) else 0}\n")
@@ -374,53 +503,95 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
 
             # 搜索排序/剪枝参数
             f.write("/* --- Move Ordering & Pruning --- */\n")
-            f.write(f"#define SEE_KING_VALUE {search_params.get('see_king_value', 10000)}\n")
-            f.write(f"#define MVV_LVA_SCALE {search_params.get('mvv_lva_scale', 10)}\n")
-            f.write(f"#define QS_TT_MOVE_SCORE {search_params.get('qs_tt_move_score', 100000)}\n")
-            f.write(f"#define QS_DELTA_MARGIN {search_params.get('qs_delta_margin', 200)}\n")
-            f.write(f"#define TT_MOVE_SCORE {search_params.get('tt_move_score', 2000000)}\n")
-            f.write(f"#define GOOD_CAPTURE_BASE {search_params.get('good_capture_base', 1000000)}\n")
-            f.write(f"#define BAD_CAPTURE_BASE {search_params.get('bad_capture_base', 200000)}\n")
-            f.write(f"#define KILLER_BASE_SCORE {search_params.get('killer_base_score', 40000)}\n")
-            f.write(f"#define KILLER_STEP {search_params.get('killer_step', 1000)}\n")
-            f.write(f"#define COUNTERMOVE_SCORE {search_params.get('countermove_score', 30000)}\n")
-            f.write(f"#define FOLLOWUP_SCORE {search_params.get('followup_score', 25000)}\n")
-            f.write(f"#define PROMOTION_SCORE {search_params.get('promotion_score', 50000)}\n")
-            f.write(f"#define ENDGAME_PASSER_ADVANCE_SCALE {search_params.get('endgame_passer_advance_scale', 2000)}\n")
-            f.write(f"#define BLUNDER_PENALTY {search_params.get('blunder_penalty', -5000)}\n")
-            f.write(f"#define BLUNDER_BONUS {search_params.get('blunder_bonus', 5000)}\n\n")
+            f.write(
+                f"#define SEE_KING_VALUE {search_params.get('see_king_value', 10000)}\n")
+            f.write(
+                f"#define MVV_LVA_SCALE {search_params.get('mvv_lva_scale', 10)}\n")
+            f.write(
+                f"#define QS_TT_MOVE_SCORE {search_params.get('qs_tt_move_score', 100000)}\n")
+            f.write(
+                f"#define QS_DELTA_MARGIN {search_params.get('qs_delta_margin', 200)}\n")
+            f.write(
+                f"#define QS_CHECK_MAX_DEPTH {search_params.get('qs_check_max_depth', 2)}\n")
+            f.write(
+                f"#define QS_CHECK_SCORE {search_params.get('qs_check_score', 5000)}\n")
+            f.write(
+                f"#define LAZY_EVAL_THRESHOLD {search_params.get('lazy_eval_threshold', 2000)}\n")
+            f.write(
+                f"#define TT_MOVE_SCORE {search_params.get('tt_move_score', 2000000)}\n")
+            f.write(
+                f"#define GOOD_CAPTURE_BASE {search_params.get('good_capture_base', 1000000)}\n")
+            f.write(
+                f"#define BAD_CAPTURE_BASE {search_params.get('bad_capture_base', 200000)}\n")
+            f.write(
+                f"#define KILLER_BASE_SCORE {search_params.get('killer_base_score', 40000)}\n")
+            f.write(
+                f"#define KILLER_STEP {search_params.get('killer_step', 1000)}\n")
+            f.write(
+                f"#define COUNTERMOVE_SCORE {search_params.get('countermove_score', 30000)}\n")
+            f.write(
+                f"#define FOLLOWUP_SCORE {search_params.get('followup_score', 25000)}\n")
+            f.write(
+                f"#define PROMOTION_SCORE {search_params.get('promotion_score', 50000)}\n")
+            f.write(
+                f"#define ENDGAME_PASSER_ADVANCE_SCALE {search_params.get('endgame_passer_advance_scale', 2000)}\n")
+            f.write(
+                f"#define BLUNDER_PENALTY {search_params.get('blunder_penalty', -5000)}\n")
+            f.write(
+                f"#define BLUNDER_BONUS {search_params.get('blunder_bonus', 5000)}\n\n")
 
             # RFP 参数
             f.write("/* --- Reverse Futility Pruning --- */\n")
-            f.write(f"#define RFP_DEPTH_SQ_SCALE {search_params.get('rfp_depth_sq_scale', 20)}\n")
-            f.write(f"#define RFP_DEPTH_SCALE {search_params.get('rfp_depth_scale', 40)}\n")
+            f.write(
+                f"#define RFP_DEPTH_SQ_SCALE {search_params.get('rfp_depth_sq_scale', 20)}\n")
+            f.write(
+                f"#define RFP_DEPTH_SCALE {search_params.get('rfp_depth_scale', 40)}\n")
             f.write(f"#define RFP_CAP {search_params.get('rfp_cap', 800)}\n")
-            f.write(f"#define RFP_IMPROVING_NUM {search_params.get('rfp_improving_num', 3)}\n")
-            f.write(f"#define RFP_IMPROVING_DEN {search_params.get('rfp_improving_den', 4)}\n")
-            f.write(f"#define RFP_LOW_PHASE_NUM {search_params.get('rfp_low_phase_num', 3)}\n")
-            f.write(f"#define RFP_LOW_PHASE_DEN {search_params.get('rfp_low_phase_den', 4)}\n\n")
+            f.write(
+                f"#define RFP_IMPROVING_NUM {search_params.get('rfp_improving_num', 3)}\n")
+            f.write(
+                f"#define RFP_IMPROVING_DEN {search_params.get('rfp_improving_den', 4)}\n")
+            f.write(
+                f"#define RFP_LOW_PHASE_NUM {search_params.get('rfp_low_phase_num', 3)}\n")
+            f.write(
+                f"#define RFP_LOW_PHASE_DEN {search_params.get('rfp_low_phase_den', 4)}\n\n")
 
             # NMP 参数
             f.write("/* --- Null Move Pruning --- */\n")
-            f.write(f"#define NMP_BASE_REDUCTION {search_params.get('nmp_base_reduction', 3)}\n")
-            f.write(f"#define NMP_DEPTH_DIVISOR {search_params.get('nmp_depth_divisor', 6)}\n")
-            f.write(f"#define NMP_HIGH_EVAL_THRESHOLD {search_params.get('nmp_high_eval_threshold', 200)}\n")
-            f.write(f"#define NMP_HIGH_EVAL_EXTRA_REDUCTION {search_params.get('nmp_high_eval_extra_reduction', 1)}\n")
-            f.write(f"#define NMP_BIG_ADV_THRESHOLD {search_params.get('nmp_big_adv_threshold', 2000)}\n")
-            f.write(f"#define NMP_BIG_ADV_REDUCTION {search_params.get('nmp_big_adv_reduction', -2)}\n")
-            f.write(f"#define NMP_MED_ADV_THRESHOLD {search_params.get('nmp_med_adv_threshold', 1000)}\n")
-            f.write(f"#define NMP_MED_ADV_REDUCTION {search_params.get('nmp_med_adv_reduction', -1)}\n")
-            f.write(f"#define NMP_LOW_PHASE_THRESHOLD {search_params.get('nmp_low_phase_threshold', 10)}\n")
-            f.write(f"#define NMP_LOW_PHASE_REDUCTION {search_params.get('nmp_low_phase_reduction', -1)}\n\n")
+            f.write(
+                f"#define NMP_BASE_REDUCTION {search_params.get('nmp_base_reduction', 3)}\n")
+            f.write(
+                f"#define NMP_DEPTH_DIVISOR {search_params.get('nmp_depth_divisor', 6)}\n")
+            f.write(
+                f"#define NMP_HIGH_EVAL_THRESHOLD {search_params.get('nmp_high_eval_threshold', 200)}\n")
+            f.write(
+                f"#define NMP_HIGH_EVAL_EXTRA_REDUCTION {search_params.get('nmp_high_eval_extra_reduction', 1)}\n")
+            f.write(
+                f"#define NMP_BIG_ADV_THRESHOLD {search_params.get('nmp_big_adv_threshold', 2000)}\n")
+            f.write(
+                f"#define NMP_BIG_ADV_REDUCTION {search_params.get('nmp_big_adv_reduction', -2)}\n")
+            f.write(
+                f"#define NMP_MED_ADV_THRESHOLD {search_params.get('nmp_med_adv_threshold', 1000)}\n")
+            f.write(
+                f"#define NMP_MED_ADV_REDUCTION {search_params.get('nmp_med_adv_reduction', -1)}\n")
+            f.write(
+                f"#define NMP_LOW_PHASE_THRESHOLD {search_params.get('nmp_low_phase_threshold', 10)}\n")
+            f.write(
+                f"#define NMP_LOW_PHASE_REDUCTION {search_params.get('nmp_low_phase_reduction', -1)}\n\n")
 
             # 其他搜索参数
             f.write("/* --- Other Search --- */\n")
-            f.write(f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 60)}\n")
-            f.write(f"#define HISTORY_PRUNE_BASE {search_params.get('history_prune_base', 3)}\n")
+            f.write(
+                f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 60)}\n")
+            f.write(
+                f"#define HISTORY_PRUNE_BASE {search_params.get('history_prune_base', 3)}\n")
             f.write(f"#define LMP_BASE {search_params.get('lmp_base', 6)}\n")
-            f.write(f"#define SE_BETA_DEPTH_SCALE {search_params.get('se_beta_depth_scale', 2)}\n")
-            f.write(f"#define HISTORY_SCORE_LIMIT {search_params.get('history_score_limit', 8000)}\n")
-            f.write(f"#define HISTORY_UPDATE_SCALE {search_params.get('history_update_scale', 1)}\n\n")
+            f.write(
+                f"#define SE_BETA_DEPTH_SCALE {search_params.get('se_beta_depth_scale', 2)}\n")
+            f.write(
+                f"#define HISTORY_SCORE_LIMIT {search_params.get('history_score_limit', 8000)}\n")
+            f.write(
+                f"#define HISTORY_UPDATE_SCALE {search_params.get('history_update_scale', 1)}\n\n")
 
             # 常量
             constants = parameters.get("constants", {})
@@ -434,9 +605,12 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             f.write(
                 f"#define MATE_SCORE {constants.get('mate_score', 900000)}\n")
             f.write(f"#define DELTA {constants.get('delta', 900)}\n")
-            f.write(f"#define INF_SCORE {constants.get('inf_score', 1000000)}\n")
-            f.write(f"#define PAWN_HASH_SIZE_EXP {constants.get('pawn_hash_size_exp', 18)}\n")
-            f.write(f"#define MAX_BLUNDER_ENTRIES {constants.get('max_blunder_entries', 10000)}\n\n")
+            f.write(
+                f"#define INF_SCORE {constants.get('inf_score', 1000000)}\n")
+            f.write(
+                f"#define PAWN_HASH_SIZE_EXP {constants.get('pawn_hash_size_exp', 18)}\n")
+            f.write(
+                f"#define MAX_BLUNDER_ENTRIES {constants.get('max_blunder_entries', 10000)}\n\n")
 
             f.write(
                 "/* ============================================================================\n")
@@ -453,10 +627,14 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f"#define ENDGAME_NMR_BONUS {constants.get('endgame_nmr_bonus', 1)}\n")
             f.write(
                 f"#define KING_ACTIVITY_WEIGHT {constants.get('king_activity_weight', 10)}\n")
-            f.write(f"#define CLEARLY_WINNING_THRESHOLD {constants.get('clearly_winning_threshold', 2000)}\n")
-            f.write(f"#define FUTILITY_WINNING_THRESHOLD {constants.get('futility_winning_threshold', 2000)}\n")
-            f.write(f"#define FUTILITY_EG_MARGIN_NUM {constants.get('futility_eg_margin_num', 2)}\n")
-            f.write(f"#define FUTILITY_EG_MARGIN_DEN {constants.get('futility_eg_margin_den', 3)}\n\n")
+            f.write(
+                f"#define CLEARLY_WINNING_THRESHOLD {constants.get('clearly_winning_threshold', 2000)}\n")
+            f.write(
+                f"#define FUTILITY_WINNING_THRESHOLD {constants.get('futility_winning_threshold', 2000)}\n")
+            f.write(
+                f"#define FUTILITY_EG_MARGIN_NUM {constants.get('futility_eg_margin_num', 2)}\n")
+            f.write(
+                f"#define FUTILITY_EG_MARGIN_DEN {constants.get('futility_eg_margin_den', 3)}\n\n")
 
             # 机动性表
             mobility = parameters.get("mobility_tables", {})
@@ -493,22 +671,38 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f.write(f"    {row},\n")
             f.write("};\n\n")
 
-            f.write(f"#define KING_DANGER_CAP {king_danger.get('king_danger_cap', 4000)}\n")
-            f.write(f"#define KNIGHT_ATTACK_BASE {king_danger.get('knight_attack_base', 2)}\n")
-            f.write(f"#define BISHOP_ATTACK_BASE {king_danger.get('bishop_attack_base', 2)}\n")
-            f.write(f"#define ROOK_ATTACK_BASE {king_danger.get('rook_attack_base', 3)}\n")
-            f.write(f"#define QUEEN_ATTACK_BASE {king_danger.get('queen_attack_base', 5)}\n")
-            f.write(f"#define KNIGHT_ATTACK_PER_SQ {king_danger.get('knight_attack_per_sq', 1)}\n")
-            f.write(f"#define BISHOP_ATTACK_PER_SQ {king_danger.get('bishop_attack_per_sq', 1)}\n")
-            f.write(f"#define ROOK_ATTACK_PER_SQ {king_danger.get('rook_attack_per_sq', 2)}\n")
-            f.write(f"#define QUEEN_ATTACK_PER_SQ {king_danger.get('queen_attack_per_sq', 2)}\n")
-            f.write(f"#define PAWN_SHIELD_RANK2_PENALTY {king_danger.get('pawn_shield_rank2_penalty', 4)}\n")
-            f.write(f"#define PAWN_SHIELD_NO_PAWN_PENALTY {king_danger.get('pawn_shield_no_pawn_penalty', 10)}\n")
-            f.write(f"#define OPEN_FILE_KING_ZONE_PENALTY {king_danger.get('open_file_king_zone_penalty', 6)}\n")
-            f.write(f"#define SEMI_OPEN_FILE_KING_ZONE_PENALTY {king_danger.get('semi_open_file_king_zone_penalty', 3)}\n")
-            f.write(f"#define ATTACKER_COUNT_BONUS {king_danger.get('attacker_count_bonus', 6)}\n")
-            f.write(f"#define KING_DANGER_EG_SCALE_BASE {king_danger.get('king_danger_eg_scale_base', 40)}\n")
-            f.write(f"#define KING_DANGER_EG_SCALE_PHASE {king_danger.get('king_danger_eg_scale_phase', 40)}\n\n")
+            f.write(
+                f"#define KING_DANGER_CAP {king_danger.get('king_danger_cap', 4000)}\n")
+            f.write(
+                f"#define KNIGHT_ATTACK_BASE {king_danger.get('knight_attack_base', 2)}\n")
+            f.write(
+                f"#define BISHOP_ATTACK_BASE {king_danger.get('bishop_attack_base', 2)}\n")
+            f.write(
+                f"#define ROOK_ATTACK_BASE {king_danger.get('rook_attack_base', 3)}\n")
+            f.write(
+                f"#define QUEEN_ATTACK_BASE {king_danger.get('queen_attack_base', 5)}\n")
+            f.write(
+                f"#define KNIGHT_ATTACK_PER_SQ {king_danger.get('knight_attack_per_sq', 1)}\n")
+            f.write(
+                f"#define BISHOP_ATTACK_PER_SQ {king_danger.get('bishop_attack_per_sq', 1)}\n")
+            f.write(
+                f"#define ROOK_ATTACK_PER_SQ {king_danger.get('rook_attack_per_sq', 2)}\n")
+            f.write(
+                f"#define QUEEN_ATTACK_PER_SQ {king_danger.get('queen_attack_per_sq', 2)}\n")
+            f.write(
+                f"#define PAWN_SHIELD_RANK2_PENALTY {king_danger.get('pawn_shield_rank2_penalty', 4)}\n")
+            f.write(
+                f"#define PAWN_SHIELD_NO_PAWN_PENALTY {king_danger.get('pawn_shield_no_pawn_penalty', 10)}\n")
+            f.write(
+                f"#define OPEN_FILE_KING_ZONE_PENALTY {king_danger.get('open_file_king_zone_penalty', 6)}\n")
+            f.write(
+                f"#define SEMI_OPEN_FILE_KING_ZONE_PENALTY {king_danger.get('semi_open_file_king_zone_penalty', 3)}\n")
+            f.write(
+                f"#define ATTACKER_COUNT_BONUS {king_danger.get('attacker_count_bonus', 6)}\n")
+            f.write(
+                f"#define KING_DANGER_EG_SCALE_BASE {king_danger.get('king_danger_eg_scale_base', 40)}\n")
+            f.write(
+                f"#define KING_DANGER_EG_SCALE_PHASE {king_danger.get('king_danger_eg_scale_phase', 40)}\n\n")
 
             # 时间管理参数
             time_mgmt = parameters.get("time_management", {})
@@ -520,81 +714,139 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 " * ============================================================================\n")
             f.write(" */\n\n")
 
-            est_moves = time_mgmt.get('est_moves_by_material', [35, 25, 22, 18, 15, 12])
-            f.write(f"static const int EST_MOVES_BY_MATERIAL[{len(est_moves)}] = {{\n")
+            est_moves = time_mgmt.get('est_moves_by_material', [
+                                      35, 25, 22, 18, 15, 12])
+            f.write(
+                f"static const int EST_MOVES_BY_MATERIAL[{len(est_moves)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in est_moves) + "\n")
             f.write("};\n\n")
 
-            est_thresholds = time_mgmt.get('est_moves_material_thresholds', [4, 6, 10, 14, 20])
-            f.write(f"static const int EST_MOVES_MATERIAL_THRESHOLDS[{len(est_thresholds)}] = {{\n")
+            est_thresholds = time_mgmt.get(
+                'est_moves_material_thresholds', [4, 6, 10, 14, 20])
+            f.write(
+                f"static const int EST_MOVES_MATERIAL_THRESHOLDS[{len(est_thresholds)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in est_thresholds) + "\n")
             f.write("};\n\n")
 
-            root_capture = time_mgmt.get('root_capture_value', [0, 100, 300, 320, 500, 900, 0])
-            f.write(f"static const int ROOT_CAPTURE_VALUE[{len(root_capture)}] = {{\n")
+            root_capture = time_mgmt.get('root_capture_value', [
+                                         0, 100, 300, 320, 500, 900, 0])
+            f.write(
+                f"static const int ROOT_CAPTURE_VALUE[{len(root_capture)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in root_capture) + "\n")
             f.write("};\n\n")
 
-            root_attacker = time_mgmt.get('root_attacker_value', [0, 10, 30, 30, 50, 90, 0])
-            f.write(f"static const int ROOT_ATTACKER_VALUE[{len(root_attacker)}] = {{\n")
+            root_attacker = time_mgmt.get('root_attacker_value', [
+                                          0, 10, 30, 30, 50, 90, 0])
+            f.write(
+                f"static const int ROOT_ATTACKER_VALUE[{len(root_attacker)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in root_attacker) + "\n")
             f.write("};\n\n")
 
-            mat_depth_bonus = time_mgmt.get('material_depth_bonus', [4, 3, 2, 1])
-            f.write(f"static const int MATERIAL_DEPTH_BONUS[{len(mat_depth_bonus)}] = {{\n")
+            mat_depth_bonus = time_mgmt.get(
+                'material_depth_bonus', [4, 3, 2, 1])
+            f.write(
+                f"static const int MATERIAL_DEPTH_BONUS[{len(mat_depth_bonus)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in mat_depth_bonus) + "\n")
             f.write("};\n\n")
 
-            mat_depth_thresh = time_mgmt.get('material_depth_thresholds', [4, 6, 10, 14])
-            f.write(f"static const int MATERIAL_DEPTH_THRESHOLDS[{len(mat_depth_thresh)}] = {{\n")
-            f.write("    " + ", ".join(str(v) for v in mat_depth_thresh) + "\n")
+            mat_depth_thresh = time_mgmt.get(
+                'material_depth_thresholds', [4, 6, 10, 14])
+            f.write(
+                f"static const int MATERIAL_DEPTH_THRESHOLDS[{len(mat_depth_thresh)}] = {{\n")
+            f.write("    " + ", ".join(str(v)
+                    for v in mat_depth_thresh) + "\n")
             f.write("};\n\n")
 
-            f.write(f"#define OPTIMAL_TIME_INC_FRACTION_NUM {time_mgmt.get('optimal_time_inc_fraction_num', 1)}\n")
-            f.write(f"#define OPTIMAL_TIME_INC_FRACTION_DEN {time_mgmt.get('optimal_time_inc_fraction_den', 2)}\n")
-            f.write(f"#define MAX_TIME_FRACTION_NUM {time_mgmt.get('max_time_fraction_num', 2)}\n")
-            f.write(f"#define MAX_TIME_FRACTION_DEN {time_mgmt.get('max_time_fraction_den', 5)}\n")
-            f.write(f"#define MAX_TIME_OPTIMAL_MULTIPLIER {time_mgmt.get('max_time_optimal_multiplier', 4)}\n")
-            f.write(f"#define EXTREME_PRESSURE_FRACTION_NUM {time_mgmt.get('extreme_pressure_fraction_num', 2)}\n")
-            f.write(f"#define EXTREME_PRESSURE_FRACTION_DEN {time_mgmt.get('extreme_pressure_fraction_den', 5)}\n")
-            f.write(f"#define EXTREME_PRESSURE_INC_FRACTION_NUM {time_mgmt.get('extreme_pressure_inc_fraction_num', 4)}\n")
-            f.write(f"#define EXTREME_PRESSURE_INC_FRACTION_DEN {time_mgmt.get('extreme_pressure_inc_fraction_den', 5)}\n")
-            f.write(f"#define EXTREME_PRESSURE_SAFETY_MARGIN {time_mgmt.get('extreme_pressure_safety_margin', 50)}\n")
-            f.write(f"#define MIN_OPTIMAL_TIME_MS {time_mgmt.get('min_optimal_time_ms', 10)}\n")
-            f.write(f"#define TIME_CHECK_MASK_NORMAL {time_mgmt.get('time_check_mask_normal', 511)}\n")
-            f.write(f"#define TIME_CHECK_MASK_LOW {time_mgmt.get('time_check_mask_low', 127)}\n")
-            f.write(f"#define TIME_CHECK_MASK_VERY_LOW {time_mgmt.get('time_check_mask_very_low', 255)}\n")
-            f.write(f"#define REPETITION_SCORE {time_mgmt.get('repetition_score', 200000)}\n")
-            f.write(f"#define REPETITION_EVAL_THRESHOLD {time_mgmt.get('repetition_eval_threshold', 50)}\n")
-            f.write(f"#define IN_CHECK_TIME_REDUCTION_NUM {time_mgmt.get('in_check_time_reduction_num', 17)}\n")
-            f.write(f"#define IN_CHECK_TIME_REDUCTION_DEN {time_mgmt.get('in_check_time_reduction_den', 20)}\n")
-            f.write(f"#define INITIAL_ASPIRATION_WINDOW {time_mgmt.get('initial_aspiration_window', 50)}\n")
-            f.write(f"#define ASPIRATION_WINDOW_GROWTH_BASE {time_mgmt.get('aspiration_window_growth_base', 10)}\n")
-            f.write(f"#define ASPIRATION_FULL_WINDOW_THRESHOLD {time_mgmt.get('aspiration_full_window_threshold', 500)}\n")
-            f.write(f"#define HISTORY_DECAY_NUM {time_mgmt.get('history_decay_num', 9)}\n")
-            f.write(f"#define HISTORY_DECAY_DEN {time_mgmt.get('history_decay_den', 10)}\n")
-            f.write(f"#define NORMAL_ASPIRATION_WINDOW {time_mgmt.get('normal_aspiration_window', 25)}\n")
-            f.write(f"#define EASY_MOVE_STABILITY_COUNT {time_mgmt.get('easy_move_stability_count', 3)}\n")
-            f.write(f"#define EASY_MOVE_SCORE_THRESHOLD {time_mgmt.get('easy_move_score_threshold', 10)}\n")
-            f.write(f"#define EASY_MOVE_TIME_FRACTION_NUM {time_mgmt.get('easy_move_time_fraction_num', 1)}\n")
-            f.write(f"#define EASY_MOVE_TIME_FRACTION_DEN {time_mgmt.get('easy_move_time_fraction_den', 2)}\n")
-            f.write(f"#define PANIC_SCORE_DROP_THRESHOLD {time_mgmt.get('panic_score_drop_threshold', 100)}\n")
-            f.write(f"#define HARD_MOVE_SCORE_DROP_THRESHOLD {time_mgmt.get('hard_move_score_drop_threshold', 50)}\n")
-            f.write(f"#define HARD_MOVE_TIME_MULTIPLIER_NUM {time_mgmt.get('hard_move_time_multiplier_num', 5)}\n")
-            f.write(f"#define HARD_MOVE_TIME_MULTIPLIER_DEN {time_mgmt.get('hard_move_time_multiplier_den', 2)}\n")
-            f.write(f"#define NORMAL_TIME_MULTIPLIER_NUM {time_mgmt.get('normal_time_multiplier_num', 11)}\n")
-            f.write(f"#define NORMAL_TIME_MULTIPLIER_DEN {time_mgmt.get('normal_time_multiplier_den', 10)}\n")
-            f.write(f"#define SAFETY_CAP_REMAINING_FRACTION_NUM {time_mgmt.get('safety_cap_remaining_fraction_num', 1)}\n")
-            f.write(f"#define SAFETY_CAP_REMAINING_FRACTION_DEN {time_mgmt.get('safety_cap_remaining_fraction_den', 4)}\n")
-            f.write(f"#define SAFETY_CAP_INC_FRACTION_NUM {time_mgmt.get('safety_cap_inc_fraction_num', 1)}\n")
-            f.write(f"#define SAFETY_CAP_INC_FRACTION_DEN {time_mgmt.get('safety_cap_inc_fraction_den', 2)}\n")
-            f.write(f"#define SAFETY_CAP_MIN_TIME_MS {time_mgmt.get('safety_cap_min_time_ms', 50)}\n")
-            f.write(f"#define SMP_DEPTH_OFFSET_BASE {time_mgmt.get('smp_depth_offset_base', 1)}\n")
-            f.write(f"#define SMP_DEPTH_OFFSET_MOD {time_mgmt.get('smp_depth_offset_mod', 4)}\n")
-            f.write(f"#define SMP_ASPIRATION_WINDOW {time_mgmt.get('smp_aspiration_window', 50)}\n")
-            f.write(f"#define SMP_WINDOW_RETRY_MULTIPLIER {time_mgmt.get('smp_window_retry_multiplier', 4)}\n")
-            f.write(f"#define SMP_TIME_CHECK_FRACTION_NUM {time_mgmt.get('smp_time_check_fraction_num', 7)}\n")
-            f.write(f"#define SMP_TIME_CHECK_FRACTION_DEN {time_mgmt.get('smp_time_check_fraction_den', 10)}\n\n")
+            f.write(
+                f"#define OPTIMAL_TIME_INC_FRACTION_NUM {time_mgmt.get('optimal_time_inc_fraction_num', 1)}\n")
+            f.write(
+                f"#define OPTIMAL_TIME_INC_FRACTION_DEN {time_mgmt.get('optimal_time_inc_fraction_den', 2)}\n")
+            f.write(
+                f"#define MAX_TIME_FRACTION_NUM {time_mgmt.get('max_time_fraction_num', 2)}\n")
+            f.write(
+                f"#define MAX_TIME_FRACTION_DEN {time_mgmt.get('max_time_fraction_den', 5)}\n")
+            f.write(
+                f"#define MAX_TIME_OPTIMAL_MULTIPLIER {time_mgmt.get('max_time_optimal_multiplier', 4)}\n")
+            f.write(
+                f"#define EXTREME_PRESSURE_FRACTION_NUM {time_mgmt.get('extreme_pressure_fraction_num', 2)}\n")
+            f.write(
+                f"#define EXTREME_PRESSURE_FRACTION_DEN {time_mgmt.get('extreme_pressure_fraction_den', 5)}\n")
+            f.write(
+                f"#define EXTREME_PRESSURE_INC_FRACTION_NUM {time_mgmt.get('extreme_pressure_inc_fraction_num', 4)}\n")
+            f.write(
+                f"#define EXTREME_PRESSURE_INC_FRACTION_DEN {time_mgmt.get('extreme_pressure_inc_fraction_den', 5)}\n")
+            f.write(
+                f"#define EXTREME_PRESSURE_SAFETY_MARGIN {time_mgmt.get('extreme_pressure_safety_margin', 50)}\n")
+            f.write(
+                f"#define MIN_OPTIMAL_TIME_MS {time_mgmt.get('min_optimal_time_ms', 10)}\n")
+            f.write(
+                f"#define TIME_CHECK_MASK_NORMAL {time_mgmt.get('time_check_mask_normal', 511)}\n")
+            f.write(
+                f"#define TIME_CHECK_MASK_LOW {time_mgmt.get('time_check_mask_low', 127)}\n")
+            f.write(
+                f"#define TIME_CHECK_MASK_VERY_LOW {time_mgmt.get('time_check_mask_very_low', 255)}\n")
+            f.write(
+                f"#define REPETITION_SCORE {time_mgmt.get('repetition_score', 200000)}\n")
+            f.write(
+                f"#define REPETITION_EVAL_THRESHOLD {time_mgmt.get('repetition_eval_threshold', 50)}\n")
+            f.write(
+                f"#define IN_CHECK_TIME_REDUCTION_NUM {time_mgmt.get('in_check_time_reduction_num', 17)}\n")
+            f.write(
+                f"#define IN_CHECK_TIME_REDUCTION_DEN {time_mgmt.get('in_check_time_reduction_den', 20)}\n")
+            f.write(
+                f"#define INITIAL_ASPIRATION_WINDOW {time_mgmt.get('initial_aspiration_window', 50)}\n")
+            f.write(
+                f"#define ASPIRATION_WINDOW_GROWTH_BASE {time_mgmt.get('aspiration_window_growth_base', 10)}\n")
+            f.write(
+                f"#define ASPIRATION_FULL_WINDOW_THRESHOLD {time_mgmt.get('aspiration_full_window_threshold', 500)}\n")
+            f.write(
+                f"#define HISTORY_DECAY_NUM {time_mgmt.get('history_decay_num', 9)}\n")
+            f.write(
+                f"#define HISTORY_DECAY_DEN {time_mgmt.get('history_decay_den', 10)}\n")
+            f.write(
+                f"#define NORMAL_ASPIRATION_WINDOW {time_mgmt.get('normal_aspiration_window', 25)}\n")
+            f.write(
+                f"#define EASY_MOVE_STABILITY_COUNT {time_mgmt.get('easy_move_stability_count', 3)}\n")
+            f.write(
+                f"#define EASY_MOVE_SCORE_THRESHOLD {time_mgmt.get('easy_move_score_threshold', 10)}\n")
+            f.write(
+                f"#define EASY_MOVE_TIME_FRACTION_NUM {time_mgmt.get('easy_move_time_fraction_num', 1)}\n")
+            f.write(
+                f"#define EASY_MOVE_TIME_FRACTION_DEN {time_mgmt.get('easy_move_time_fraction_den', 2)}\n")
+            f.write(
+                f"#define PANIC_SCORE_DROP_THRESHOLD {time_mgmt.get('panic_score_drop_threshold', 100)}\n")
+            f.write(
+                f"#define HARD_MOVE_SCORE_DROP_THRESHOLD {time_mgmt.get('hard_move_score_drop_threshold', 50)}\n")
+            f.write(
+                f"#define HARD_MOVE_TIME_MULTIPLIER_NUM {time_mgmt.get('hard_move_time_multiplier_num', 5)}\n")
+            f.write(
+                f"#define HARD_MOVE_TIME_MULTIPLIER_DEN {time_mgmt.get('hard_move_time_multiplier_den', 2)}\n")
+            f.write(
+                f"#define NORMAL_TIME_MULTIPLIER_NUM {time_mgmt.get('normal_time_multiplier_num', 11)}\n")
+            f.write(
+                f"#define NORMAL_TIME_MULTIPLIER_DEN {time_mgmt.get('normal_time_multiplier_den', 10)}\n")
+            f.write(
+                f"#define SAFETY_CAP_REMAINING_FRACTION_NUM {time_mgmt.get('safety_cap_remaining_fraction_num', 1)}\n")
+            f.write(
+                f"#define SAFETY_CAP_REMAINING_FRACTION_DEN {time_mgmt.get('safety_cap_remaining_fraction_den', 4)}\n")
+            f.write(
+                f"#define SAFETY_CAP_INC_FRACTION_NUM {time_mgmt.get('safety_cap_inc_fraction_num', 1)}\n")
+            f.write(
+                f"#define SAFETY_CAP_INC_FRACTION_DEN {time_mgmt.get('safety_cap_inc_fraction_den', 2)}\n")
+            f.write(
+                f"#define SAFETY_CAP_MIN_TIME_MS {time_mgmt.get('safety_cap_min_time_ms', 50)}\n")
+            f.write(
+                f"#define SMP_DEPTH_OFFSET_BASE {time_mgmt.get('smp_depth_offset_base', 1)}\n")
+            f.write(
+                f"#define SMP_DEPTH_OFFSET_MOD {time_mgmt.get('smp_depth_offset_mod', 4)}\n")
+            f.write(
+                f"#define SMP_ASPIRATION_WINDOW {time_mgmt.get('smp_aspiration_window', 50)}\n")
+            f.write(
+                f"#define SMP_WINDOW_RETRY_MULTIPLIER {time_mgmt.get('smp_window_retry_multiplier', 4)}\n")
+            f.write(
+                f"#define SMP_TIME_CHECK_FRACTION_NUM {time_mgmt.get('smp_time_check_fraction_num', 7)}\n")
+            f.write(
+                f"#define SMP_TIME_CHECK_FRACTION_DEN {time_mgmt.get('smp_time_check_fraction_den', 10)}\n\n")
 
             # 多线程
             threading = parameters.get("threading", {})

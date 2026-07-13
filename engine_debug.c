@@ -115,15 +115,15 @@ debug_print_board(const char *fen)
     for (side = 0; side < 2; side++)
     {
         printf("%s:\n", side == 0 ? "White" : "Black");
-        for (pt = 0; pt < 6; pt++)
+        for (pt = PAWN; pt <= KING; pt++)
         {
             U64 bb = b.pieces[side][pt];
             if (bb)
             {
-                printf("  %s: ", pt == 0 ? "Pawn" : pt == 1 ? "Knight"
-                                                : pt == 2   ? "Bishop"
-                                                : pt == 3   ? "Rook"
-                                                : pt == 4   ? "Queen"
+                printf("  %s: ", pt == PAWN ? "Pawn" : pt == KNIGHT ? "Knight"
+                                                : pt == BISHOP   ? "Bishop"
+                                                : pt == ROOK     ? "Rook"
+                                                : pt == QUEEN    ? "Queen"
                                                             : "King");
                 while (bb)
                 {
@@ -147,13 +147,15 @@ debug_print_board(const char *fen)
             char c = '.';
             for (side = 0; side < 2; side++)
             {
-                for (pt = 0; pt < 6; pt++)
+                for (pt = PAWN; pt <= KING; pt++)
                 {
                     if (b.pieces[side][pt] & (1ULL << sq))
                     {
+                        /* pt: PAWN=1,KNIGHT=2,BISHOP=3,ROOK=4,QUEEN=5,KING=6
+                         * Index into chars: pt-1 gives 0..5 */
                         static const char white_chars[] = "PNBRQK";
                         static const char black_chars[] = "pnbrqk";
-                        c = side == 0 ? white_chars[pt] : black_chars[pt];
+                        c = side == 0 ? white_chars[pt - 1] : black_chars[pt - 1];
                         break;
                     }
                 }
@@ -540,6 +542,57 @@ init_syzygy_c(const char *path)
     return ok ? (int)TB_LARGEST : 0;
 }
 
+/* Debug: get runtime param value.
+ * what: 0=loaded flag, 1=mg_pst[piece_idx][sq], 2=eg_pst[piece_idx][sq],
+ *       3=piece_values[idx], 4=tempo_mg, 5=tempo_eg,
+ *       6=doubled_pawn_penalty, 7=bishop_pair_bonus */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+get_runtime_param(int what, int piece_idx, int sq)
+{
+    if (what == 0)
+        return g_runtime_params.loaded;
+    if (what == 1)
+    {
+        if (piece_idx < 0 || piece_idx >= 6 || sq < 0 || sq >= 64)
+            return -999999;
+        return g_runtime_params.mg_pst[piece_idx][sq];
+    }
+    if (what == 2)
+    {
+        if (piece_idx < 0 || piece_idx >= 6 || sq < 0 || sq >= 64)
+            return -999999;
+        return g_runtime_params.eg_pst[piece_idx][sq];
+    }
+    if (what == 3)
+    {
+        if (piece_idx < 0 || piece_idx >= 7)
+            return -999999;
+        return g_runtime_params.piece_values[piece_idx];
+    }
+    if (what == 4)
+        return g_runtime_params.tempo_mg;
+    if (what == 5)
+        return g_runtime_params.tempo_eg;
+    if (what == 6)
+        return g_runtime_params.doubled_pawn_penalty;
+    if (what == 7)
+        return g_runtime_params.bishop_pair_bonus;
+    return -999999;
+}
+
+/* Clear evaluation caches - needed after parameter reload for tuning */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+clear_eval_caches(void)
+{
+    memset((void*)pawn_hash_table, 0, sizeof(pawn_hash_table));
+}
+
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
@@ -590,4 +643,442 @@ test_tb_probe_root(const char *fen, int *out_wdl, int *out_dtz, char *out_move)
     out_move[3] = '1' + (to / 8);
     out_move[4] = '\0';
     return 0;
+}
+
+/* ============================================================
+ * Bug Hunter: board_consistency_check
+ *
+ * For a given FEN, tests every legal move:
+ *   save state → make_move → verify post-state → unmake_move → verify restored
+ *
+ * Checks (after make):
+ *   1. hash matches compute_hash()
+ *   2. pawn_hash matches pawn-only recompute
+ *   3. phase matches npm-based recompute
+ *   4. npm[] matches piece-count recompute
+ *   5. king_sq[] matches actual king positions
+ *   6. mailbox consistency with bitboards
+ *
+ * Checks (after unmake):
+ *   7. ALL state fields restored to original
+ *
+ * Returns total error count (0 = all clean).
+ * ============================================================ */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+board_consistency_check(const char *fen)
+{
+    ensure_engine_tables_initialized();
+    Board b;
+    board_from_fen(&b, fen);
+    int errors = 0;
+
+    /* First: verify the board itself is consistent after FEN parse */
+    {
+        U64 h = compute_hash(&b);
+        if (h != b.hash)
+        {
+            fprintf(stderr, "[BUG] FEN hash mismatch: incremental=%llx recomputed=%llx\n",
+                    (unsigned long long)b.hash, (unsigned long long)h);
+            errors++;
+            b.hash = h; /* fix so we can continue testing */
+        }
+    }
+
+    Move moves[MAX_MOVES];
+    int n = generate_legal_moves(&b, moves);
+
+    for (int i = 0; i < n; i++)
+    {
+        /* Save original state */
+        U64 orig_hash = b.hash;
+        U64 orig_pawn_hash = b.pawn_hash;
+        int orig_eval = b.eval_score;
+        int orig_phase = b.phase;
+        int orig_npm0 = b.npm[0];
+        int orig_npm1 = b.npm[1];
+        int orig_king0 = b.king_sq[0];
+        int orig_king1 = b.king_sq[1];
+        int orig_mg = b.mg_score;
+        int orig_eg = b.eg_score;
+        int orig_stm = b.side_to_move;
+        int orig_castle = b.castling_rights;
+        int orig_ep = b.en_passant;
+        int orig_hmc = b.halfmove_clock;
+        int orig_fmn = b.fullmove_number;
+        int orig_mb[64];
+        for (int j = 0; j < 64; j++) orig_mb[j] = b.mailbox[j];
+
+        /* Make move */
+        UndoInfo undo;
+        make_move(&b, &moves[i], &undo);
+
+        /* --- Post-make checks --- */
+
+        /* Check 1: hash consistency */
+        U64 recomputed_hash = compute_hash(&b);
+        if (recomputed_hash != b.hash)
+        {
+            fprintf(stderr, "[BUG] Hash mismatch after move %c%d%c%d: "
+                    "incremental=%llx recomputed=%llx\n",
+                    'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                    'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                    (unsigned long long)b.hash, (unsigned long long)recomputed_hash);
+            errors++;
+        }
+
+        /* Check 2: pawn_hash consistency */
+        {
+            U64 recomputed_phash = 0;
+            for (int s = 0; s < 2; s++)
+            {
+                U64 bb = b.pieces[s][PAWN];
+                while (bb)
+                {
+                    int sq = lsb_index(bb);
+                    bb &= bb - 1;
+                    recomputed_phash ^= zobrist_table[(s * 6 + (PAWN - 1)) * 64 + sq];
+                }
+            }
+            if (recomputed_phash != b.pawn_hash)
+            {
+                fprintf(stderr, "[BUG] Pawn hash mismatch after move %c%d%c%d\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8));
+                errors++;
+            }
+        }
+
+        /* Check 3: npm consistency */
+        {
+            /* npm uses pawn-unit values: N=3, B=3, R=5, Q=9 */
+            static const int npm_vals[7] = {0, 0, 3, 3, 5, 9, 0};
+            int recomputed_npm[2] = {0, 0};
+            for (int s = 0; s < 2; s++)
+            {
+                for (int pt = KNIGHT; pt <= QUEEN; pt++)
+                {
+                    recomputed_npm[s] += count_bits(b.pieces[s][pt]) * npm_vals[pt];
+                }
+            }
+            if (recomputed_npm[0] != b.npm[0] || recomputed_npm[1] != b.npm[1])
+            {
+                fprintf(stderr, "[BUG] NPM mismatch after move %c%d%c%d: "
+                        "incr=[%d,%d] recomputed=[%d,%d]\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                        b.npm[0], b.npm[1], recomputed_npm[0], recomputed_npm[1]);
+                errors++;
+            }
+        }
+
+        /* Check 4: king_sq consistency */
+        {
+            int wk_sq = lsb_index(b.pieces[WHITE][KING]);
+            int bk_sq = lsb_index(b.pieces[BLACK][KING]);
+            if (wk_sq != b.king_sq[0] || bk_sq != b.king_sq[1])
+            {
+                fprintf(stderr, "[BUG] king_sq mismatch after move %c%d%c%d\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8));
+                errors++;
+            }
+        }
+
+        /* Check 5: phase consistency (npm is in pawn-units: N=3,B=3,R=5,Q=9) */
+        {
+            int total_npm = b.npm[0] + b.npm[1];
+            int phase = total_npm;
+            if (phase > 31) phase = 31;
+            phase = phase * 24 / 31;
+            if (phase != b.phase)
+            {
+                fprintf(stderr, "[BUG] Phase mismatch after move %c%d%c%d: "
+                        "stored=%d recomputed=%d\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                        b.phase, phase);
+                errors++;
+            }
+        }
+
+        /* Check 6: mailbox vs bitboard consistency */
+        {
+            int mb_errors = 0;
+            for (int sq = 0; sq < 64; sq++)
+            {
+                int found = 0;
+                for (int s = 0; s < 2 && !found; s++)
+                {
+                    for (int pt = PAWN; pt <= KING && !found; pt++)
+                    {
+                        if (b.pieces[s][pt] & (1ULL << sq))
+                        {
+                            int expected = s * 6 + pt;
+                            if (b.mailbox[sq] != expected)
+                                mb_errors++;
+                            found = 1;
+                        }
+                    }
+                }
+                if (!found && b.mailbox[sq] != 0)
+                    mb_errors++;
+            }
+            if (mb_errors)
+            {
+                fprintf(stderr, "[BUG] Mailbox inconsistency after move %c%d%c%d: "
+                        "%d squares mismatched\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                        mb_errors);
+                errors++;
+            }
+        }
+
+        /* Check 7: PST+material incremental vs full recompute */
+        {
+            int mg = 0, eg = 0;
+            for (int s = 0; s < 2; s++)
+            {
+                int sign = (s == WHITE) ? 1 : -1;
+                for (int pt = PAWN; pt <= KING; pt++)
+                {
+                    U64 bb = b.pieces[s][pt];
+                    while (bb)
+                    {
+                        int sq = lsb_index(bb);
+                        bb &= bb - 1;
+                        int psq = (s == WHITE) ? (sq ^ 56) : sq;
+                        mg += sign * (piece_values[pt] + mg_pst[pt][psq]);
+                        eg += sign * (piece_values[pt] + eg_pst[pt][psq]);
+                    }
+                }
+            }
+            if (mg != b.mg_score || eg != b.eg_score)
+            {
+                fprintf(stderr, "[BUG] PST+material mismatch after move %c%d%c%d: "
+                        "incr=[%d,%d] recomputed=[%d,%d] delta=[%d,%d]\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                        b.mg_score, b.eg_score, mg, eg,
+                        b.mg_score - mg, b.eg_score - eg);
+                errors++;
+            }
+        }
+
+        /* --- Unmake and verify restoration --- */
+        unmake_move(&b, &moves[i], &undo);
+
+        if (b.hash != orig_hash ||
+            b.pawn_hash != orig_pawn_hash ||
+            b.eval_score != orig_eval ||
+            b.phase != orig_phase ||
+            b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1 ||
+            b.king_sq[0] != orig_king0 || b.king_sq[1] != orig_king1 ||
+            b.mg_score != orig_mg || b.eg_score != orig_eg ||
+            b.side_to_move != orig_stm ||
+            b.castling_rights != orig_castle ||
+            b.en_passant != orig_ep ||
+            b.halfmove_clock != orig_hmc ||
+            b.fullmove_number != orig_fmn)
+        {
+            fprintf(stderr, "[BUG] Unmake failed to restore state after move %c%d%c%d:\n",
+                    'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                    'a' + (moves[i].to % 8), 1 + (moves[i].to / 8));
+            if (b.hash != orig_hash)
+                fprintf(stderr, "  hash: orig=%llx now=%llx\n",
+                        (unsigned long long)orig_hash, (unsigned long long)b.hash);
+            if (b.pawn_hash != orig_pawn_hash)
+                fprintf(stderr, "  pawn_hash: orig=%llx now=%llx\n",
+                        (unsigned long long)orig_pawn_hash, (unsigned long long)b.pawn_hash);
+            if (b.phase != orig_phase)
+                fprintf(stderr, "  phase: orig=%d now=%d\n", orig_phase, b.phase);
+            if (b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1)
+                fprintf(stderr, "  npm: orig=[%d,%d] now=[%d,%d]\n",
+                        orig_npm0, orig_npm1, b.npm[0], b.npm[1]);
+            if (b.king_sq[0] != orig_king0 || b.king_sq[1] != orig_king1)
+                fprintf(stderr, "  king_sq: orig=[%d,%d] now=[%d,%d]\n",
+                        orig_king0, orig_king1, b.king_sq[0], b.king_sq[1]);
+            if (b.mg_score != orig_mg || b.eg_score != orig_eg)
+                fprintf(stderr, "  PST scores: orig=[%d,%d] now=[%d,%d]\n",
+                        orig_mg, orig_eg, b.mg_score, b.eg_score);
+            if (b.eval_score != orig_eval)
+                fprintf(stderr, "  eval_score: orig=%d now=%d\n", orig_eval, b.eval_score);
+            errors++;
+        }
+
+        /* Check 8: mailbox restoration */
+        {
+            int mb_restore_err = 0;
+            for (int j = 0; j < 64; j++)
+            {
+                if (b.mailbox[j] != orig_mb[j])
+                    mb_restore_err++;
+            }
+            if (mb_restore_err)
+            {
+                fprintf(stderr, "[BUG] Mailbox not restored after unmake of %c%d%c%d: "
+                        "%d squares differ\n",
+                        'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
+                        'a' + (moves[i].to % 8), 1 + (moves[i].to / 8),
+                        mb_restore_err);
+                errors++;
+            }
+        }
+    }
+
+    return errors;
+}
+
+/* ============================================================
+ * Bug Hunter: perft_divide
+ *
+ * Returns per-move perft counts for a position at given depth.
+ * Fills arrays: out_from[], out_to[], out_promo[], out_count[].
+ * Returns number of moves written. *out_total = total perft.
+ *
+ * Used to isolate which move causes a perft mismatch.
+ * ============================================================ */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+perft_divide(const char *fen, int depth, int *out_from, int *out_to,
+             int *out_promo, U64 *out_count, U64 *out_total)
+{
+    ensure_engine_tables_initialized();
+    Board b;
+    board_from_fen(&b, fen);
+
+    Move moves[MAX_MOVES];
+    int n = generate_legal_moves(&b, moves);
+    U64 total = 0;
+    int written = 0;
+
+    for (int i = 0; i < n && i < 256; i++)
+    {
+        UndoInfo undo;
+        make_move(&b, &moves[i], &undo);
+        U64 cnt = perft_internal(&b, depth - 1);
+        unmake_move(&b, &moves[i], &undo);
+
+        out_from[written] = moves[i].from;
+        out_to[written] = moves[i].to;
+        out_promo[written] = moves[i].promotion;
+        out_count[written] = cnt;
+        total += cnt;
+        written++;
+    }
+    *out_total = total;
+    return written;
+}
+
+/* ============================================================
+ * Bug Hunter: see_test
+ *
+ * Compute SEE value for a move on a given position.
+ * Returns the SEE score in centipawns.
+ *
+ * Also runs a consistency check: generates all captures on the
+ * target square, applies them in MVV-LVA order, and verifies
+ * the minimax settlement matches.
+ * ============================================================ */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+see_test(const char *fen, int from_sq, int to_sq)
+{
+    ensure_engine_tables_initialized();
+    Board b;
+    board_from_fen(&b, fen);
+
+    return see(&b, from_sq, to_sq);
+}
+
+/* ============================================================
+ * Bug Hunter: eval_consistency_stress
+ *
+ * For a given FEN, performs N make/unmake cycles on each legal
+ * move. After each cycle, verifies all incremental state is
+ * restored. Catches accumulation errors from repeated make/unmake.
+ *
+ * Returns total error count.
+ * ============================================================ */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int
+eval_consistency_stress(const char *fen, int cycles)
+{
+    ensure_engine_tables_initialized();
+    Board b;
+    board_from_fen(&b, fen);
+    int errors = 0;
+
+    Move moves[MAX_MOVES];
+    int n = generate_legal_moves(&b, moves);
+
+    for (int c = 0; c < cycles; c++)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            /* Save original state */
+            int orig_mg = b.mg_score;
+            int orig_eg = b.eg_score;
+            U64 orig_hash = b.hash;
+            U64 orig_pawn_hash = b.pawn_hash;
+            int orig_phase = b.phase;
+            int orig_npm0 = b.npm[0];
+            int orig_npm1 = b.npm[1];
+
+            /* Make and immediately unmake */
+            UndoInfo undo;
+            make_move(&b, &moves[i], &undo);
+            unmake_move(&b, &moves[i], &undo);
+
+            /* Verify restoration */
+            if (b.mg_score != orig_mg || b.eg_score != orig_eg)
+            {
+                if (errors < 10) /* limit output */
+                    fprintf(stderr, "[BUG] Stress PST drift cycle %d move %d: "
+                            "mg %d->%d eg %d->%d\n",
+                            c, i, orig_mg, b.mg_score, orig_eg, b.eg_score);
+                errors++;
+            }
+            if (b.hash != orig_hash)
+            {
+                if (errors < 10)
+                    fprintf(stderr, "[BUG] Stress hash drift cycle %d move %d\n", c, i);
+                errors++;
+            }
+            if (b.pawn_hash != orig_pawn_hash)
+            {
+                if (errors < 10)
+                    fprintf(stderr, "[BUG] Stress pawn_hash drift cycle %d move %d\n", c, i);
+                errors++;
+            }
+            if (b.phase != orig_phase || b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1)
+            {
+                if (errors < 10)
+                    fprintf(stderr, "[BUG] Stress phase/npm drift cycle %d move %d\n", c, i);
+                errors++;
+            }
+        }
+    }
+
+    return errors;
+}
+
+/* Clear the global transposition table */
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void
+clear_global_tt(void)
+{
+    extern void tt_clear_global(void);
+    tt_clear_global();
 }

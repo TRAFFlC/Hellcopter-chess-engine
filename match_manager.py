@@ -1,6 +1,7 @@
 import os
 import threading
 import time as time_mod
+from datetime import datetime
 import chess
 
 from chess_logic import INITIAL_BOARD, apply_move, is_in_check
@@ -608,6 +609,27 @@ def run_engine_match(engine1_id, engine2_id, engine1_name, engine2_name,
                 match_state.set_game_over(True, "超过300步，和棋！")
                 match_state.add_draw_score()
             sse_notify(match_board_to_dict())
+
+            # 保存对局记录
+            try:
+                from web_chess import _save_game_pgn
+                result_str = match_state._state.get("game_result", "*")
+                if "白方" in result_str or "1-0" in result_str:
+                    pgn_result = "1-0"
+                elif "黑方" in result_str or "0-1" in result_str:
+                    pgn_result = "0-1"
+                elif "和棋" in result_str or "1/2" in result_str:
+                    pgn_result = "1/2-1/2"
+                else:
+                    pgn_result = "*"
+                _save_game_pgn(
+                    match_state.move_history,
+                    white_name, black_name,
+                    pgn_result,
+                    game_id=f"game_{datetime.now().strftime('%Y%m%d_%H%M%S')}_g{game_idx + 1}"
+                )
+            except Exception as ex:
+                print(f"[MATCH] Failed to save game: {ex}")
 
     finally:
         e1.quit()

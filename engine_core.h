@@ -96,6 +96,13 @@ typedef struct
     int is_endgame;
     double endgame_factor;
     double complexity_factor;
+    /* Critical position detection (Task 5) */
+    double base_optimal_time;
+    int critical_position_flag;
+    double time_bank;
+    int root_eval;
+    int aw_fails_last_iter;
+    int nodes_last_iter;
 } TimeManager;
 
 typedef struct
@@ -105,7 +112,7 @@ typedef struct
     int32_t score;   /* int32 to hold MATE_SCORE (900000) without overflow */
     int16_t flag;
     Move best_move;
-    uint8_t generation;
+    uint16_t generation;
 } TT_Entry;
 
 typedef struct
@@ -150,6 +157,11 @@ typedef struct
 
     int static_eval_stack[128];
     Move se_excluded[128]; /* Singular Extension: excluded move per ply */
+    int piece_type_stack[128]; /* Piece type before make_move, for cont_history indexing */
+
+    /* ProbCut statistics */
+    int probcut_prunes;
+    int probcut_nodes_saved;
 
     /* SMP tracking (Task 5, 6, 8) */
     int thread_id;
@@ -164,8 +176,14 @@ typedef struct {
     int history[64][64];
     Move countermove[2][64][64];
     Move followup[2][64][64];
+    int16_t capture_history[7][64][7];
+    int16_t cont_history[7][64][7][64];
     int valid;
 } HeuristicSnapshot;
+
+/* Capture history and Continuation history tables (defined in engine_search.c) */
+extern int16_t g_capture_history[7][64][7];     /* [attacker_type][to_sq][captured_type] */
+extern int16_t g_cont_history[7][64][7][64];    /* [prev_piece][prev_to][curr_piece][curr_to] */
 
 void save_heuristic_snapshot(const SearchState *s);
 void restore_heuristic_snapshot(SearchState *s);
@@ -261,5 +279,55 @@ void set_preserve_tt_generation(int flag);
 
 /* Extract ponder move from TT after search completes */
 int extract_ponder_move(const Board *b, Move best_move, Move *ponder_move);
+
+/* Bug Hunter: board consistency check (make/unmake + incremental state) */
+int board_consistency_check(const char *fen);
+
+/* Bug Hunter: perft divide (per-move perft counts) */
+int perft_divide(const char *fen, int depth, int *out_from, int *out_to,
+                 int *out_promo, U64 *out_count, U64 *out_total);
+
+/* Bug Hunter: SEE value for a move */
+int see_test(const char *fen, int from_sq, int to_sq);
+
+/* Bug Hunter: eval consistency stress test */
+int eval_consistency_stress(const char *fen, int cycles);
+
+/* Pruning toggle control for ablation testing */
+int set_search_param(const char *name, int value);
+int get_search_param(const char *name);
+int reload_params(const char *filename);
+
+/* ============================================================================
+ * SEARCH PROFILE — Performance instrumentation for profiling
+ * ============================================================================ */
+typedef struct {
+    long long eval_calls;        /* evaluate() invocations */
+    long long qs_calls;          /* quiescence_search() invocations */
+    long long make_move_calls;   /* make_move() invocations */
+    long long unmake_move_calls; /* unmake_move() invocations */
+    long long nmp_triggered;     /* Null Move Pruning applied */
+    long long nmp_cutoffs;       /* NMP resulted in beta cutoff */
+    long long rfp_triggered;     /* Reverse Futility Pruning applied */
+    long long lmr_applied;       /* LMR reductions applied */
+    long long lmr_full_research; /* LMR re-searches at full depth */
+    long long futility_pruned;   /* Futility pruned moves */
+    long long razoring_triggered;/* Razoring applied */
+    long long lmp_pruned;        /* Late Move Pruning pruned moves */
+    long long see_pruned;        /* SEE-based capture pruning */
+    long long history_pruned;    /* History-based pruning */
+    long long probcut_triggered; /* ProbCut applied */
+    long long probcut_cutoffs;   /* ProbCut resulted in beta cutoff */
+    long long tt_hits;           /* Transposition table hits */
+    long long tt_stores;         /* TT entries stored */
+    long long total_nodes;       /* Total nodes searched */
+    long long qs_nodes;          /* Nodes in quiescence search */
+} SearchProfile;
+
+SearchProfile get_search_profile(void);
+void reset_search_profile(void);
+
+/* Regenerate lmr_table after runtime params are loaded (P1 fix) */
+void regenerate_lmr_table(void);
 
 #endif

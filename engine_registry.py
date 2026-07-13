@@ -15,6 +15,8 @@ SARGON_PATH = os.path.join(BASE_DIR, "test_engines", "sargon 1163", "sargon-engi
 TSCP_PATH = os.path.join(BASE_DIR, "test_engines", "TSCP 1607", "tscp181.exe")
 CHESS3SUPER_PATH = ENGINE_PATH
 HELLCOPTER_EXE_PATH = os.path.join(BASE_DIR, "dist", "Hellcopter.exe")
+COPTER_PATH = os.path.join(BASE_DIR, "dist", "new", "Copter.exe")
+COPTER_BOOK_PATH = os.path.join(BASE_DIR, "dist", "Goi5.1.bin")
 
 SYZYGY_PATH = os.path.join(BASE_DIR, "dist", "syzygy")
 
@@ -47,8 +49,12 @@ def _make_hellcopter(name):
 ENGINE_REGISTRY = [
     {"id": "chess3super", "name": "Chess3Super",
      "path": CHESS3SUPER_PATH, "args": [], "protocol": "uci", "options": []},
-    {"id": "hellcopter", "name": "Hellcopter v1.8.0",
-     "path": None, "factory": lambda: _make_hellcopter("Hellcopter v1.8.0"),
+    {"id": "copter", "name": "Copter (最新编译)",
+     "path": COPTER_PATH, "args": [], "protocol": "uci",
+     "options": [{"name": "BookPath", "label": "开局库路径", "type": "string", "default": COPTER_BOOK_PATH},
+                 {"name": "OwnBook", "label": "使用开局库", "type": "check", "default": True}]},
+    {"id": "hellcopter", "name": "Hellcopter v1.9.5",
+     "path": None, "factory": lambda: _make_hellcopter("Hellcopter v1.9.5"),
      "protocol": "uci", "options": []},
     {"id": "velvet", "name": "Velvet v8.1.1",
      "path": VELVET_PATH, "args": [], "protocol": "uci",
@@ -77,8 +83,9 @@ def resolve_engine(engine_id, extra_options=None):
             opts = {}
             for opt in entry.get("options", []):
                 if extra_options and opt["name"] in extra_options:
-                    val = extra_options[opt["name"]]
-                    opts[opt["name"]] = val
+                    opts[opt["name"]] = extra_options[opt["name"]]
+                elif "default" in opt:
+                    opts[opt["name"]] = opt["default"]
 
             if "factory" in entry:
                 eng = entry["factory"]()

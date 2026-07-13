@@ -34,7 +34,7 @@ class Engine:
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 bufsize=0,
                 env=env,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
@@ -200,6 +200,8 @@ class Engine:
         self.process.stdin.flush()
         lines = self._read_until("uciok", timeout=5)
         print(f"[ENGINE-DBG] {tag} _init_uci: uciok received, extra_lines={len(lines)-1 if lines else 0}")
+        for name, value in self.init_options.items():
+            self.set_option(name, value)
 
     def _init_xboard(self):
         self.process.stdin.write(b"xboard\n")
@@ -349,7 +351,14 @@ class Engine:
                         self._searching = False
                         return best
                 if time.time() >= deadline:
-                    print(f"[ENGINE-DBG] {tag} TIMEOUT at loop {loop_count}, alive={alive}")
+                    print(f"[ENGINE-DBG] {tag} TIMEOUT at loop {loop_count}, alive={alive}, sending stop")
+                    self.send("stop")
+                    stop_deadline = time.time() + 3
+                    while time.time() < stop_deadline:
+                        line = self.readline(timeout=0.5)
+                        if line and line.startswith("bestmove"):
+                            print(f"[ENGINE-DBG] {tag} stop confirmed: {line[:80]}")
+                            break
                     self._searching = False
                     return None
         elif self.protocol == "xboard":

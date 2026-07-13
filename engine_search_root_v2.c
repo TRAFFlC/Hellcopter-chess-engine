@@ -16,21 +16,6 @@ set_preserve_tt_generation(int flag)
     g_preserve_tt_generation = flag;
 }
 
-/* Atomic increment of the global TT generation counter.  Each SMP worker calls
- * this once at the start of every iterative-deepening iteration so that all
- * TT writes share a single monotonic aging timeline, matching the single-
- * threaded search behaviour where s->tt_generation is advanced per iteration. */
-static int smp_inc_tt_generation(void)
-{
-#ifdef _WIN32
-    return (int)InterlockedIncrement((LONG *)&g_tt_generation);
-#else
-    return __atomic_add_fetch(&g_tt_generation, 1, __ATOMIC_SEQ_CST);
-#endif
-}
-
-extern void set_eval_thread_id(int tid);
-
 /* ============================================================================
  * HEURISTIC SNAPSHOT — Ponderhit context preservation (Task 4.2a)
  * ============================================================================ */
@@ -290,8 +275,6 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     s->aborted = 0;
     s->nodes = 0;
     s->thread_id = 0;        /* Main thread */
-    extern void set_eval_thread_id(int tid);
-    set_eval_thread_id(0);
     g_engine_abort_flag = 0; /* Ensure abort flag is clear before starting search */
     {
         int si;
@@ -323,7 +306,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
         s->time_check_mask = TIME_CHECK_MASK_LOW;
     else if (tm.optimal_time < 5.0)
         s->time_check_mask = TIME_CHECK_MASK_VERY_LOW;
-    tt_init_global(128);
+    tt_init_global(1024);
     if (g_preserve_tt_generation)
     {
         /* Ponderhit path: keep TT entries from ponder search, just sync generation */
@@ -816,6 +799,34 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
 
     for (depth = 1; depth <= effective_max_depth; depth++)
     {
+        /* Task #109b: 迭代深化中按上一深度的 score 重新排序 root_moves
+         * 原问题: 每次深度+1, root_moves 仍按初始顺序搜索, PVS 的第一个走法
+         * 不是上一深度的最佳走法, 导致零窗口搜索频繁失败需要重搜, 节点数爆炸
+         * 修复: 从 depth=2 开始, 按上一深度的 score 降序排序, 让最佳走法第一个被搜索
+         * 效果: PVS 的第一个走法是最佳走法, 零窗口搜索成功率大幅提升 */
+        if (depth >= 2 && legal_moves_count > 1)
+        {
+            int si, sj;
+            for (si = 0; si < legal_moves_count - 1; si++)
+            {
+                int best_idx = si;
+                for (sj = si + 1; sj < legal_moves_count; sj++)
+                {
+                    if (root_moves[sj].score > root_moves[best_idx].score)
+                        best_idx = sj;
+                }
+                if (best_idx != si)
+                {
+                    Move tmp = root_moves[si];
+                    root_moves[si] = root_moves[best_idx];
+                    root_moves[best_idx] = tmp;
+                    int tmp_s = root_scores[si];
+                    root_scores[si] = root_scores[best_idx];
+                    root_scores[best_idx] = tmp_s;
+                }
+            }
+        }
+
         double elapsed = get_time() - tm.start_time;
         /* When max_depth is explicitly set (depth-limited mode), don't cut
          * search short based on time. The user wants a full depth-N search. */
@@ -1032,23 +1043,6 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 }
             }
         }
-
-#ifdef DEBUG
-        if (depth >= 6)
-        {
-            fprintf(stderr, "[ST depth %d] best_score=%d current_score=%d legal=%d\n",
-                    depth, best_score, current_score, legal_moves_count);
-            fflush(stderr);
-            for (int dbg_i = 0; dbg_i < legal_moves_count; dbg_i++)
-            {
-                fprintf(stderr, "  %c%c%c%c score=%d\n",
-                        'a' + (root_moves[dbg_i].from & 7), '1' + (root_moves[dbg_i].from >> 3),
-                        'a' + (root_moves[dbg_i].to & 7), '1' + (root_moves[dbg_i].to >> 3),
-                        root_moves[dbg_i].score);
-                fflush(stderr);
-            }
-        }
-#endif
 
         if (!s->aborted && current_score > -MATE_SCORE)
         {
@@ -1590,26 +1584,14 @@ static void smp_worker_search(LazySMPWorker *w)
         return;
     }
     SearchState *s = s_ptr;
-    {
-        int si;
-        for (si = 0; si < 128; si++)
-            s->static_eval_stack[si] = EVAL_SCORE_INVALID;
-    }
     s->board = w->board;
     s->start_time = w->start_time;
     s->time_limit = w->time_limit;
     s->aborted = 0;
     s->nodes = 0;
-    s->thread_id = w->thread_id;
-    set_eval_thread_id(w->thread_id);
-
-    s->tt_cluster_count = w->tt_cluster_count;
+    s->thread_id = w->thread_id; /* Task 6.2.1: thread diversity */
     s->tt = w->shared_tt;
-    /* Per-worker generation seed.  Each worker advances its own s->tt_generation
-     * once per completed root iteration, matching the single-threaded loop in
-     * find_best_move_c.  This keeps the TT aging timeline monotonic within each
-     * worker without forcing a globally-shared counter that can make one
-     * worker's fresh but shallow entries look older than another worker's. */
+    s->tt_cluster_count = w->tt_cluster_count;
     s->tt_generation = g_tt_generation;
     s->search_history_count = 0;
     s->game_history_count = w->game_history_count;
@@ -1650,139 +1632,30 @@ static void smp_worker_search(LazySMPWorker *w)
         return;
     }
 
-    /* Root move ordering: same logic as find_best_move_c so worker 0 (and
-     * helpers) start from the same move order as the single-threaded search.
-     * Divergent ordering interacts with aspiration windows, LMR, and pruning
-     * heuristics, producing different results at the same depth. */
-    {
-        int root_reps = 0;
-        int root_eval = evaluate(b);
-        if (b->side_to_move == BLACK)
-            root_eval = -root_eval;
-        {
-            U64 root_key = s->board.hash;
-            for (int ri = 0; ri < s->game_history_count; ri++)
-            {
-                if (s->game_history[ri] == root_key)
-                    root_reps++;
-            }
-        }
-        int move_priorities[MAX_MOVES];
-        for (i = 0; i < legal_count; i++)
-        {
-            Move *m = &root_moves[i];
-            int priority = 0;
-
-            if (m->capture)
-            {
-                int attacker = piece_on_square(b, m->from);
-                priority += 10000 + ROOT_CAPTURE_VALUE[m->capture] - ROOT_ATTACKER_VALUE[attacker];
-            }
-
-            if (m->promotion)
-                priority += 5000;
-
-            int to_r = rank_of(m->to), to_f = file_of(m->to);
-            if ((to_f >= 2 && to_f <= 5) && (to_r >= 2 && to_r <= 5))
-                priority += 100;
-
-            if (root_reps >= 1)
-            {
-                UndoInfo rep_undo;
-                make_move(b, m, &rep_undo);
-                U64 child_key = b->hash;
-                int child_reps = 0;
-                for (int ri = 0; ri < s->game_history_count; ri++)
-                {
-                    if (s->game_history[ri] == child_key)
-                        child_reps++;
-                }
-                unmake_move(b, m, &rep_undo);
-                if (child_reps >= 1)
-                {
-                    if (root_eval > REPETITION_EVAL_THRESHOLD)
-                        priority -= REPETITION_SCORE;
-                    else if (root_eval < -REPETITION_EVAL_THRESHOLD)
-                        priority += REPETITION_SCORE;
-                }
-            }
-
-            priority += 63 - m->to;
-            move_priorities[i] = priority;
-        }
-
-        for (i = 0; i < legal_count - 1; i++)
-        {
-            int best_idx = i;
-            for (int j = i + 1; j < legal_count; j++)
-            {
-                if (move_priorities[j] > move_priorities[best_idx])
-                    best_idx = j;
-            }
-            if (best_idx != i)
-            {
-                Move tmp = root_moves[i];
-                root_moves[i] = root_moves[best_idx];
-                root_moves[best_idx] = tmp;
-                int tmp_p = move_priorities[i];
-                move_priorities[i] = move_priorities[best_idx];
-                move_priorities[best_idx] = tmp_p;
-            }
-        }
-
-        {
-            Move tt_root_move = {0};
-            int tt_root_val = tt_probe(s, s->board.hash, 1, -MATE_SCORE, MATE_SCORE, &tt_root_move, 0, NULL, NULL);
-            (void)tt_root_val;
-            if (tt_root_move.from != 0 || tt_root_move.to != 0)
-            {
-                int tt_idx = -1;
-                for (i = 0; i < legal_count; i++)
-                {
-                    if (root_moves[i].from == tt_root_move.from &&
-                        root_moves[i].to == tt_root_move.to &&
-                        root_moves[i].promotion == tt_root_move.promotion)
-                    {
-                        tt_idx = i;
-                        break;
-                    }
-                }
-                if (tt_idx > 0)
-                {
-                    Move tmp = root_moves[0];
-                    root_moves[0] = root_moves[tt_idx];
-                    root_moves[tt_idx] = tmp;
-                }
-            }
-        }
-    }
-
     /* Simple Lazy SMP: each thread independently searches all root moves.
-     * Diversity now comes only from the shared TT and parallel node expansion.
-     * All workers use the same start depth and root move order as the main
-     * thread to maximise single-vs-multi consistency. */
-    int start_depth = 1;
+     * Diversity from: start_depth offset, Fisher-Yates shuffle, shared TT. */
+
+    /* Start depth offset provides search diversity: helpers start from
+     * a deeper depth, which causes them to explore different TT states
+     * and produce slightly different search trees than thread 0. */
+    int start_depth = SMP_DEPTH_OFFSET_BASE + (w->thread_id % SMP_DEPTH_OFFSET_MOD);
     int depth_step = 1;
     int smp_max_depth = w->max_depth;
     if (smp_max_depth <= 0)
         smp_max_depth = 100;
-    else
+
+    /* Thread diversity: shuffle non-TT root moves for helpers */
+    if (w->thread_id > 0 && legal_count > 2)
     {
-        /* Fix: apply the same depth_bonus as single-threaded search.
-         * Without this, `go depth N` searches to N+depth_bonus in
-         * single-thread mode but only N in SMP mode, causing SMP to
-         * miss mates found by single-thread at deeper plies. */
-        int material = count_total_material(&s->board);
-        int depth_bonus = 0;
-        if (material <= MATERIAL_DEPTH_THRESHOLDS[0])
-            depth_bonus = MATERIAL_DEPTH_BONUS[0];
-        else if (material <= MATERIAL_DEPTH_THRESHOLDS[1])
-            depth_bonus = MATERIAL_DEPTH_BONUS[1];
-        else if (material <= MATERIAL_DEPTH_THRESHOLDS[2])
-            depth_bonus = MATERIAL_DEPTH_BONUS[2];
-        else if (material <= MATERIAL_DEPTH_THRESHOLDS[3])
-            depth_bonus = MATERIAL_DEPTH_BONUS[3];
-        smp_max_depth += depth_bonus;
+        U64 seed = (U64)w->thread_id * 0x9E3779B97F4A7C15ULL ^ s->board.hash;
+        for (i = legal_count - 1; i > 1; i--)
+        {
+            seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+            int j = 1 + (int)((seed >> 33) % (unsigned)(i));
+            Move tmp = root_moves[i];
+            root_moves[i] = root_moves[j];
+            root_moves[j] = tmp;
+        }
     }
 
     Move best_move = root_moves[0];
@@ -1790,17 +1663,8 @@ static void smp_worker_search(LazySMPWorker *w)
     w->best_move = best_move;
     w->best_score = best_score;
 
-    int window = INITIAL_ASPIRATION_WINDOW;
-
     for (int depth = start_depth; depth <= smp_max_depth; depth += depth_step)
     {
-        /* Advance the shared TT generation atomically at the start of every
-         * worker iteration.  This guarantees that all workers see a single
-         * monotonic aging timeline, preventing a helper thread's fresh deep
-         * entries from being overwritten by another helper's stale shallow
-         * entries (or vice-versa) during replacement. */
-        s->tt_generation = smp_inc_tt_generation();
-
         if (smp_get_stop())
             break;
         if (depth >= 5)
@@ -1814,12 +1678,25 @@ static void smp_worker_search(LazySMPWorker *w)
         Move current_best = {0};
         int current_score = -MATE_SCORE;
         int alpha, beta;
+        int asp_window = SMP_ASPIRATION_WINDOW;
 
-        if (depth <= 1)
+        /* Aspiration window: use previous score as center for depth >= 4 */
+        if (depth >= 4 && best_score > -MATE_SCORE + 100 && best_score < MATE_SCORE - 100)
+        {
+            alpha = best_score - asp_window;
+            beta = best_score + asp_window;
+        }
+        else
         {
             alpha = -MATE_SCORE;
             beta = MATE_SCORE;
+        }
 
+        int asp_retry;
+        for (asp_retry = 0; asp_retry < 5; asp_retry++)
+        {
+            current_score = -MATE_SCORE;
+            current_best = root_moves[0];
             for (i = 0; i < legal_count; i++)
             {
                 if (smp_get_stop())
@@ -1844,8 +1721,6 @@ static void smp_worker_search(LazySMPWorker *w)
                 if (s->aborted || smp_get_stop())
                     break;
 
-                root_moves[i].score = score;
-
                 if (score > current_score)
                 {
                     current_score = score;
@@ -1854,151 +1729,24 @@ static void smp_worker_search(LazySMPWorker *w)
                         alpha = score;
                 }
             }
-        }
-        else
-        {
-            /* When the previous best score indicates a winning position or mate,
-             * use a full window to avoid missing forced mates. A narrow aspiration
-             * window can cause the search to lose mates because:
-             * 1. Fail-high re-searches are expensive and may time out
-             * 2. TT entries from narrow-window searches can pollute later searches
-             * 3. The score jump from "winning" to "mate" can be very large */
-            if (abs(best_score) > MATE_SCORE - 100)
+
+            if (s->aborted || smp_get_stop())
+                break;
+
+            /* Aspiration window retry on fail-low/fail-high */
+            if (current_score <= best_score - asp_window && asp_retry < 4)
             {
                 alpha = -MATE_SCORE;
+                asp_window *= SMP_WINDOW_RETRY_MULTIPLIER;
+                continue;
+            }
+            if (current_score >= best_score + asp_window && asp_retry < 4)
+            {
                 beta = MATE_SCORE;
+                asp_window *= SMP_WINDOW_RETRY_MULTIPLIER;
+                continue;
             }
-            else
-            {
-                alpha = best_score - window;
-                beta = best_score + window;
-            }
-            while (1)
-            {
-                if (alpha < -MATE_SCORE)
-                    alpha = -MATE_SCORE;
-                if (beta > MATE_SCORE)
-                    beta = MATE_SCORE;
-
-                current_score = -MATE_SCORE;
-                current_best = root_moves[0];
-
-                for (i = 0; i < legal_count; i++)
-                {
-                    if (smp_get_stop())
-                        break;
-                    UndoInfo undo;
-                    make_move(b, &root_moves[i], &undo);
-                    int score;
-                    if (i == 0)
-                    {
-                        score = -negamax(s, depth - 1, -beta, -alpha, 0, 1);
-                    }
-                    else
-                    {
-                        score = -negamax(s, depth - 1, -alpha - 1, -alpha, 0, 1);
-                        if (!s->aborted && !smp_get_stop() && score > alpha && score < beta)
-                        {
-                            score = -negamax(s, depth - 1, -beta, -alpha, 0, 1);
-                        }
-                    }
-                    unmake_move(b, &root_moves[i], &undo);
-
-                    if (s->aborted || smp_get_stop())
-                        break;
-
-                    root_moves[i].score = score;
-
-                    if (score > current_score)
-                    {
-                        current_score = score;
-                        current_best = root_moves[i];
-                        if (score > alpha)
-                            alpha = score;
-                    }
-                }
-
-                if (s->aborted || smp_get_stop())
-                    break;
-
-                if (current_score <= alpha)
-                {
-                    window += window / 2 + ASPIRATION_WINDOW_GROWTH_BASE;
-                    alpha = best_score - window;
-                    if (alpha < -INF)
-                        alpha = -INF;
-                }
-                else if (current_score >= beta)
-                {
-                    window += window / 2 + ASPIRATION_WINDOW_GROWTH_BASE;
-                    beta = best_score + window;
-                    if (beta > INF)
-                        beta = INF;
-                }
-                else
-                {
-                    break;
-                }
-
-                /* If window gets too large, fall back to a full-window search
-                 * so we do not return a score polluted by a narrow window. */
-                if (window > ASPIRATION_FULL_WINDOW_THRESHOLD)
-                {
-                    alpha = -MATE_SCORE;
-                    beta = MATE_SCORE;
-
-                    current_score = -MATE_SCORE;
-                    current_best = root_moves[0];
-                    for (i = 0; i < legal_count; i++)
-                    {
-                        if (smp_get_stop())
-                            break;
-                        UndoInfo undo;
-                        make_move(b, &root_moves[i], &undo);
-                        int score;
-                        if (i == 0)
-                        {
-                            score = -negamax(s, depth - 1, -MATE_SCORE, MATE_SCORE, 0, 1);
-                        }
-                        else
-                        {
-                            score = -negamax(s, depth - 1, -MATE_SCORE, -alpha, 0, 1);
-                            if (!s->aborted && !smp_get_stop() && score > alpha)
-                            {
-                                score = -negamax(s, depth - 1, -MATE_SCORE, -alpha, 0, 1);
-                            }
-                        }
-                        unmake_move(b, &root_moves[i], &undo);
-
-                        if (s->aborted || smp_get_stop())
-                            break;
-
-                        if (score > current_score)
-                        {
-                            current_score = score;
-                            current_best = root_moves[i];
-                            if (score > alpha)
-                                alpha = score;
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
-        if (depth >= 6)
-        {
-            fprintf(stderr, "[SMP depth %d] best_score=%d current_score=%d legal=%d\n",
-                    depth, best_score, current_score, legal_count);
-            fflush(stderr);
-            for (int dbg_i = 0; dbg_i < legal_count; dbg_i++)
-            {
-                fprintf(stderr, "  %c%c%c%c score=%d\n",
-                        'a' + (root_moves[dbg_i].from & 7), '1' + (root_moves[dbg_i].from >> 3),
-                        'a' + (root_moves[dbg_i].to & 7), '1' + (root_moves[dbg_i].to >> 3),
-                        root_moves[dbg_i].score);
-                fflush(stderr);
-            }
+            break;
         }
 
         if (!s->aborted && !smp_get_stop() && current_score > -MATE_SCORE)
@@ -2011,58 +1759,22 @@ static void smp_worker_search(LazySMPWorker *w)
             w->best_move = best_move;
             w->best_score = best_score;
 
-            /* Update root move scores and sort by score descending, matching
-             * the single-threaded iterative-deepening loop.  Keeping the same
-             * move order is critical for reproducible results at the same depth. */
+            /* Move the best move to position 0 for the next depth's ordering */
+            for (int j = 0; j < legal_count; j++)
             {
-                int j;
-                for (j = 0; j < legal_count; j++)
+                if (root_moves[j].from == current_best.from &&
+                    root_moves[j].to == current_best.to &&
+                    root_moves[j].promotion == current_best.promotion)
                 {
-                    if (root_moves[j].from == current_best.from &&
-                        root_moves[j].to == current_best.to &&
-                        root_moves[j].promotion == current_best.promotion)
+                    if (j != 0)
                     {
-                        root_moves[j].score = current_score + 1000000;
+                        Move tmp = root_moves[0];
+                        root_moves[0] = root_moves[j];
+                        root_moves[j] = tmp;
                     }
-                }
-                for (j = 1; j < legal_count; j++)
-                {
-                    int k;
-                    for (k = j; k > 0; k--)
-                    {
-                        if (root_moves[k].score > root_moves[k - 1].score)
-                        {
-                            Move tmp = root_moves[k];
-                            root_moves[k] = root_moves[k - 1];
-                            root_moves[k - 1] = tmp;
-                        }
-                        else
-                            break;
-                    }
+                    break;
                 }
             }
-
-            /* Age the local quiet history table, matching the single-threaded
-             * iterative-deepening loop.  Without this the history scores grow
-             * without bound and move ordering diverges from single-thread. */
-            {
-                int hi, hj;
-                for (hi = 0; hi < 64; hi++)
-                {
-                    for (hj = 0; hj < 64; hj++)
-                    {
-                        s->history[hi][hj] = s->history[hi][hj] * HISTORY_DECAY_NUM / HISTORY_DECAY_DEN;
-                    }
-                }
-            }
-
-            /* Match single-threaded aspiration window sizing: tighten the
-             * window after a successful iteration, and keep it wide when a
-             * forced mate is already known. */
-            if (abs(best_score) > MATE_SCORE - 100)
-                window = ASPIRATION_FULL_WINDOW_THRESHOLD;
-            else
-                window = NORMAL_ASPIRATION_WINDOW;
         }
 
         if (s->aborted || smp_get_stop())
@@ -2128,15 +1840,16 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     }
 
     int tt_cluster_count_smp;
-    tt_init_global(128);
-    /* Ponderhit path: keep TT entries from ponder search.  In normal searches
-     * advance the global generation once at search start (matching the single-
-     * threaded path); individual workers then advance it per iteration via
-     * smp_inc_tt_generation(). */
+    tt_init_global(1024);
     if (g_preserve_tt_generation)
+    {
+        /* Ponderhit path: keep TT entries from ponder search */
         g_preserve_tt_generation = 0;
+    }
     else
-        g_tt_generation++;
+    {
+        g_tt_generation++; /* 替换 tt_clear_global()，递增世代让旧条目自然老化 */
+    }
     TT_Cluster *shared_tt = g_tt;
     tt_cluster_count_smp = g_tt_cluster_count;
 
@@ -2328,11 +2041,7 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
         }
     }
 
-    /* Select move with highest total vote weight, but keep the main thread
-     * (worker 0) authoritative when it kept pace with the deepest helper.
-     * This prevents a single helper with a shuffled move order from overriding
-     * the canonical iterative-deepening result and improves single-vs-multi
-     * consistency on tactical positions. */
+    /* Select move with highest total vote weight */
     if (vote_count > 0)
     {
         int best_weight = -1;
@@ -2345,33 +2054,19 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
                 best_vote_idx = v;
             }
         }
-
-        /* Prefer worker 0 only when it actually reached the deepest iteration
-         * completed by any worker.  If worker 0 is still behind (e.g. because
-         * helpers started with a depth offset and finished an extra ply), trust
-         * the deeper helper instead of falling back to a shallower result. */
-        if (workers[0].completed_depth >= best_depth && workers[0].completed_depth > 0)
+        /* Find the worker with the deepest search for this winning move */
+        for (int i = 0; i < num_threads; i++)
         {
-            best_move = workers[0].best_move;
-            best_depth = workers[0].completed_depth;
-            best_score = workers[0].best_score;
-        }
-        else
-        {
-            /* Find the worker with the deepest search for the winning move. */
-            for (int i = 0; i < num_threads; i++)
+            if (workers[i].best_move.from == votes[best_vote_idx].from &&
+                workers[i].best_move.to == votes[best_vote_idx].to &&
+                workers[i].best_move.promotion == votes[best_vote_idx].promo)
             {
-                if (workers[i].best_move.from == votes[best_vote_idx].from &&
-                    workers[i].best_move.to == votes[best_vote_idx].to &&
-                    workers[i].best_move.promotion == votes[best_vote_idx].promo)
+                if (workers[i].completed_depth > best_depth ||
+                    (workers[i].completed_depth == best_depth && workers[i].best_score > best_score))
                 {
-                    if (workers[i].completed_depth > best_depth ||
-                        (workers[i].completed_depth == best_depth && workers[i].best_score > best_score))
-                    {
-                        best_move = workers[i].best_move;
-                        best_depth = workers[i].completed_depth;
-                        best_score = workers[i].best_score;
-                    }
+                    best_move = workers[i].best_move;
+                    best_depth = workers[i].completed_depth;
+                    best_score = workers[i].best_score;
                 }
             }
         }
@@ -2383,10 +2078,6 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     g_last_search_depth = best_depth;
     g_last_search_nodes = total_nodes;
     g_last_best_score = best_score;
-
-    /* The global TT generation has already been advanced by each worker's
-     * smp_inc_tt_generation() calls, so no additional end-of-search bump is
-     * needed.  The next search will increment it once more at start. */
 
     free(workers);
     return best_move;

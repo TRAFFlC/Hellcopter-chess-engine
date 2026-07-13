@@ -1,15 +1,266 @@
 /* engine_search.c — 搜索核心：TT、SEE、走法排序、quiescence、negamax（从 engine_core.c 拆分） */
+/* v2: 重复检测优化 + TT 命中率统计 (Task #109) */
 
 /* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
 extern unsigned TB_LARGEST;
 
+/* === TT 命中率统计 (诊断用) === */
+long long g_tt_probe_count = 0;
+long long g_tt_hit_count = 0;      /* TT 命中且深度足够, 直接返回 */
+long long g_tt_move_only_count = 0; /* TT 命中但深度不够, 只用 TT move */
+long long g_tt_flag_fail_count = 0; /* TT 命中且深度够但 flag 不满足条件 */
+long long g_tt_miss_count = 0;     /* TT 未命中 */
+long long g_tt_store_count = 0;    /* TT store 次数 */
+
+/* === SEE 剪枝诊断计数器 === */
+long long g_see_capture_total = 0;     /* move loop 中遇到的吃子着法总数 */
+long long g_see_eligible = 0;          /* 满足 SEE 剪枝前 6 个条件的吃子着法 */
+long long g_see_zero_window = 0;       /* 其中满足零窗口的 */
+long long g_see_threshold_met = 0;     /* 其中 SEE 值 < -depth*scale 的 */
+long long g_see_bad_capture_count = 0; /* bad capture (SEE<0) 总数 */
+long long g_see_bad_capture_sum = 0;   /* bad capture SEE 值总和（用于算平均） */
+long long g_see_bad_capture_min = 0;   /* bad capture SEE 最小值（最负） */
+/* move scoring 阶段的 see() 诊断 */
+long long g_see_scoring_bad_count = 0;  /* see() 返回 < 0 的次数 */
+long long g_see_scoring_bad_sum = 0;    /* see() < 0 时返回值总和 */
+long long g_see_scoring_bad_min = 0;    /* see() < 0 时最小值 */
+/* NMP 诊断 */
+long long g_nmp_null_fail = 0;          /* null_score < beta (NMP 搜索未产生 cutoff) */
+long long g_nmp_verify_fail = 0;        /* null_score >= beta 但验证搜索失败 */
+long long g_nmp_verify_depth = 0;       /* 进入验证搜索的次数 */
+void print_tt_stats(void)
+{
+    if (g_tt_probe_count > 0)
+    {
+        double hit_rate = 100.0 * g_tt_hit_count / g_tt_probe_count;
+        double move_rate = 100.0 * g_tt_move_only_count / g_tt_probe_count;
+        double flag_rate = 100.0 * g_tt_flag_fail_count / g_tt_probe_count;
+        double miss_rate = 100.0 * g_tt_miss_count / g_tt_probe_count;
+        fprintf(stderr, "TT Stats: probes=%lld, stores=%lld, hits=%lld (%.1f%%), move_only=%lld (%.1f%%), flag_fail=%lld (%.1f%%), miss=%lld (%.1f%%)\n",
+                g_tt_probe_count, g_tt_store_count,
+                g_tt_hit_count, hit_rate,
+                g_tt_move_only_count, move_rate,
+                g_tt_flag_fail_count, flag_rate,
+                g_tt_miss_count, miss_rate);
+    }
+    fprintf(stderr, "SEE Prune Diag: captures=%lld, eligible=%lld, zero_window=%lld, threshold_met=%lld\n",
+            g_see_capture_total, g_see_eligible, g_see_zero_window, g_see_threshold_met);
+    fprintf(stderr, "SEE Bad Captures (in zero-window): count=%lld, avg_see=%.1f, min_see=%lld\n",
+            g_see_bad_capture_count,
+            g_see_bad_capture_count > 0 ? (double)g_see_bad_capture_sum / g_see_bad_capture_count : 0.0,
+            g_see_bad_capture_min);
+    fprintf(stderr, "SEE Scoring: bad_count=%lld, avg=%.1f, min=%lld\n",
+            g_see_scoring_bad_count,
+            g_see_scoring_bad_count > 0 ? (double)g_see_scoring_bad_sum / g_see_scoring_bad_count : 0.0,
+            g_see_scoring_bad_min);
+    fprintf(stderr, "NMP Diag: triggered=%lld, null_fail=%lld, verify_depth=%lld, verify_fail=%lld, cutoffs=%lld\n",
+            g_nmp_null_fail + g_nmp_verify_depth + (g_prof_nmp_cutoffs - g_nmp_verify_fail),
+            g_nmp_null_fail, g_nmp_verify_depth, g_nmp_verify_fail, g_prof_nmp_cutoffs);
+}
+void reset_tt_stats(void)
+{
+    g_tt_probe_count = 0;
+    g_tt_hit_count = 0;
+    g_tt_move_only_count = 0;
+    g_tt_flag_fail_count = 0;
+    g_tt_miss_count = 0;
+    g_tt_store_count = 0;
+    g_see_capture_total = 0;
+    g_see_eligible = 0;
+    g_see_zero_window = 0;
+    g_see_threshold_met = 0;
+    g_see_bad_capture_count = 0;
+    g_see_bad_capture_sum = 0;
+    g_see_bad_capture_min = 0;
+    g_see_scoring_bad_count = 0;
+    g_see_scoring_bad_sum = 0;
+    g_see_scoring_bad_min = 0;
+    g_nmp_null_fail = 0;
+    g_nmp_verify_fail = 0;
+    g_nmp_verify_depth = 0;
+}
+
+/* === 重复检测哈希表 (Task #109) ===
+ * 原实现: engine_search.c L898-916 对 game_history[512] + search_history[256] 线性扫描
+ * 新实现: game_history 用哈希表 O(1) 查询 (懒初始化), search_history 仍线性扫描 (栈式, <30 元素)
+ * 性能: 从 ~768 比较/节点 降至 ~30 比较 + 1 哈希查询/节点
+ */
+#define REP_HASH_BITS 10
+#define REP_HASH_SIZE (1 << REP_HASH_BITS)
+#define REP_HASH_MASK (REP_HASH_SIZE - 1)
+#define REP_HASH_MAX_THREADS 64
+
+typedef struct {
+    U64 keys[REP_HASH_SIZE];
+    int8_t counts[REP_HASH_SIZE];
+    int used;  /* 已使用的槽数 (用于诊断) */
+} RepHash;
+
+/* 每线程缓存: 懒初始化, 用 SearchState 指针 + count + 首尾元素校验 */
+static struct {
+    SearchState *s;
+    int game_history_count;
+    U64 first_key;   /* game_history[0] 或 0 */
+    U64 last_key;    /* game_history[count-1] 或 0 */
+    RepHash hash;
+    int initialized; /* 是否已初始化过 */
+} g_rep_cache[REP_HASH_MAX_THREADS];
+
+/* Thread-local evaluation thread id.  evaluate() is called deep inside the
+ * search recursion where SearchState is not always available, so we keep the
+ * current thread id in TLS.  This is used by the pawn hash table to restrict
+ * writes to the main worker and avoid SMP cache pollution.
+ *
+ * On Windows we use the native TlsAlloc/TlsGetValue/TlsSetValue API because
+ * GCC's __declspec(thread) is ignored and its emulated __thread TLS can hang
+ * when accessed from threads created directly via CreateThread. */
+#ifdef _WIN32
+static DWORD g_eval_tls_index = TLS_OUT_OF_INDEXES;
+
+static void ensure_eval_tls(void)
+{
+    if (g_eval_tls_index == TLS_OUT_OF_INDEXES)
+    {
+        DWORD idx = TlsAlloc();
+        if (idx == TLS_OUT_OF_INDEXES)
+            return;
+#ifdef _WIN32
+        if (InterlockedCompareExchange((LONG *)&g_eval_tls_index, (LONG)idx, (LONG)TLS_OUT_OF_INDEXES) != (LONG)TLS_OUT_OF_INDEXES)
+            TlsFree(idx);
+#endif
+    }
+}
+
+int get_eval_thread_id(void)
+{
+    ensure_eval_tls();
+    return (int)(intptr_t)TlsGetValue(g_eval_tls_index);
+}
+
+void set_eval_thread_id(int tid)
+{
+    ensure_eval_tls();
+    TlsSetValue(g_eval_tls_index, (void *)(intptr_t)tid);
+}
+#else
+static __thread int g_eval_thread_id = 0;
+
+int get_eval_thread_id(void)
+{
+    return g_eval_thread_id;
+}
+
+void set_eval_thread_id(int tid)
+{
+    g_eval_thread_id = tid;
+}
+#endif
+
+/* FNV-like hash for 64-bit key to 10-bit index */
+static inline int rep_hash_idx(U64 key)
+{
+    /* 使用 key 的高位 (Zobrist hash 高位分布更均匀) */
+    return (int)((key >> 54) ^ (key >> 44)) & REP_HASH_MASK;
+}
+
+/* 插入/递增 (开放寻址, 有限探测) */
+static void rep_hash_insert(RepHash *t, U64 key)
+{
+    int idx = rep_hash_idx(key);
+    int probes = 0;
+    while (probes++ < REP_HASH_SIZE)
+    {
+        if (t->keys[idx] == 0)
+        {
+            t->keys[idx] = key;
+            t->counts[idx] = 1;
+            t->used++;
+            return;
+        }
+        if (t->keys[idx] == key)
+        {
+            if (t->counts[idx] < 127)
+                t->counts[idx]++;
+            return;
+        }
+        idx = (idx + 1) & REP_HASH_MASK;
+    }
+    /* Table full — silently drop this entry (extremely rare) */
+}
+
+/* 查询计数 (开放寻址, 有限探测) */
+static int rep_hash_count(const RepHash *t, U64 key)
+{
+    int idx = rep_hash_idx(key);
+    int probes = 0;
+    while (probes++ < REP_HASH_SIZE)
+    {
+        if (t->keys[idx] == 0)
+            return 0;
+        if (t->keys[idx] == key)
+            return t->counts[idx];
+        idx = (idx + 1) & REP_HASH_MASK;
+    }
+    return 0; /* Table full, key not found */
+}
+
+/* 懒初始化 + 查询 game_history 重复次数
+ * 校验: SearchState 指针 + game_history_count + 首尾 key
+ * 若校验失败则重建哈希表 (O(game_history_count), 仅在搜索首次调用时发生)
+ */
+static int game_rep_count_cached(SearchState *s, U64 key)
+{
+    int tid = s->thread_id;
+    if (tid < 0 || tid >= REP_HASH_MAX_THREADS)
+        tid = 0;
+
+    int ghc = s->game_history_count;
+    U64 fk = (ghc > 0) ? s->game_history[0] : 0;
+    U64 lk = (ghc > 0) ? s->game_history[ghc - 1] : 0;
+
+    /* 校验缓存是否有效 */
+    if (g_rep_cache[tid].s != s ||
+        g_rep_cache[tid].game_history_count != ghc ||
+        g_rep_cache[tid].first_key != fk ||
+        g_rep_cache[tid].last_key != lk)
+    {
+        /* 重建哈希表 */
+        memset(&g_rep_cache[tid].hash, 0, sizeof(RepHash));
+        for (int i = 0; i < ghc; i++)
+        {
+            rep_hash_insert(&g_rep_cache[tid].hash, s->game_history[i]);
+        }
+        g_rep_cache[tid].s = s;
+        g_rep_cache[tid].game_history_count = ghc;
+        g_rep_cache[tid].first_key = fk;
+        g_rep_cache[tid].last_key = lk;
+        g_rep_cache[tid].initialized = 1;
+    }
+
+    int hash_reps = rep_hash_count(&g_rep_cache[tid].hash, key);
+    /* 1024 槽哈希表的碰撞概率非零。当哈希表报告 >= 2 时回退到线性
+     * 扫描验证，防止伪阳性导致错误的和棋判定。 */
+    if (hash_reps >= 2)
+    {
+        int linear_reps = 0;
+        for (int i = 0; i < ghc; i++)
+        {
+            if (s->game_history[i] == key)
+            {
+                if (++linear_reps >= 2)
+                    break;
+            }
+        }
+        return linear_reps;
+    }
+    return hash_reps;
+}
+
 static int mvv_lva(const Board *b, const Move *m)
 {
     /* MVV-LVA: Most Valuable Victim - Least Valuable Attacker */
-    /* Using piece values from engine_params.h */
-    static const int mvv[7] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, KING_VALUE};
     int from_piece = piece_on_square(b, m->from);
-    return mvv[m->capture] * MVV_LVA_SCALE - get_piece_value(from_piece);
+    return get_piece_value(m->capture) * MVV_LVA_SCALE - get_piece_value(from_piece);
 }
 
 static int compare_moves_desc(const void *a, const void *b)
@@ -80,6 +331,29 @@ int16_t g_capture_history[7][64][7];
 /* Continuation History: tracks move success after specific previous moves [prev_piece][prev_to][curr_piece][curr_to] */
 int16_t g_cont_history[7][64][7][64];
 
+/* Atomic, clamped update for the globally-shared history tables in SMP mode.
+ * Uses a compare-and-swap loop so concurrent updates from multiple workers do
+ * not silently overwrite each other.  The value is clamped to
+ * +/- HISTORY_SCORE_LIMIT before being stored. */
+static void history_atomic_add(int16_t *ptr, int delta)
+{
+    int16_t old_val, new_val;
+    do
+    {
+        old_val = *ptr;
+        new_val = old_val + (int16_t)delta;
+        if (new_val > HISTORY_SCORE_LIMIT)
+            new_val = HISTORY_SCORE_LIMIT;
+        if (new_val < -HISTORY_SCORE_LIMIT)
+            new_val = -HISTORY_SCORE_LIMIT;
+#ifdef _MSC_VER
+    } while (_InterlockedCompareExchange16((volatile short *)ptr, (short)new_val, (short)old_val) != (short)old_val);
+#else
+    } while (!__atomic_compare_exchange_n(ptr, &old_val, new_val,
+                                          0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+#endif
+}
+
 static void tt_init_global(int hash_mb)
 {
     if (g_tt && g_tt_hash_mb == hash_mb)
@@ -127,12 +401,16 @@ void tt_resize_global(int hash_mb)
     g_tt_generation = 1;
 }
 
-static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score)
+static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Move *out_move, int ply, int *out_tt_score, int *out_tt_flag)
 {
     /* Singular Extension: skip TT when we have an excluded move at this ply,
      * because the TT entry may depend on the excluded move being the best. */
+    if (out_tt_flag)
+        *out_tt_flag = -1;
     if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0))
         return INF + 1;
+
+    g_tt_probe_count++;
 
     int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
     TT_Cluster *cluster = &s->tt[idx];
@@ -141,7 +419,7 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
     for (i = 0; i < 4; i++)
     {
         TT_Entry *e = &cluster->entries[i];
-        if (e->key == (key >> 32))
+        if (e->key == key)
         {
             found_key = 1;
             *out_move = e->best_move;
@@ -149,27 +427,34 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
             {
                 int score = e->score;
                 if (score > MATE_SCORE - 100)
-                    score -= ply;
+                    score += depth;
                 else if (score < -MATE_SCORE + 100)
-                    score += ply;
+                    score -= depth;
                 if (out_tt_score)
                     *out_tt_score = score;
+                if (out_tt_flag)
+                    *out_tt_flag = e->flag;
                 if (e->flag == 0)
                 {
                     s->tt_hits++;
                     g_prof_tt_hits++;
+                    g_tt_hit_count++;
                     return score;
                 }
                 if (e->flag == 1 && score <= alpha)
                 {
                     s->tt_hits++;
+                    g_tt_hit_count++;
                     return score;
                 }
                 if (e->flag == 2 && score >= beta)
                 {
                     s->tt_hits++;
+                    g_tt_hit_count++;
                     return score;
                 }
+                /* depth 够但 flag 不满足条件 */
+                g_tt_flag_fail_count++;
             }
             else
             {
@@ -177,11 +462,14 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
                 {
                     int score = e->score;
                     if (score > MATE_SCORE - 100)
-                        score -= ply;
+                        score += depth;
                     else if (score < -MATE_SCORE + 100)
-                        score += ply;
+                        score -= depth;
                     *out_tt_score = score;
                 }
+                if (out_tt_flag)
+                    *out_tt_flag = e->flag;
+                g_tt_move_only_count++;
             }
             s->tt_misses++;
             return INF + 1;
@@ -190,20 +478,28 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
     for (i = 0; i < 4; i++)
     {
         TT_Entry *e = &cluster->entries[i];
-        if (e->key == (key >> 32) && e->depth > 0)
+        if (e->key == key && e->depth > 0)
         {
             *out_move = e->best_move;
             break;
         }
     }
     if (!found_key)
+    {
         s->tt_misses++;
+        g_tt_miss_count++;
+    }
     return INF + 1;
 }
 
 static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Move best_move, int ply)
 {
     g_prof_tt_stores++;
+    g_tt_store_count++;
+    /* All SMP workers now write into the shared TT, so that the global
+     * tt_generation counter (incremented by all workers each iteration)
+     * stays consistent with the entries stored.  Lazy SMP tolerates the
+     * occasional data race — the benefit of shared knowledge outweighs it. */
     /* Singular Extension: don't store TT when we have an excluded move at this ply,
      * to avoid polluting TT with results from an incomplete search. */
     if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0))
@@ -211,27 +507,35 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
 
     int idx = (int)(key & (U64)(s->tt_cluster_count - 1));
     TT_Cluster *cluster = &s->tt[idx];
-    U64 key32 = key >> 32;
     int i;
     /* Check for existing entry with same key */
     for (i = 0; i < 4; i++)
     {
         TT_Entry *e = &cluster->entries[i];
-        if (e->key == key32)
+        if (e->key == key)
         {
             if (depth >= e->depth)
             {
                 int adj_score = score;
                 if (adj_score > MATE_SCORE - 100)
-                    adj_score += ply;
+                    adj_score -= depth;
                 else if (adj_score < -MATE_SCORE + 100)
-                    adj_score -= ply;
-                e->key = key32;
+                    adj_score += depth;
+                e->key = key;
                 e->depth = (int16_t)depth;
                 e->score = adj_score;
                 e->flag = (int16_t)flag;
                 e->best_move = best_move;
-                e->generation = (uint8_t)(s->tt_generation & 0xFF);
+                e->generation = (uint16_t)(s->tt_generation);
+            }
+            else
+            {
+                /* Depth insufficient to overwrite, but refresh generation
+                 * so the entry is not evicted as stale by a shallower
+                 * replacement candidate in a future iteration. */
+                assert(e->best_move.from < 64 && e->best_move.to < 64
+                       && "Stored TT best_move has invalid square range");
+                e->generation = (uint16_t)(s->tt_generation);
             }
             return;
         }
@@ -257,7 +561,7 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
         }
         else
         {
-            int gen_diff = (int)(s->tt_generation & 0xFF) - (int)e->generation;
+            int gen_diff = (uint16_t)(s->tt_generation - e->generation);
             score = (int)e->depth * 256 - gen_diff;
         }
         if (score < worst_score)
@@ -270,22 +574,22 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
      * it means multiple threads are competing for the same cluster slot. */
     {
         TT_Entry *victim = &cluster->entries[replace_idx];
-        if ((int)(victim->generation & 0xFF) == (int)(s->tt_generation & 0xFF) && victim->key != 0)
+        if ((int)victim->generation == (int)(s->tt_generation & 0xFFFF) && victim->key != 0)
             s->tt_contention_count++;
     }
     {
         TT_Entry *e = &cluster->entries[replace_idx];
         int adj_score = score;
         if (adj_score > MATE_SCORE - 100)
-            adj_score += ply;
+            adj_score -= depth;
         else if (adj_score < -MATE_SCORE + 100)
-            adj_score -= ply;
-        e->key = key32;
+            adj_score += depth;
+        e->key = key;
         e->depth = (int16_t)depth;
         e->score = adj_score;
         e->flag = (int16_t)flag;
         e->best_move = best_move;
-        e->generation = (uint8_t)(s->tt_generation & 0xFF);
+        e->generation = (uint16_t)(s->tt_generation);
     }
 }
 
@@ -294,15 +598,15 @@ static int see_piece_value(int piece)
     switch (piece)
     {
     case PAWN:
-        return PAWN_VALUE;
+        return get_piece_value(PAWN);
     case KNIGHT:
-        return KNIGHT_VALUE;
+        return get_piece_value(KNIGHT);
     case BISHOP:
-        return BISHOP_VALUE;
+        return get_piece_value(BISHOP);
     case ROOK:
-        return ROOK_VALUE;
+        return get_piece_value(ROOK);
     case QUEEN:
-        return QUEEN_VALUE;
+        return get_piece_value(QUEEN);
     case KING:
         return SEE_KING_VALUE;
     default:
@@ -502,40 +806,57 @@ static int see(Board *b, int from, int to)
 
         int next_value = see_piece_value(next_piece);
 
+        /* Remove the attacker from its original square (X-ray effect).
+         * Do NOT update current_sq — all subsequent captures happen at the
+         * original target square 'to'. The piece moves to 'to' conceptually
+         * but occupied already has a piece at 'to', so we only need to clear
+         * the attacker's origin to reveal sliding attackers behind it. */
         occupied &= ~(1ULL << next_attacker_sq);
 
         gain[gain_count++] = next_value;
 
         if (next_piece == KING)
         {
-            /* 国王吃子前，检查目标格是否被对方滑动棋子攻击。
-             * 如果被攻击，国王不能安全吃子（会走入将军），
-             * 交换在此终止，不含国王这步。 */
+            /* Check if the target square is attacked by any opponent piece.
+             * If so, the king cannot safely capture — abort the exchange
+             * and discard the king's gain. */
             U64 opp_bq = b->pieces[1 - stm][BISHOP] | b->pieces[1 - stm][QUEEN];
             U64 opp_rq = b->pieces[1 - stm][ROOK] | b->pieces[1 - stm][QUEEN];
+            U64 opp_n = b->pieces[1 - stm][KNIGHT];
+            U64 opp_p = b->pieces[1 - stm][PAWN];
+            int stm_king_sq = current_sq;
 
-            if ((sliding_attacks_bishop(current_sq, occupied) & opp_bq) ||
-                (sliding_attacks_rook(current_sq, occupied) & opp_rq))
+            if ((sliding_attacks_bishop(stm_king_sq, occupied) & opp_bq) ||
+                (sliding_attacks_rook(stm_king_sq, occupied) & opp_rq) ||
+                (knight_attacks[stm_king_sq] & opp_n) ||
+                /* Pawn attacks on stm_king_sq: opponent pawns on the two
+                 * diagonally-adjacent squares that attack the target. */
+                ((((1 - stm) == WHITE)
+                  ? (((1ULL << stm_king_sq) >> 7) & ~0x0101010101010101ULL)
+                    | (((1ULL << stm_king_sq) >> 9) & ~0x8080808080808080ULL)
+                  : (((1ULL << stm_king_sq) << 7) & ~0x8080808080808080ULL)
+                    | (((1ULL << stm_king_sq) << 9) & ~0x0101010101010101ULL)) & opp_p))
             {
-                /* 国王不能安全吃子，撤销国王的 gain 并终止交换 */
                 gain_count--;
                 break;
             }
 
             /* 国王安全吃子，对手无法回吃国王。
-             * 直接返回净收益。 */
+             * 直接返回净收益。
+             * 注意: 与标准路径一致，gain[0] 不截断 —
+             * 吃子方已经走了，无法撤回。 */
             int g = gain_count - 1;
             while (g > 0)
             {
                 gain[g - 1] = gain[g - 1] - gain[g];
-                if (gain[g - 1] < 0)
+                if (g > 1 && gain[g - 1] < 0)
                     gain[g - 1] = 0;
                 g--;
             }
             return gain[0];
         }
 
-        current_sq = next_attacker_sq;
+        /* current_sq stays as 'to' — all captures happen at the target square */
         stm = 1 - stm;
         piece = next_piece;
 
@@ -543,11 +864,16 @@ static int see(Board *b, int from, int to)
             break;
     }
 
+    /* SEE 反向计算: 从交换序列末尾向前推导每方的最优净收益。
+     * 关键: 只有"可以选择不参与"的一方才截断负数为 0 (stand pat)。
+     * 吃子方(第一步)已经走了, 无法撤回, 所以 gain[0] 不截断 —
+     * 这样 see() 能正确返回负数, 使 SEE 剪枝可以工作。
+     * 修复前: 所有 gain[i] 都截断, see() 永远 >= 0, SEE 剪枝从未触发。 */
     while (gain_count > 1)
     {
         gain_count--;
         gain[gain_count - 1] = gain[gain_count - 1] - gain[gain_count];
-        if (gain[gain_count - 1] < 0)
+        if (gain_count > 1 && gain[gain_count - 1] < 0)
             gain[gain_count - 1] = 0;
     }
 
@@ -557,6 +883,8 @@ static int see(Board *b, int from, int to)
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth)
 {
     assert(alpha < beta && "Alpha must be less than beta in quiescence_search");
+
+    set_eval_thread_id(s->thread_id);
 
     if (s->aborted)
         return 0;
@@ -607,7 +935,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     U64 pos_key = s->board.hash;
     Move tt_move = {0};
     int tt_score_raw = 0;
-    int tt_hit = tt_probe(s, pos_key, 0, alpha, beta, &tt_move, ply, &tt_score_raw);
+    int tt_hit = tt_probe(s, pos_key, 0, alpha, beta, &tt_move, ply, &tt_score_raw, NULL);
     if (tt_hit <= INF)
     {
         return tt_hit;
@@ -680,8 +1008,16 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             return beta;
         if (alpha < stand_pat)
             alpha = stand_pat;
+        /* Queen_VALUE check first: if even the most valuable capture (queen)
+         * cannot lift the score to alpha, no capture matters.  This is the
+         * conservative safety net and must execute before the more aggressive
+         * delta pruning, so that positions where a queen capture is still
+         * relevant are not incorrectly pruned.  Uses get_piece_value() so
+         * runtime-loaded piece values are respected. */
+        if (stand_pat + get_piece_value(QUEEN) + get_piece_value(QUEEN) - get_piece_value(PAWN) < alpha)
+            return alpha;
         {
-            int delta_margin = DELTA;
+            int delta_margin = get_piece_value(QUEEN);
             int my_npm = s->board.npm[s->board.side_to_move];
             int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
             if (my_npm < opp_npm - 100)
@@ -689,8 +1025,6 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
             if (stand_pat + delta_margin < alpha)
                 return alpha;
         }
-        if (stand_pat + QUEEN_VALUE < alpha)
-            return alpha;
         if (ply >= 60)
             return alpha;
         stand_pat_val = stand_pat;
@@ -788,6 +1122,18 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 {
     assert(alpha < beta && "Alpha must be less than beta in negamax");
 
+    set_eval_thread_id(s->thread_id);
+
+    if (ply == 0)
+    {
+        verify_incremental_eval(&s->board);
+        /* Verify hash consistency between compute_hash() and incremental
+         * maintenance.  Any discrepancy corrupts TT probes and repetition
+         * detection permanently. */
+        U64 computed_hash = compute_hash(&s->board);
+        assert(computed_hash == s->board.hash && "Hash mismatch at root - TT corruption risk");
+    }
+
     if (s->aborted)
         return 0;
     s->nodes++;
@@ -808,7 +1154,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     U64 key = s->board.hash;
     Move tt_move = {0};
     int tt_score = -INF;
-    int tt_val = tt_probe(s, key, depth, alpha, beta, &tt_move, ply, &tt_score);
+    int tt_flag = -1;
+    int tt_val = tt_probe(s, key, depth, alpha, beta, &tt_move, ply, &tt_score, &tt_flag);
     if (tt_val != INF + 1)
         return tt_val;
 
@@ -852,14 +1199,14 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                  * Ignore corrupt TB results and fall back to search + eval. */
                 if (wdl == TB_DRAW)
                 {
-                    int w_mat = count_bits(s->board.pieces[WHITE][QUEEN]) * QUEEN_VALUE +
-                                count_bits(s->board.pieces[WHITE][ROOK]) * ROOK_VALUE +
-                                count_bits(s->board.pieces[WHITE][BISHOP]) * BISHOP_VALUE +
-                                count_bits(s->board.pieces[WHITE][KNIGHT]) * KNIGHT_VALUE;
-                    int b_mat = count_bits(s->board.pieces[BLACK][QUEEN]) * QUEEN_VALUE +
-                                count_bits(s->board.pieces[BLACK][ROOK]) * ROOK_VALUE +
-                                count_bits(s->board.pieces[BLACK][BISHOP]) * BISHOP_VALUE +
-                                count_bits(s->board.pieces[BLACK][KNIGHT]) * KNIGHT_VALUE;
+                    int w_mat = count_bits(s->board.pieces[WHITE][QUEEN]) * get_piece_value(QUEEN) +
+                                count_bits(s->board.pieces[WHITE][ROOK]) * get_piece_value(ROOK) +
+                                count_bits(s->board.pieces[WHITE][BISHOP]) * get_piece_value(BISHOP) +
+                                count_bits(s->board.pieces[WHITE][KNIGHT]) * get_piece_value(KNIGHT);
+                    int b_mat = count_bits(s->board.pieces[BLACK][QUEEN]) * get_piece_value(QUEEN) +
+                                count_bits(s->board.pieces[BLACK][ROOK]) * get_piece_value(ROOK) +
+                                count_bits(s->board.pieces[BLACK][BISHOP]) * get_piece_value(BISHOP) +
+                                count_bits(s->board.pieces[BLACK][KNIGHT]) * get_piece_value(KNIGHT);
                     int mat_diff = w_mat - b_mat;
                     if (s->board.side_to_move == BLACK)
                         mat_diff = -mat_diff;
@@ -900,11 +1247,9 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int total_reps = 0;
         int game_reps = 0;
         int search_reps = 0;
-        for (rep_i = 0; rep_i < s->game_history_count; rep_i++)
-        {
-            if (s->game_history[rep_i] == key)
-                game_reps++;
-        }
+        /* Task #109: game_history 用哈希表 O(1) 查询替代线性扫描 */
+        game_reps = game_rep_count_cached(s, key);
+        /* search_history 是栈式 (深度通常 <30), 线性扫描成本可接受 */
         for (rep_i = 0; rep_i < s->search_history_count; rep_i++)
         {
             if (s->search_history[rep_i] == key)
@@ -1023,13 +1368,15 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     /* Internal Iterative Deepening (IID):
      * If we don't have a TT move and this is a PV node,
      * do a reduced search to find a good move first.
+     * Use isolated ext_count to avoid consuming main search extension budget.
      */
     if (g_runtime_params.iid_enabled && tt_move.from == 0 && tt_move.to == 0 && depth >= 4 && (beta - alpha > 1))
     {
-        int iid_score = negamax(s, depth - 2, alpha, beta, ext_count, ply);
+        int iid_ext = 0;
+        int iid_score = negamax(s, depth - 2, alpha, beta, iid_ext, ply);
         if (!s->aborted)
         {
-            tt_probe(s, key, depth - 2, alpha, beta, &tt_move, ply, NULL);
+            tt_probe(s, key, depth - 2, alpha, beta, &tt_move, ply, NULL, NULL);
         }
     }
 
@@ -1079,6 +1426,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     Board *b = &s->board;
     Move moves[MAX_MOVES];
+    int move_see_vals[MAX_MOVES]; /* Pure SEE values for SEE pruning (Task #110) */
     int n = generate_pseudo_legal_moves(b, moves);
 
     int legal_count = 0;
@@ -1086,6 +1434,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
     for (i = 0; i < n; i++)
     {
+        move_see_vals[i] = 0; /* default for non-captures */
         if (moves[i].from == tt_move.from && moves[i].to == tt_move.to && moves[i].promotion == tt_move.promotion)
         {
             moves[i].score = TT_MOVE_SCORE;
@@ -1093,6 +1442,15 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         else if (moves[i].capture)
         {
             int see_val = see(b, moves[i].from, moves[i].to);
+            move_see_vals[i] = see_val; /* Store pure SEE for pruning (Task #110) */
+            /* 诊断: 统计 see() 返回值分布 */
+            if (see_val < 0)
+            {
+                g_see_scoring_bad_count++;
+                g_see_scoring_bad_sum += see_val;
+                if (see_val < g_see_scoring_bad_min || g_see_scoring_bad_count == 1)
+                    g_see_scoring_bad_min = see_val;
+            }
             if (see_val >= 0)
             {
                 moves[i].score = GOOD_CAPTURE_BASE + see_val * MVV_LVA_SCALE + mvv_lva(b, &moves[i]);
@@ -1285,6 +1643,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         U64 saved_hash = b->hash;
         U64 saved_pawn_hash = b->pawn_hash;
         int saved_eval_score = b->eval_score;
+        int saved_mg = b->mg_score;
+        int saved_eg = b->eg_score;
         int saved_halfmove = b->halfmove_clock;
         if (saved_ep >= 0 && saved_ep < 64)
             b->hash ^= zobrist_table[12 * 64 + 1 + 4 + saved_ep];
@@ -1292,7 +1652,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->side_to_move = 1 - b->side_to_move;
         b->en_passant = -1;
         b->eval_score = EVAL_SCORE_INVALID;
-        int R = NMP_BASE_REDUCTION + depth / NMP_DEPTH_DIVISOR;
+        int R = g_runtime_params.nmp_base_reduction + depth / g_runtime_params.nmp_depth_divisor;
         if (static_eval - beta > NMP_HIGH_EVAL_THRESHOLD)
             R += NMP_HIGH_EVAL_EXTRA_REDUCTION;
         /* In won positions, be more conservative with NMP to avoid
@@ -1329,7 +1689,13 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->hash = saved_hash;
         b->pawn_hash = saved_pawn_hash;
         b->eval_score = saved_eval_score;
+        b->mg_score = saved_mg;
+        b->eg_score = saved_eg;
         b->halfmove_clock = saved_halfmove;
+        /* Restore search history: keep current position key, clear any keys
+         * added by the null-move sub-search (which would otherwise pollute
+         * the verification search's repetition detection). */
+        s->search_history_count = saved_history_count + 1;
         if (s->aborted)
         {
             s->search_history_count = saved_history_count;
@@ -1339,6 +1705,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         {
             if (depth >= NULL_MOVE_VERIFICATION_DEPTH)
             {
+                g_nmp_verify_depth++;
                 /* Keep the current position in the repetition history for
                  * the verification search. Previously this was resetting
                  * to saved_history_count which removed the current position,
@@ -1347,7 +1714,19 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 /* In endgames, use deeper verification to catch zugzwang */
                 if (is_endgame && b->phase < 8)
                     verify_reduction = NULL_MOVE_VERIFICATION_REDUCTION + 2;
-                int verify_score = negamax(s, depth - verify_reduction, alpha, alpha + 1, ext_count, ply);
+                /* Save PV and static eval before verification search.
+                 * The verification runs at the same ply and would overwrite
+                 * static_eval_stack[ply] and pv_table[ply], corrupting the
+                 * improving flag and PV collection for the main search. */
+                Move saved_pv_nmp[64];
+                int saved_pv_len_nmp = s->pv_length[ply];
+                int saved_static_eval_nmp = s->static_eval_stack[ply];
+                memcpy(saved_pv_nmp, s->pv_table[ply], 64 * sizeof(Move));
+                int verify_score = negamax(s, depth - verify_reduction, beta - 1, beta, ext_count, ply);
+                /* Restore state after verification search */
+                s->pv_length[ply] = saved_pv_len_nmp;
+                memcpy(s->pv_table[ply], saved_pv_nmp, 64 * sizeof(Move));
+                s->static_eval_stack[ply] = saved_static_eval_nmp;
                 if (s->aborted)
                 {
                     s->search_history_count = saved_history_count;
@@ -1359,6 +1738,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     s->search_history_count = saved_history_count;
                     return beta;
                 }
+                g_nmp_verify_fail++;
             }
             else
             {
@@ -1366,6 +1746,10 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 s->search_history_count = saved_history_count;
                 return beta;
             }
+        }
+        else
+        {
+            g_nmp_null_fail++;
         }
     }
     skip_nmp:;
@@ -1439,15 +1823,32 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 8 &&
             legal_count >= 1 && (beta - alpha <= 1))
         {
-            /* Extract SEE value from move score (computed during scoring phase):
-             * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  → see_val >= 0, never pruned
-             * SEE <  0: score = 200000 + see_val                → see_val = score - 200000 */
-            int cached_see = (moves[i].score >= GOOD_CAPTURE_BASE) ? 0 : (moves[i].score - BAD_CAPTURE_BASE);
+            /* Task #110: Use pure SEE value stored during scoring phase.
+             * Previously used (score - BAD_CAPTURE_BASE) which included
+             * capture_history adjustment, causing false SEE pruning when
+             * capture_history was strongly negative. */
+            int cached_see = move_see_vals[i];
+            g_see_zero_window++;
+            if (cached_see < 0)
+            {
+                g_see_bad_capture_count++;
+                g_see_bad_capture_sum += cached_see;
+                if (cached_see < g_see_bad_capture_min || g_see_bad_capture_count == 1)
+                    g_see_bad_capture_min = cached_see;
+            }
             if (cached_see < -depth * SEE_PRUNE_DEPTH_SCALE)
             {
+                g_see_threshold_met++;
                 g_prof_see_pruned++;
                 continue;
             }
+        }
+        /* 诊断: 统计吃子着法总数和满足前 6 个条件的数量 */
+        if (moves[i].capture && !moves[i].promotion && depth <= 8 && !in_check)
+        {
+            g_see_capture_total++;
+            if (legal_count >= 1)
+                g_see_eligible++;
         }
 
         if (g_runtime_params.history_prune_enabled && !in_check && !moves[i].capture && !moves[i].promotion &&
@@ -1507,15 +1908,19 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                  * If all alternatives score below (tt_score - 2*depth), the TT
                  * move is singular and deserves an extension. */
                 int se_beta = tt_score - SE_BETA_DEPTH_SCALE * depth;
+                if (se_beta < -MATE_SCORE + 100)
+                    se_beta = -MATE_SCORE + 100;
                 int se_depth_limit = depth / 2;
 
                 /* Save PV table before SE search to avoid corruption.
                  * The SE search runs at the same ply and would overwrite
-                 * pv_table[ply], pv_length[ply], and static_eval_stack[ply]. */
+                 * pv_table[ply], pv_length[ply], and static_eval_stack[ply].
+                 * Always save the full 64-entry array so the restore correctly
+                 * clears any entries written by the SE search. */
                 Move saved_pv[64];
                 int saved_pv_len = s->pv_length[ply];
                 int saved_static_eval = s->static_eval_stack[ply];
-                memcpy(saved_pv, s->pv_table[ply], saved_pv_len * sizeof(Move));
+                memcpy(saved_pv, s->pv_table[ply], 64 * sizeof(Move));
 
                 s->se_excluded[ply] = tt_move;
                 int se_score = negamax(s, se_depth_limit, se_beta - 1, se_beta, ext_count, ply);
@@ -1523,7 +1928,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
                 /* Restore state after SE search */
                 s->pv_length[ply] = saved_pv_len;
-                memcpy(s->pv_table[ply], saved_pv, saved_pv_len * sizeof(Move));
+                memcpy(s->pv_table[ply], saved_pv, 64 * sizeof(Move));
                 s->static_eval_stack[ply] = saved_static_eval;
 
                 if (se_score < se_beta)
@@ -1534,11 +1939,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         else
         {
             int is_pv_node = (beta - alpha > 1);
-            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame, ply);
+            int apply_lmr = should_apply_lmr(s, &moves[i], depth, i, in_check, is_endgame, ply, move_see_vals[i]);
 
             if (apply_lmr)
             {
-                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check, static_eval, ply);
+                int reduction = calculate_reduction(s, &moves[i], depth, i, is_pv_node, in_check, static_eval, ply, move_see_vals[i]);
 
                 int estimated_nodes_saved = (1 << reduction) - 1;
 
@@ -1591,8 +1996,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 if (fl_prev_pt > 0 && fl_prev_pt <= 6 && fl_curr_pt > 0 && fl_curr_pt <= 6)
                 {
                     int16_t *ce = &g_cont_history[fl_prev_pt][s->move_stack[ply - 1].to][fl_curr_pt][moves[i].to];
-                    *ce -= depth * depth;
-                    if (*ce < -HISTORY_SCORE_LIMIT) *ce = -HISTORY_SCORE_LIMIT;
+                    history_atomic_add(ce, -depth * depth);
                 }
             }
         }
@@ -1605,8 +2009,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             if (fl_att > 0 && fl_att <= 6 && fl_cap > 0 && fl_cap <= 6)
             {
                 int16_t *che = &g_capture_history[fl_att][moves[i].to][fl_cap];
-                *che -= depth * depth;
-                if (*che < -HISTORY_SCORE_LIMIT) *che = -HISTORY_SCORE_LIMIT;
+                history_atomic_add(che, -depth * depth);
             }
         }
 
@@ -1647,8 +2050,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                             if (bc_prev_pt > 0 && bc_prev_pt <= 6 && bc_curr_pt > 0 && bc_curr_pt <= 6)
                             {
                                 int16_t *bce = &g_cont_history[bc_prev_pt][s->move_stack[ply - 1].to][bc_curr_pt][moves[i].to];
-                                *bce += depth * depth;
-                                if (*bce > HISTORY_SCORE_LIMIT) *bce = HISTORY_SCORE_LIMIT;
+                                history_atomic_add(bce, depth * depth);
                             }
                         }
                     }
@@ -1660,8 +2062,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                         if (bc_att > 0 && bc_att <= 6 && bc_cap > 0 && bc_cap <= 6)
                         {
                             int16_t *bche = &g_capture_history[bc_att][moves[i].to][bc_cap];
-                            *bche += depth * depth;
-                            if (*bche > HISTORY_SCORE_LIMIT) *bche = HISTORY_SCORE_LIMIT;
+                            history_atomic_add(bche, depth * depth);
                         }
                     }
                     if (ply >= 1)

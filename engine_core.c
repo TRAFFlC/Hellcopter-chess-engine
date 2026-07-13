@@ -58,6 +58,19 @@ typedef struct
     int futility_margin_base;
     int razoring_enabled;
     int razoring_margin;
+    int rfp_enabled;
+    int nmp_enabled;
+    int lmp_enabled;
+    int see_prune_enabled;
+    int history_prune_enabled;
+    int singular_ext_enabled;
+    int iid_enabled;
+    int probcut_enabled;
+    int probcut_min_depth;
+    int probcut_margin;
+    int probcut_reduction;
+    int capture_history_enabled;
+    int continuation_history_enabled;
     int mate_score;
     int delta;
     int endgame_phase_threshold;
@@ -68,11 +81,279 @@ typedef struct
     int qs_max_depth_eg;
     int threading_enabled;
     int num_threads;
+    /* Extended eval weights for tuning */
+    int pawn_chain_bonus;
+    int backward_pawn_penalty;
+    int center_pawn_mg_bonus;
+    int connected_passer_bonus;
+    int rook_on_7th_mg_bonus;
+    int rook_on_7th_eg_bonus;
+    int castle_short_bonus;
+    int castle_long_bonus;
+    int tempo_mg;
+    int tempo_eg;
+    int knight_edge_penalty;
+    int knight_initial_block_penalty;
+    int isolated_open_file_mul_num;
+    int isolated_open_file_mul_den;
+    int simplify_threshold;
+    int simplify_bonus;
+    int mopup_material_threshold;
+    int mopup_edge_weight;
+    int mopup_proximity_weight;
+    int mopup_opposition_weight;
+    int opening_knight_not_developed_penalty;
+    int opening_bishop_not_developed_penalty;
+    int opening_early_queen_base;
+    int hanging_queen_penalty;
+    int hanging_rook_penalty;
+    int hanging_minor_penalty;
+    int in_check_penalty;
+    int passed_pawn_supported_bonus;
+    int passed_pawn_blocked_base;
+    int passed_pawn_clear_path_base;
+    int passed_pawn_king_dist_base;
+    int center_control_piece_bonus;
+    int center_control_pawn_bonus;
+    int bishop_mobility_bonus;
+    int bishop_bad_penalty;
+    int pawn_chain_lateral_bonus;
+    int center_pawn_pair_bonus;
+    int imbalance_mg_base;
+    int imbalance_mg_scale;
+    int imbalance_eg_scale;
+    int no_minor_vs_two_minor_penalty;
+    int opposite_bishop_draw_factor_no_pawn;
+    int opposite_bishop_draw_factor_pawn;
+
+    /* King Danger parameters */
+    int king_danger_cap;
+    int knight_attack_base;
+    int bishop_attack_base;
+    int rook_attack_base;
+    int queen_attack_base;
+    int knight_attack_per_sq;
+    int bishop_attack_per_sq;
+    int rook_attack_per_sq;
+    int queen_attack_per_sq;
+    int pawn_shield_rank2_penalty;
+    int pawn_shield_no_pawn_penalty;
+    int open_file_king_zone_penalty;
+    int semi_open_file_king_zone_penalty;
+    int attacker_count_bonus;
+    int king_danger_eg_scale_base;
+    int king_danger_eg_scale_phase;
+    int king_danger_table[128];
+
+    /* Mobility tables */
+    int knight_mob_mg[9];
+    int knight_mob_eg[9];
+    int bishop_mob_mg[14];
+    int bishop_mob_eg[14];
+    int rook_mob_mg[15];
+    int rook_mob_eg[15];
+    int queen_mob_mg[28];
+    int queen_mob_eg[28];
+
+    /* Queen Centralization */
+    int queen_centralization_mg;
+    int queen_centralization_eg;
+
+    /* Passed Pawn Detail */
+    int passed_pawn_eg_weight;
+    int passed_pawn_eg_phase_denom;
+    int promo_threat_rank6_base;
+    int promo_threat_rank5_base;
+    int promo_threat_eg_divisor;
+    int passed_pawn_blocked_rank_scale;
+    int passed_pawn_blocked_rank_denom;
+    int passed_pawn_clear_path_rank_scale;
+    int passed_pawn_king_dist_scale;
+
+    /* Center Control Extended */
+    int center_control_extended_bonus;
+    int center_control_pawn_extended_bonus;
+
+    /* Back Rank Threats */
+    int back_rank_mate_penalty;
+    int back_rank_triple_penalty;
+
+    /* Knight Outpost */
+    int outpost_mg_base;
+    int outpost_mg_rank_scale;
+    int outpost_eg_base;
+    int outpost_eg_rank_scale;
+
+    /* Attacked by Pawn/Knight */
+    int queen_attacked_by_pawn_penalty;
+    int rook_attacked_by_pawn_penalty;
+    int minor_attacked_by_pawn_penalty;
+    int queen_attacked_by_pawn_extra;
+    int rook_attacked_by_pawn_extra;
+    int queen_attacked_by_knight_penalty;
+    int rook_attacked_by_knight_penalty;
+    int minor_attacked_by_knight_penalty;
+    int piece_defended_by_pawn_bonus;
+
+    /* Fork/Threat */
+    int knight_fork_queen_rook_penalty;
+    int knight_fork_king_penalty;
+    int queen_attacked_by_minor_undefended;
+    int queen_attacked_by_minor_defended;
+    int rook_attacked_by_minor_undefended;
+    int rook_attacked_by_minor_defended;
+    int minor_attacked_by_minor_undefended;
+    int minor_attacked_by_minor_defended;
+    int piece_attacked_by_rook_undefended;
+    int piece_attacked_by_rook_defended;
+    int piece_attacked_by_bishop_undefended;
+    int piece_attacked_by_bishop_defended;
+
+    /* Opening Development Extended */
+    int opening_early_queen_scale;
+    int opening_early_queen_min;
+    int opening_undeveloped_penalty_5;
+    int opening_undeveloped_penalty_8;
+    int opening_king_not_castled_penalty;
+    int opening_early_queen_advance_base;
+    int opening_early_queen_advance_scale;
+    int opening_early_queen_advance_min;
+    int opening_early_rook_advance_penalty;
+    int opening_center_pawn_control_bonus;
+    int opening_no_center_pawn_penalty;
+
+    /* Fifty Move Rule */
+    int fifty_move_urgency_divisor;
+
+    /* Mopup Extended */
+    int mopup_winning_king_activity_weight;
+    int mopup_losing_king_activity_weight;
+    int mopup_king_activity_early_phase;
+    int mopup_king_activity_early_weight;
+    int mopup_generic_edge_scale;
+    int mopup_generic_proximity_scale;
+
+    /* Anti-Simplify */
+    int anti_simplify_per_piece_scale;
+    int anti_simplify_piece_threshold;
+
+    /* Specific Endgames KRK/KQKR/KBNK */
+    int krk_rook_cutoff_bonus;
+    int krk_rook_far_penalty;
+    int kqkr_corner_scale;
+    int kqkr_proximity_scale;
+    int kqkr_queen_proximity_scale;
+    int kqkr_stalemate_avoid_penalty;
+    int kqkr_corner_mate_bonus;
+    int kbnk_corner_scale;
+    int kbnk_proximity_scale;
+    int kbnk_correct_corner_bonus;
+
+    /* Extended Mopup */
+    int extended_mopup_edge_scale;
+    int extended_mopup_proximity_scale;
+
+    /* Opposite Bishop Draw */
+    int opposite_bishop_draw_divisor;
+
+    /* Rook 7th Extended */
+    int rook_on_7th_double_bonus;
+    int rook_on_7th_king_rank8_bonus;
+    int rook_on_7th_double_king_rank8_bonus;
+
+    /* Rook Potential */
+    int rook_potential_open_file;
+    int rook_potential_semi_open;
+
+    /* NMP/LMR runtime-tunable parameters (P1 fix: make config actually used) */
+    int nmp_base_reduction;
+    int nmp_depth_divisor;
+    double lmr_base;
+    double lmr_divisor;
+
     int loaded; /* Flag: 1 if parameters loaded from file, 0 if using defaults */
 } RuntimeParams;
 
 /* Global runtime parameters - initialized to defaults */
 static RuntimeParams g_runtime_params = {0};
+
+/* ============================================================================
+ * SEARCH PROFILE — Global performance counters
+ * ============================================================================ */
+static long long g_prof_eval_calls = 0;
+static long long g_prof_qs_calls = 0;
+static long long g_prof_make_move_calls = 0;
+static long long g_prof_unmake_move_calls = 0;
+static long long g_prof_nmp_triggered = 0;
+static long long g_prof_nmp_cutoffs = 0;
+static long long g_prof_rfp_triggered = 0;
+static long long g_prof_lmr_applied = 0;
+static long long g_prof_lmr_full_research = 0;
+static long long g_prof_futility_pruned = 0;
+static long long g_prof_razoring_triggered = 0;
+static long long g_prof_lmp_pruned = 0;
+static long long g_prof_see_pruned = 0;
+static long long g_prof_history_pruned = 0;
+static long long g_prof_probcut_triggered = 0;
+static long long g_prof_probcut_cutoffs = 0;
+static long long g_prof_tt_hits = 0;
+static long long g_prof_tt_stores = 0;
+static long long g_prof_qs_nodes = 0;
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+SearchProfile get_search_profile(void)
+{
+    SearchProfile p;
+    p.eval_calls = g_prof_eval_calls;
+    p.qs_calls = g_prof_qs_calls;
+    p.make_move_calls = g_prof_make_move_calls;
+    p.unmake_move_calls = g_prof_unmake_move_calls;
+    p.nmp_triggered = g_prof_nmp_triggered;
+    p.nmp_cutoffs = g_prof_nmp_cutoffs;
+    p.rfp_triggered = g_prof_rfp_triggered;
+    p.lmr_applied = g_prof_lmr_applied;
+    p.lmr_full_research = g_prof_lmr_full_research;
+    p.futility_pruned = g_prof_futility_pruned;
+    p.razoring_triggered = g_prof_razoring_triggered;
+    p.lmp_pruned = g_prof_lmp_pruned;
+    p.see_pruned = g_prof_see_pruned;
+    p.history_pruned = g_prof_history_pruned;
+    p.probcut_triggered = g_prof_probcut_triggered;
+    p.probcut_cutoffs = g_prof_probcut_cutoffs;
+    p.tt_hits = g_prof_tt_hits;
+    p.tt_stores = g_prof_tt_stores;
+    p.total_nodes = 0; /* filled by caller from SearchState */
+    p.qs_nodes = g_prof_qs_nodes;
+    return p;
+}
+
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+void reset_search_profile(void)
+{
+    g_prof_eval_calls = 0;
+    g_prof_qs_calls = 0;
+    g_prof_make_move_calls = 0;
+    g_prof_unmake_move_calls = 0;
+    g_prof_nmp_triggered = 0;
+    g_prof_nmp_cutoffs = 0;
+    g_prof_rfp_triggered = 0;
+    g_prof_lmr_applied = 0;
+    g_prof_lmr_full_research = 0;
+    g_prof_futility_pruned = 0;
+    g_prof_razoring_triggered = 0;
+    g_prof_lmp_pruned = 0;
+    g_prof_see_pruned = 0;
+    g_prof_history_pruned = 0;
+    g_prof_probcut_triggered = 0;
+    g_prof_probcut_cutoffs = 0;
+    g_prof_tt_hits = 0;
+    g_prof_tt_stores = 0;
+    g_prof_qs_nodes = 0;
+}
 
 void set_num_threads(int n)
 {
@@ -132,9 +413,21 @@ static int lmr_table[128][64];
 static void init_lmr_table(void)
 {
     int d, m;
+    /* Fall back to compile-time constants when runtime params are not yet
+     * loaded (g_runtime_params is zero-initialized). This prevents division
+     * by zero when ensure_engine_tables_initialized() runs before
+     * init_runtime_params_defaults()/load_params_from_file(). */
+    double base = (g_runtime_params.lmr_divisor != 0.0) ? g_runtime_params.lmr_base : LMR_BASE;
+    double divisor = (g_runtime_params.lmr_divisor != 0.0) ? g_runtime_params.lmr_divisor : LMR_DIVISOR;
     for (d = 1; d < 128; d++)
         for (m = 1; m < 64; m++)
-            lmr_table[d][m] = (int)(LMR_BASE + log((double)d) * log((double)m) / LMR_DIVISOR);
+            lmr_table[d][m] = (int)(base + log((double)d) * log((double)m) / divisor);
+}
+
+/* Public interface to regenerate lmr_table after runtime params are loaded */
+void regenerate_lmr_table(void)
+{
+    init_lmr_table();
 }
 
 typedef struct
@@ -144,7 +437,7 @@ typedef struct
 } PawnTTEntry;
 
 #define PAWN_HASH_SIZE (1 << PAWN_HASH_SIZE_EXP)
-static PawnTTEntry pawn_hash_table[PAWN_HASH_SIZE];
+static PawnTTEntry volatile pawn_hash_table[PAWN_HASH_SIZE];
 
 /* MAX_BLUNDER_ENTRIES now defined in engine_params.h */
 
@@ -450,12 +743,19 @@ static void ensure_engine_tables_initialized(void)
 
 static void init_zobrist(void)
 {
-    unsigned long long seed = 0x123456789ABCDEF0ULL;
+    /* SplitMix64 PRNG — much higher quality than LCG, eliminates correlation */
+    U64 z = 0x9E3779B97F4A7C15ULL; /* golden ratio hash constant */
     int i;
     for (i = 0; i < 12 * 64 + 1 + 4 + 64; i++)
     {
-        seed = seed * 1103515245 + 12345;
-        zobrist_table[i] = seed;
+        z += 0x9E3779B97F4A7C15ULL;
+        U64 x = z;
+        x ^= x >> 30;
+        x *= 0xBF58476D1CE4E5B9ULL;
+        x ^= x >> 27;
+        x *= 0x94D049BB133111EBULL;
+        x ^= x >> 31;
+        zobrist_table[i] = x;
     }
     zobrist_initialized = 1;
 }
@@ -468,6 +768,22 @@ static int get_piece_value(int piece_type)
         return g_runtime_params.piece_values[piece_type];
     }
     return piece_values[piece_type];
+}
+
+/* PST accessor: returns runtime PST value if loaded, else compile-time default.
+ * Mirrors get_piece_value() for consistency. */
+static int get_mg_pst(int piece_type, int sq)
+{
+    if (g_runtime_params.loaded && piece_type > 0 && piece_type < 7)
+        return g_runtime_params.mg_pst[piece_type - 1][sq];
+    return mg_pst[piece_type][sq];
+}
+
+static int get_eg_pst(int piece_type, int sq)
+{
+    if (g_runtime_params.loaded && piece_type > 0 && piece_type < 7)
+        return g_runtime_params.eg_pst[piece_type - 1][sq];
+    return eg_pst[piece_type][sq];
 }
 
 static double get_time(void)
@@ -520,6 +836,8 @@ static int has_non_pawn_material(const Board *b, int side)
  * ============================================================================
  */
 
+static int piece_on_square(const Board *b, int sq);
+
 /**
  * Check if a move gives check to the opponent
  *
@@ -529,11 +847,100 @@ static int has_non_pawn_material(const Board *b, int side)
  */
 static int move_gives_check(Board *b, const Move *move)
 {
-    UndoInfo undo;
-    make_move(b, move, &undo);
-    int result = is_check(b, b->side_to_move);
-    unmake_move(b, move, &undo);
-    return result;
+    int stm = b->side_to_move;
+    int opp = 1 - stm;
+    int opp_king_sq = b->king_sq[opp];
+    int from = move->from;
+    int to = move->to;
+    int piece = piece_on_square(b, from);
+
+    U64 occupied = all_pieces(b);
+    U64 from_bb = 1ULL << from;
+    U64 to_bb = 1ULL << to;
+
+    /* 1. 直接将军：走法后棋子是否攻击对方王 */
+    U64 new_occupied = (occupied & ~from_bb) | to_bb;
+    int check_piece = move->promotion ? move->promotion : piece;
+    U64 opp_king_bb = 1ULL << opp_king_sq;
+
+    switch (check_piece)
+    {
+        case KNIGHT:
+            if (knight_attacks[to] & opp_king_bb)
+                return 1;
+            break;
+        case KING:
+            /* 王本身不会将军对方王（正规局面中王不相邻） */
+            break;
+        case PAWN:
+        {
+            U64 pawn_atk = 0;
+            if (stm == WHITE)
+            {
+                if ((to + 7) < 64 && (to % 8) != 7)
+                    pawn_atk |= (1ULL << (to + 7));
+                if ((to + 9) < 64 && (to % 8) != 0)
+                    pawn_atk |= (1ULL << (to + 9));
+            }
+            else
+            {
+                if ((to - 7) >= 0 && (to % 8) != 0)
+                    pawn_atk |= (1ULL << (to - 7));
+                if ((to - 9) >= 0 && (to % 8) != 7)
+                    pawn_atk |= (1ULL << (to - 9));
+            }
+            if (pawn_atk & opp_king_bb)
+                return 1;
+            break;
+        }
+        case BISHOP:
+            if (sliding_attacks_bishop(to, new_occupied) & opp_king_bb)
+                return 1;
+            break;
+        case ROOK:
+            if (sliding_attacks_rook(to, new_occupied) & opp_king_bb)
+                return 1;
+            break;
+        case QUEEN:
+            if ((sliding_attacks_bishop(to, new_occupied) |
+                 sliding_attacks_rook(to, new_occupied)) & opp_king_bb)
+                return 1;
+            break;
+    }
+
+    /* 2. 间接将军（discovered check）：移除 from 格后是否打开了对对方王的射线 */
+    U64 occ_no_from = occupied & ~from_bb;
+
+    /* Castling: the rook also moves; adjust occ_no_from to reflect its departure */
+    if (piece == KING && (to - from == 2 || from - to == 2))
+    {
+        int rook_from = (to > from) ? from + 3 : from - 4;
+        int rook_to   = (to > from) ? from + 1 : from - 1;
+        U64 rook_from_bb = 1ULL << rook_from;
+        U64 rook_to_bb   = 1ULL << rook_to;
+        new_occupied = (new_occupied & ~rook_from_bb) | rook_to_bb;
+        occ_no_from &= ~rook_from_bb;
+        if (sliding_attacks_rook(rook_to, new_occupied) & opp_king_bb)
+            return 1;
+    }
+
+    /* en passant 时被吃的兵不在 from/to 格，需要额外移除 */
+    if (move->capture == PAWN && b->en_passant == to)
+    {
+        int ep_capture_sq = (stm == WHITE) ? to - 8 : to + 8;
+        occ_no_from &= ~(1ULL << ep_capture_sq);
+        new_occupied &= ~(1ULL << ep_capture_sq);
+    }
+
+    U64 bishops_queens = b->pieces[stm][BISHOP] | b->pieces[stm][QUEEN];
+    if (sliding_attacks_bishop(opp_king_sq, occ_no_from) & bishops_queens & ~from_bb)
+        return 1;
+
+    U64 rooks_queens = b->pieces[stm][ROOK] | b->pieces[stm][QUEEN];
+    if (sliding_attacks_rook(opp_king_sq, occ_no_from) & rooks_queens & ~from_bb)
+        return 1;
+
+    return 0;
 }
 
 /**
@@ -565,22 +972,28 @@ static int mvv_lva(const Board *b, const Move *m);
 static int move_gives_check(Board *b, const Move *move);
 
 static int should_apply_lmr(const SearchState *s, const Move *move, int depth,
-                            int move_num, int in_check, int is_endgame, int ply)
+                            int move_num, int in_check, int is_endgame, int ply,
+                            int see_val)
 {
     if (!g_runtime_params.lmr_enabled)
         return 0;
 
-    if (ply < g_runtime_params.lmr_min_depth)
+    /* 将军逃脱中不应用 LMR：合法走法通常很少，每步都是关键，
+     * 削减可能漏掉唯一的安全解。 */
+    if (in_check)
+        return 0;
+
+    if (depth < g_runtime_params.lmr_min_depth)
         return 0;
 
     if (move_num < g_runtime_params.lmr_move_threshold)
         return 0;
 
     /* Exclude good captures (SEE >= 0) from LMR.
-     * Their score is computed during move ordering: score >= 1000000 means
-     * SEE >= 0 (see negamax scoring phase). These moves are tactical and
-     * should be searched at full depth, not reduced. */
-    if (move->capture && move->score >= 1000000)
+     * Use the cached SEE value directly — relying on score >= GOOD_CAPTURE_BASE
+     * is fragile because capture_history can push good captures below the
+     * threshold. */
+    if (move->capture && see_val >= 0)
         return 0;
 
     /* Exclude promotions from LMR — they are always critical. */
@@ -600,11 +1013,11 @@ static int is_clearly_winning(const Board *b, int static_eval)
     return 0;
 }
 
-static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check, int static_eval, int ply)
+static int calculate_reduction(SearchState *s, const Move *move, int depth, int move_num, int is_pv_node, int in_check, int static_eval, int ply, int see_val)
 {
     if (depth < 1 || move_num < 1)
         return 0;
-    int reduction = lmr_table[ply < 127 ? ply : 127][move_num < 63 ? move_num : 63];
+    int reduction = lmr_table[depth < 127 ? depth : 127][move_num < 63 ? move_num : 63];
 
     if (is_pv_node)
         reduction -= 1;
@@ -612,7 +1025,10 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
         reduction -= 1;
     if (move_num <= 3)
         reduction -= 1;
-    if (move->capture && move->capture >= 0)
+    /* Use cached SEE value to identify good captures — relying on
+     * score >= GOOD_CAPTURE_BASE is fragile because capture_history
+     * can push good captures below the threshold. */
+    if (move->capture && see_val >= 0)
     {
         reduction -= 1;
         {
@@ -635,6 +1051,31 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
         }
     }
 
+    /* Task 11: Endgame LMR conservative — pawn endgames and close kings. */
+    {
+        /* Pawn endgame: only pawns on board (no minors/majors).
+         * Every move is critical in pawn endgames. */
+        U64 minors_majors = s->board.pieces[WHITE][KNIGHT] | s->board.pieces[WHITE][BISHOP] |
+                            s->board.pieces[WHITE][ROOK] | s->board.pieces[WHITE][QUEEN] |
+                            s->board.pieces[BLACK][KNIGHT] | s->board.pieces[BLACK][BISHOP] |
+                            s->board.pieces[BLACK][ROOK] | s->board.pieces[BLACK][QUEEN];
+        if (!minors_majors)
+            reduction -= 1;
+
+        /* Close kings: when both kings are near each other (Chebyshev dist <= 3),
+         * tactical opportunities are high — be conservative with reductions. */
+        if (s->board.king_sq[WHITE] >= 0 && s->board.king_sq[BLACK] >= 0)
+        {
+            int wk_f = s->board.king_sq[WHITE] & 7, wk_r = s->board.king_sq[WHITE] >> 3;
+            int bk_f = s->board.king_sq[BLACK] & 7, bk_r = s->board.king_sq[BLACK] >> 3;
+            int king_dist = abs(wk_f - bk_f);
+            int king_dist_r = abs(wk_r - bk_r);
+            if (king_dist_r > king_dist) king_dist = king_dist_r;
+            if (king_dist <= 3)
+                reduction -= 1;
+        }
+    }
+
     /* In clearly winning positions, reduce LMR to avoid missing forced mates.
      * Uses the pre-computed static_eval passed from negamax instead of
      * calling evaluate() again, saving significant computation in the hot path. */
@@ -649,8 +1090,8 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
 
     if (reduction < 0)
         reduction = 0;
-    if (reduction >= ply)
-        reduction = ply - 1;
+    if (reduction >= depth)
+        reduction = depth - 1;
 
     return reduction;
 }
@@ -683,12 +1124,16 @@ static int calculate_reduction(SearchState *s, const Move *move, int depth, int 
  */
 static int should_apply_futility_pruning(SearchState *s, const Move *move,
                                          int depth, int move_num, int in_check,
-                                         int alpha, int is_endgame, int static_eval, int ply)
+                                         int alpha, int is_endgame, int static_eval, int ply,
+                                         int improving)
 {
     if (!g_runtime_params.futility_enabled)
         return 0;
 
-    if (depth > 5 || depth <= 0)
+    /* 深度门槛扩展到 4：depth 4 使用更紧的 margin（按 depth 3 计算），
+     * 在保留战术可靠性的同时增加中局/残局的剪枝收益。
+     * depth 5+ 仍禁用，避免漏掉深层战术。 */
+    if (depth > 4 || depth <= 0)
         return 0;
 
     if (move_num == 0)
@@ -712,7 +1157,12 @@ static int should_apply_futility_pruning(SearchState *s, const Move *move,
     if (static_eval > FUTILITY_WINNING_THRESHOLD)
         return 0;
 
-    int margin = g_runtime_params.futility_margin_base * depth;
+    /* depth 4 首次启用 futility，使用 depth 3 的紧 margin 以降低漏算风险 */
+    int effective_depth = (depth == 4) ? 3 : depth;
+    int margin = g_runtime_params.futility_margin_base * effective_depth;
+    /* 非 improving 局面（对手有强威胁）时增大 margin，更保守剪枝 */
+    if (!improving)
+        margin = margin * 4 / 3;
     if (is_endgame)
         margin = margin * FUTILITY_EG_MARGIN_NUM / FUTILITY_EG_MARGIN_DEN;
 
@@ -999,9 +1449,9 @@ board_from_fen(Board *b, const char *fen)
                 {
                     int sq = lsb_index(bb);
                     bb &= bb - 1;
-                    int psq = (s == WHITE) ? (sq ^ 56) : sq;
-                    mg += sign * (piece_values[pt2] + mg_pst[pt2][psq]);
-                    eg += sign * (piece_values[pt2] + eg_pst[pt2][psq]);
+                    int psq = (s == WHITE) ? sq : (sq ^ 56);
+                    mg += sign * (get_piece_value(pt2) + get_mg_pst(pt2, psq));
+                    eg += sign * (get_piece_value(pt2) + get_eg_pst(pt2, psq));
                 }
             }
         }
@@ -1228,36 +1678,38 @@ int
 eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int max_depth)
 {
     ensure_engine_tables_initialized();
-    SearchState s;
-    board_from_fen(&s.board, fen);
-    s.nodes = 0;
-    s.start_time = get_time();
-    s.time_limit = time_limit;
-    s.aborted = 0;
-    s.search_history_count = 0;
-    s.game_history_count = 0;
-    memset(s.killers, 0, sizeof(s.killers));
-    memset(s.history, 0, sizeof(s.history));
-    tt_init(&s, 16);
+    SearchState *s = (SearchState *)calloc(1, sizeof(SearchState));
+    if (!s)
+        return -INF - 1;
+    board_from_fen(&s->board, fen);
+    s->nodes = 0;
+    s->start_time = get_time();
+    s->time_limit = time_limit;
+    s->aborted = 0;
+    s->search_history_count = 0;
+    s->game_history_count = 0;
+    memset(s->killers, 0, sizeof(s->killers));
+    memset(s->history, 0, sizeof(s->history));
+    tt_init(s, 16);
 
-    Board old = s.board;
-    int side = s.board.side_to_move;
+    Board old = s->board;
+    int side = s->board.side_to_move;
     int opp = 1 - side;
     U64 to_bb = 1ULL << to_sq;
     int cap = 0;
-    if (s.board.pieces[opp][PAWN] & to_bb)
+    if (s->board.pieces[opp][PAWN] & to_bb)
         cap = PAWN;
-    else if (s.board.pieces[opp][KNIGHT] & to_bb)
+    else if (s->board.pieces[opp][KNIGHT] & to_bb)
         cap = KNIGHT;
-    else if (s.board.pieces[opp][BISHOP] & to_bb)
+    else if (s->board.pieces[opp][BISHOP] & to_bb)
         cap = BISHOP;
-    else if (s.board.pieces[opp][ROOK] & to_bb)
+    else if (s->board.pieces[opp][ROOK] & to_bb)
         cap = ROOK;
-    else if (s.board.pieces[opp][QUEEN] & to_bb)
+    else if (s->board.pieces[opp][QUEEN] & to_bb)
         cap = QUEEN;
-    else if (s.board.pieces[opp][KING] & to_bb)
+    else if (s->board.pieces[opp][KING] & to_bb)
         cap = KING;
-    int from_pt = piece_on_square(&s.board, from_sq);
+    int from_pt = piece_on_square(&s->board, from_sq);
     int promotion = 0;
     if (from_pt == PAWN)
     {
@@ -1266,16 +1718,18 @@ eval_move_score(const char *fen, int from_sq, int to_sq, double time_limit, int 
     }
     Move m = {from_sq, to_sq, promotion, cap, 0};
     UndoInfo undo;
-    make_move(&s.board, &m, &undo);
-    if (is_check(&s.board, side))
+    make_move(&s->board, &m, &undo);
+    if (is_check(&s->board, side))
     {
-        unmake_move(&s.board, &m, &undo);
-        free(s.tt);
+        unmake_move(&s->board, &m, &undo);
+        free(s->tt);
+        free(s);
         return -INF - 1;
     }
-    int score = -negamax(&s, max_depth - 1, -INF, INF, 0, 1);
-    unmake_move(&s.board, &m, &undo);
-    free(s.tt);
+    int score = -negamax(s, max_depth - 1, -INF, INF, 0, 1);
+    unmake_move(&s->board, &m, &undo);
+    free(s->tt);
+    free(s);
     return score;
 }
 
@@ -1529,29 +1983,29 @@ generate_pseudo_legal_moves(const Board *b, Move *moves)
 
         if (side == WHITE)
         {
-            if ((b->castling_rights & 1) && !(occupied & ((1ULL << 5) | (1ULL << 6))))
-            {
-                if (!is_square_attacked(b, 4, BLACK) && !is_square_attacked(b, 5, BLACK))
-                    moves[count++] = (Move){4, 6, 0, 0, 0};
-            }
-            if ((b->castling_rights & 2) && !(occupied & ((1ULL << 1) | (1ULL << 2) | (1ULL << 3))))
-            {
-                if (!is_square_attacked(b, 4, BLACK) && !is_square_attacked(b, 3, BLACK))
-                    moves[count++] = (Move){4, 2, 0, 0, 0};
-            }
+			if ((b->castling_rights & 1) && !(occupied & ((1ULL << 5) | (1ULL << 6))))
+			{
+				if (!is_square_attacked(b, 4, BLACK) && !is_square_attacked(b, 5, BLACK) && !is_square_attacked(b, 6, BLACK))
+					moves[count++] = (Move){4, 6, 0, 0, 0};
+			}
+			if ((b->castling_rights & 2) && !(occupied & ((1ULL << 1) | (1ULL << 2) | (1ULL << 3))))
+			{
+				if (!is_square_attacked(b, 4, BLACK) && !is_square_attacked(b, 3, BLACK) && !is_square_attacked(b, 2, BLACK))
+					moves[count++] = (Move){4, 2, 0, 0, 0};
+			}
         }
         else
         {
-            if ((b->castling_rights & 4) && !(occupied & ((1ULL << 61) | (1ULL << 62))))
-            {
-                if (!is_square_attacked(b, 60, WHITE) && !is_square_attacked(b, 61, WHITE))
-                    moves[count++] = (Move){60, 62, 0, 0, 0};
-            }
-            if ((b->castling_rights & 8) && !(occupied & ((1ULL << 57) | (1ULL << 58) | (1ULL << 59))))
-            {
-                if (!is_square_attacked(b, 60, WHITE) && !is_square_attacked(b, 59, WHITE))
-                    moves[count++] = (Move){60, 58, 0, 0, 0};
-            }
+			if ((b->castling_rights & 4) && !(occupied & ((1ULL << 61) | (1ULL << 62))))
+			{
+				if (!is_square_attacked(b, 60, WHITE) && !is_square_attacked(b, 61, WHITE) && !is_square_attacked(b, 62, WHITE))
+					moves[count++] = (Move){60, 62, 0, 0, 0};
+			}
+			if ((b->castling_rights & 8) && !(occupied & ((1ULL << 57) | (1ULL << 58) | (1ULL << 59))))
+			{
+				if (!is_square_attacked(b, 60, WHITE) && !is_square_attacked(b, 59, WHITE) && !is_square_attacked(b, 58, WHITE))
+					moves[count++] = (Move){60, 58, 0, 0, 0};
+			}
         }
     }
 
@@ -1594,6 +2048,7 @@ static int npm_piece_value(int pt)
 
 void make_move(Board *b, const Move *m, UndoInfo *undo)
 {
+    g_prof_make_move_calls++;
     int side = b->side_to_move;
     int opp = 1 - side;
     U64 from_bb = 1ULL << m->from;
@@ -1603,6 +2058,7 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     {
         /* Mark undo as skipped so unmake_move knows not to modify the board.
          * We still switch side_to_move to keep the call balanced. */
+        assert(0 && "make_move: pt==EMPTY indicates move generation bug");
         undo->castling_rights = -1; /* Sentinel: make_move was skipped */
         b->side_to_move = opp;
         b->eval_score = EVAL_SCORE_INVALID;
@@ -1654,7 +2110,11 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
         b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
     }
 
-    if (m->capture)
+    /* Detect en passant capture early so we skip the regular capture handler */
+    int is_ep_capture = (pt == PAWN && old_ep >= 0 && m->to == old_ep &&
+                         (abs(m->to - m->from) == 7 || abs(m->to - m->from) == 9));
+
+    if (m->capture && !is_ep_capture)
     {
         int cap_pt = m->capture;
         b->pieces[opp][cap_pt] &= ~to_bb;
@@ -1842,12 +2302,12 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     /* Incremental PST+material score update */
     {
         int sign = (side == WHITE) ? 1 : -1;
-        int psq_from = (side == WHITE) ? (m->from ^ 56) : m->from;
-        int psq_to = (side == WHITE) ? (m->to ^ 56) : m->to;
+        int psq_from = (side == WHITE) ? m->from : (m->from ^ 56);
+        int psq_to = (side == WHITE) ? m->to : (m->to ^ 56);
 
         /* 1. Moving piece from->to: PST change only (material unchanged for non-promotion) */
-        b->mg_score += sign * (mg_pst[pt][psq_to] - mg_pst[pt][psq_from]);
-        b->eg_score += sign * (eg_pst[pt][psq_to] - eg_pst[pt][psq_from]);
+        b->mg_score += sign * (get_mg_pst(pt, psq_to) - get_mg_pst(pt, psq_from));
+        b->eg_score += sign * (get_eg_pst(pt, psq_to) - get_eg_pst(pt, psq_from));
 
         /* 2. Capture: remove captured piece's material+PST */
         if (m->capture)
@@ -1857,18 +2317,18 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
                 /* En passant: captured pawn is at ep_cap_sq, not at m->to */
                 int ep_sq = undo->ep_capture_sq;
                 int sign_opp = (opp == WHITE) ? 1 : -1;
-                int psq_ep = (opp == WHITE) ? (ep_sq ^ 56) : ep_sq;
-                b->mg_score -= sign_opp * (piece_values[PAWN] + mg_pst[PAWN][psq_ep]);
-                b->eg_score -= sign_opp * (piece_values[PAWN] + eg_pst[PAWN][psq_ep]);
+                int psq_ep = (opp == WHITE) ? ep_sq : (ep_sq ^ 56);
+                b->mg_score -= sign_opp * (get_piece_value(PAWN) + get_mg_pst(PAWN, psq_ep));
+                b->eg_score -= sign_opp * (get_piece_value(PAWN) + get_eg_pst(PAWN, psq_ep));
             }
             else
             {
                 /* Regular capture: remove captured piece at m->to */
                 int cap_pt = m->capture;
                 int sign_opp = (opp == WHITE) ? 1 : -1;
-                int psq_cap = (opp == WHITE) ? (m->to ^ 56) : m->to;
-                b->mg_score -= sign_opp * (piece_values[cap_pt] + mg_pst[cap_pt][psq_cap]);
-                b->eg_score -= sign_opp * (piece_values[cap_pt] + eg_pst[cap_pt][psq_cap]);
+                int psq_cap = (opp == WHITE) ? m->to : (m->to ^ 56);
+                b->mg_score -= sign_opp * (get_piece_value(cap_pt) + get_mg_pst(cap_pt, psq_cap));
+                b->eg_score -= sign_opp * (get_piece_value(cap_pt) + get_eg_pst(cap_pt, psq_cap));
             }
         }
 
@@ -1876,8 +2336,8 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
         if (m->promotion)
         {
             int promo = m->promotion;
-            b->mg_score += sign * ((piece_values[promo] + mg_pst[promo][psq_to]) - (piece_values[PAWN] + mg_pst[PAWN][psq_to]));
-            b->eg_score += sign * ((piece_values[promo] + eg_pst[promo][psq_to]) - (piece_values[PAWN] + eg_pst[PAWN][psq_to]));
+            b->mg_score += sign * ((get_piece_value(promo) + get_mg_pst(promo, psq_to)) - (get_piece_value(PAWN) + get_mg_pst(PAWN, psq_to)));
+            b->eg_score += sign * ((get_piece_value(promo) + get_eg_pst(promo, psq_to)) - (get_piece_value(PAWN) + get_eg_pst(PAWN, psq_to)));
         }
 
         /* 4. Castling: move rook */
@@ -1888,14 +2348,14 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
                 if (m->from == 4 && m->to == 6)
                 {
                     /* White kingside: rook h1(7) -> f1(5) */
-                    b->mg_score += mg_pst[ROOK][5 ^ 56] - mg_pst[ROOK][7 ^ 56];
-                    b->eg_score += eg_pst[ROOK][5 ^ 56] - eg_pst[ROOK][7 ^ 56];
+                    b->mg_score += get_mg_pst(ROOK, 5) - get_mg_pst(ROOK, 7);
+                    b->eg_score += get_eg_pst(ROOK, 5) - get_eg_pst(ROOK, 7);
                 }
                 else if (m->from == 4 && m->to == 2)
                 {
                     /* White queenside: rook a1(0) -> d1(3) */
-                    b->mg_score += mg_pst[ROOK][3 ^ 56] - mg_pst[ROOK][0 ^ 56];
-                    b->eg_score += eg_pst[ROOK][3 ^ 56] - eg_pst[ROOK][0 ^ 56];
+                    b->mg_score += get_mg_pst(ROOK, 3) - get_mg_pst(ROOK, 0);
+                    b->eg_score += get_eg_pst(ROOK, 3) - get_eg_pst(ROOK, 0);
                 }
             }
             else
@@ -1903,14 +2363,14 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
                 if (m->from == 60 && m->to == 62)
                 {
                     /* Black kingside: rook h8(63) -> f8(61) */
-                    b->mg_score -= mg_pst[ROOK][61] - mg_pst[ROOK][63];
-                    b->eg_score -= eg_pst[ROOK][61] - eg_pst[ROOK][63];
+                    b->mg_score -= get_mg_pst(ROOK, 61 ^ 56) - get_mg_pst(ROOK, 63 ^ 56);
+                    b->eg_score -= get_eg_pst(ROOK, 61 ^ 56) - get_eg_pst(ROOK, 63 ^ 56);
                 }
                 else if (m->from == 60 && m->to == 58)
                 {
                     /* Black queenside: rook a8(56) -> d8(59) */
-                    b->mg_score -= mg_pst[ROOK][59] - mg_pst[ROOK][56];
-                    b->eg_score -= eg_pst[ROOK][59] - eg_pst[ROOK][56];
+                    b->mg_score -= get_mg_pst(ROOK, 59 ^ 56) - get_mg_pst(ROOK, 56 ^ 56);
+                    b->eg_score -= get_eg_pst(ROOK, 59 ^ 56) - get_eg_pst(ROOK, 56 ^ 56);
                 }
             }
         }
@@ -1919,6 +2379,7 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
 
 void unmake_move(Board *b, const Move *m, const UndoInfo *undo)
 {
+    g_prof_unmake_move_calls++;
     /* If make_move was skipped (piece_on_square returned EMPTY),
      * just restore side_to_move and return without modifying the board. */
     if (undo->castling_rights == -1)
@@ -2523,6 +2984,6 @@ static int generate_checking_moves(const Board *b, Move *moves, int start_count)
 /* === 拆分模块（unity build） === */
 #include "engine_params_loader.c"
 #include "engine_eval.c"
-#include "engine_search.c"
-#include "engine_search_root.c"
+#include "engine_search_v2.c"  /* Task #109/#110: SEE bug 修复 + SEE 剪枝 bug 修复 + TT 诊断 */
+#include "engine_search_root.c"  /* 回滚到原版（TT 大小 1GB 测试无效果） */
 #include "engine_debug.c"

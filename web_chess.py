@@ -2,6 +2,8 @@ import os
 import json
 import queue
 import threading
+import time as _time
+from datetime import datetime
 
 from flask import Flask, jsonify, request, send_from_directory, Response
 
@@ -13,6 +15,7 @@ from sse_hub import sse_add_listener, sse_remove_listener, sse_notify
 
 app = Flask(__name__, static_folder="web_static", static_url_path="/static")
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_MOVE_TIME = 3000
 DEFAULT_ENGINE_ID = os.environ.get("HELLCOPTER_ENGINE", "hellcopter")
 
@@ -390,6 +393,185 @@ def stop_match():
     return jsonify(match_board_to_dict())
 
 
+# ---- Velvet FEN 分析 ----
+
+GAMES_DIR = os.path.join(BASE_DIR, "saved_games")
+
+
+@app.route("/analyze")
+def analyze_page():
+    return send_from_directory("web_static", "analyze.html")
+
+
+@app.route("/review")
+def review_page():
+    return send_from_directory("web_static", "review.html")
+
+
+@app.route("/api/analyze", methods=["POST"])
+def analyze_fen():
+    """使用 Velvet 引擎分析 FEN 局面"""
+    data = request.json or {}
+    fen = data.get("fen", "")
+    depth = data.get("depth", 20)
+    multi_pv = data.get("multiPv", 3)
+
+    if not fen:
+        return jsonify({"error": "缺少 FEN"}), 400
+
+    try:
+        from engine_registry import VELVET_PATH
+        vel = Engine(VELVET_PATH, protocol="uci")
+        sz = _detect_syzygy_path()
+        if sz:
+            vel.syzygy_path = sz
+        if not vel.start():
+            return jsonify({"error": "Velvet 引擎启动失败"}), 500
+
+        try:
+            # 设置 MultiPV
+            if multi_pv > 1:
+                vel.send(f"setoption name MultiPV value {multi_pv}")
+
+            vel.send(f"position fen {fen}")
+            vel.send(f"go depth {depth}")
+
+            lines = []
+            deadline = _time.time() + 120
+            while _time.time() < deadline:
+                line = vel.readline(timeout=5)
+                if line is None:
+                    break
+                if line.startswith("info") and "score" in line and " pv " in line:
+                    lines.append(line)
+                if line.startswith("bestmove"):
+                    break
+
+            # 解析 info 行，保留每个深度的最后一行
+            parsed = {}
+            for info_line in lines:
+                parts = info_line.split()
+                try:
+                    d_idx = parts.index("depth")
+                    d = int(parts[d_idx + 1])
+                    mpv_idx = parts.index("multipv") if "multipv" in parts else -1
+                    mpv = int(parts[mpv_idx + 1]) if mpv_idx >= 0 else 1
+                    s_idx = parts.index("score")
+                    score_type = parts[s_idx + 1]
+                    score_val = int(parts[s_idx + 2])
+                    pv_idx = parts.index("pv")
+                    pv_moves = parts[pv_idx + 1:]
+                    key = (d, mpv)
+                    parsed[key] = {
+                        "depth": d,
+                        "multipv": mpv,
+                        "scoreType": score_type,
+                        "score": score_val,
+                        "pv": pv_moves,
+                        "move": pv_moves[0] if pv_moves else "",
+                    }
+                except (ValueError, IndexError):
+                    pass
+
+            # 取每个 multipv 的最深结果
+            result_lines = []
+            for mpv in range(1, multi_pv + 1):
+                best = None
+                for (d, m), v in parsed.items():
+                    if m == mpv:
+                        if best is None or d > best["depth"]:
+                            best = v
+                if best:
+                    result_lines.append(best)
+
+            return jsonify({"lines": result_lines})
+        finally:
+            vel.quit()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---- 对局保存与复盘 ----
+
+def _ensure_games_dir():
+    os.makedirs(GAMES_DIR, exist_ok=True)
+
+
+def _save_game_pgn(move_history, white_name, black_name, result, game_id=None):
+    """保存对局为 JSON 格式（包含 PGN 信息）"""
+    _ensure_games_dir()
+    if not game_id:
+        game_id = f"game_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    try:
+        import chess as _chess
+        board = _chess.Board()
+        san_moves = []
+        for uci_m in move_history:
+            mv = _chess.Move.from_uci(uci_m)
+            san_moves.append(board.san(mv))
+            board.push(mv)
+        final_fen = board.fen()
+    except Exception:
+        san_moves = list(move_history)
+        final_fen = ""
+
+    game_data = {
+        "id": game_id,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "white": white_name,
+        "black": black_name,
+        "result": result,
+        "moves": list(move_history),
+        "sanMoves": san_moves,
+        "finalFen": final_fen,
+    }
+
+    filepath = os.path.join(GAMES_DIR, f"{game_id}.json")
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(game_data, f, ensure_ascii=False, indent=2)
+
+    print(f"[WEB] Game saved: {filepath}")
+    return game_id
+
+
+@app.route("/api/games", methods=["GET"])
+def list_games():
+    """列出所有保存的对局"""
+    _ensure_games_dir()
+    games = []
+    for fname in sorted(os.listdir(GAMES_DIR), reverse=True):
+        if fname.endswith(".json"):
+            try:
+                with open(os.path.join(GAMES_DIR, fname), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                games.append({
+                    "id": data.get("id", fname[:-5]),
+                    "date": data.get("date", ""),
+                    "white": data.get("white", "?"),
+                    "black": data.get("black", "?"),
+                    "result": data.get("result", "*"),
+                    "moveCount": len(data.get("moves", [])),
+                })
+            except Exception:
+                pass
+    return jsonify({"games": games})
+
+
+@app.route("/api/games/<game_id>", methods=["GET"])
+def get_game(game_id):
+    """获取对局详情"""
+    filepath = os.path.join(GAMES_DIR, f"{game_id}.json")
+    if not os.path.isfile(filepath):
+        return jsonify({"error": "对局不存在"}), 404
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     engine_name = _engine_entry["name"] if _engine_entry else "Unknown"
     if not engine.start():
@@ -405,6 +587,8 @@ if __name__ == "__main__":
     print("   Chess Arena - 引擎对弈竞技场")
     print("   人机对弈: http://localhost:5000")
     print("   引擎对弈: http://localhost:5000/match")
+    print("   局面分析: http://localhost:5000/analyze")
+    print("   对局复盘: http://localhost:5000/review")
     print("-" * 52)
     print("   已注册引擎:")
     for entry in ENGINE_REGISTRY:

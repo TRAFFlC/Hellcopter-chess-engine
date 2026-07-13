@@ -54,6 +54,9 @@ def _get_base_path() -> str:
 
 
 def _get_dll_path() -> str:
+    env_path = os.environ.get("HELLCOPTER_DLL_PATH")
+    if env_path:
+        return env_path
     base = _get_base_path()
     system = platform.system()
     if system == "Windows":
@@ -164,6 +167,38 @@ def _load_library():
 
     lib.get_last_search_info.argtypes = [ctypes.c_int]
     lib.get_last_search_info.restype = ctypes.c_int
+
+    lib.board_consistency_check.argtypes = [ctypes.c_char_p]
+    lib.board_consistency_check.restype = ctypes.c_int
+
+    lib.perft_divide.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_uint64),
+    ]
+    lib.perft_divide.restype = ctypes.c_int
+
+    lib.see_test.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+    lib.see_test.restype = ctypes.c_int
+
+    lib.eval_consistency_stress.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.eval_consistency_stress.restype = ctypes.c_int
+
+    lib.set_search_param.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.set_search_param.restype = ctypes.c_int
+
+    lib.get_search_param.argtypes = [ctypes.c_char_p]
+    lib.get_search_param.restype = ctypes.c_int
+
+    lib.reload_params.argtypes = [ctypes.c_char_p]
+    lib.reload_params.restype = ctypes.c_int
+
+    lib.clear_global_tt.argtypes = []
+    lib.clear_global_tt.restype = None
 
     try:
         lib.init_syzygy_c.argtypes = [ctypes.c_char_p]
@@ -372,6 +407,12 @@ def get_pruning_stats() -> dict:
     }
 
 
+def get_engine_version() -> int:
+    """Get the engine version number."""
+    _ensure_loaded()
+    return _lib.get_engine_version()
+
+
 def perft(fen: str, depth: int) -> int:
     """Calculate perft value for a position at given depth.
     
@@ -387,6 +428,137 @@ def perft(fen: str, depth: int) -> int:
     """
     _ensure_loaded()
     return _lib.perft(fen.encode("utf-8"), ctypes.c_int(depth))
+
+
+def board_consistency_check(fen: str) -> int:
+    """Run make/unmake consistency check on all legal moves of a position.
+
+    Checks hash, pawn_hash, phase, npm, king_sq, mailbox, PST+material
+    after each make_move, and verifies full restoration after unmake_move.
+
+    Args:
+        fen: FEN string of the position to test
+
+    Returns:
+        Number of errors found (0 = all clean)
+    """
+    _ensure_loaded()
+    return _lib.board_consistency_check(fen.encode("utf-8"))
+
+
+def perft_divide(fen: str, depth: int) -> list:
+    """Get per-move perft counts for isolating move generation bugs.
+
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+
+    Returns:
+        List of dicts: [{'from': int, 'to': int, 'promo': int, 'count': int}, ...]
+        Plus 'total' key in the last element or returned separately.
+    """
+    _ensure_loaded()
+    FROM = (ctypes.c_int * 256)()
+    TO = (ctypes.c_int * 256)()
+    PROMO = (ctypes.c_int * 256)()
+    COUNT = (ctypes.c_uint64 * 256)()
+    TOTAL = ctypes.c_uint64(0)
+
+    n = _lib.perft_divide(
+        fen.encode("utf-8"),
+        ctypes.c_int(depth),
+        FROM, TO, PROMO, COUNT,
+        ctypes.byref(TOTAL),
+    )
+
+    result = []
+    for i in range(n):
+        result.append({
+            'from': FROM[i],
+            'to': TO[i],
+            'promo': PROMO[i],
+            'count': COUNT[i],
+        })
+    return result, TOTAL.value
+
+
+def see_test(fen: str, from_sq: int, to_sq: int) -> int:
+    """Compute SEE (Static Exchange Evaluation) for a move.
+
+    Args:
+        fen: FEN string
+        from_sq: source square (0-63)
+        to_sq: destination square (0-63)
+
+    Returns:
+        SEE score in centipawns
+    """
+    _ensure_loaded()
+    return _lib.see_test(fen.encode("utf-8"), from_sq, to_sq)
+
+
+def eval_consistency_stress(fen: str, cycles: int = 100) -> int:
+    """Stress test: repeated make/unmake on all legal moves.
+
+    Runs `cycles` iterations of make+unmake on every legal move,
+    checking that mg_score, eg_score, hash, pawn_hash, phase, and npm
+    are perfectly restored each time.
+
+    Args:
+        fen: FEN string
+        cycles: number of make/unmake cycles
+
+    Returns:
+        Number of errors found (0 = all clean)
+    """
+    _ensure_loaded()
+    return _lib.eval_consistency_stress(fen.encode("utf-8"), cycles)
+
+
+def set_search_param(name: str, value: int) -> bool:
+    """Set a search parameter toggle (for ablation testing).
+
+    Args:
+        name: parameter name (e.g. 'rfp_enabled', 'nmp_enabled', etc.)
+        value: 0 to disable, 1 to enable
+
+    Returns:
+        True if the parameter was found and set
+    """
+    _ensure_loaded()
+    return bool(_lib.set_search_param(name.encode("utf-8"), value))
+
+
+def get_search_param(name: str) -> int:
+    """Get current value of a search parameter toggle.
+
+    Args:
+        name: parameter name
+
+    Returns:
+        Parameter value, or -1 if unknown
+    """
+    _ensure_loaded()
+    return _lib.get_search_param(name.encode("utf-8"))
+
+
+def reload_params(path: str) -> bool:
+    """Reload engine parameters from a JSON file.
+
+    Args:
+        path: path to the JSON config file
+
+    Returns:
+        True if successful
+    """
+    _ensure_loaded()
+    return bool(_lib.reload_params(path.encode("utf-8")))
+
+
+def tt_clear_global():
+    """Clear the global transposition table."""
+    _ensure_loaded()
+    _lib.clear_global_tt()
 
 
 def _algebraic_to_sq(sq_str: str) -> int:

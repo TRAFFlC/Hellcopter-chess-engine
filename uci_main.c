@@ -972,6 +972,10 @@ static void cmd_stop(void)
 static void cmd_ponderhit(void)
 {
     g_ponderhit_received = 1;
+    /* Set heuristic-preserve flag BEFORE abort, so the ponder search thread
+     * sees it when it reaches save_heuristic_snapshot() at end of search.
+     * Otherwise the snapshot is never saved (flag arrives too late). */
+    set_preserve_heuristics(1);
     set_engine_abort(1);
     wait_for_search_thread();
 
@@ -1027,6 +1031,10 @@ static void cmd_bench(void)
     long long total_nodes = 0;
     clock_t start = clock();
 
+    extern void reset_tt_stats(void);
+    extern void print_tt_stats(void);
+    reset_tt_stats();
+
     for (int i = 0; i < num_fens; i++) {
         int nodes = 0;
         find_best_move_c(bench_fens[i], 100000.0, 0, 0, 0, 0, bench_depth, &nodes, NULL, 0);
@@ -1037,6 +1045,24 @@ static void cmd_bench(void)
     double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
     long long nps = (long long)(total_nodes / (elapsed > 0.001 ? elapsed : 0.001));
     fprintf(stdout, "Bench: %lld nodes in %.2fs (%lld nps)\n", total_nodes, elapsed, nps);
+    print_tt_stats();
+
+    /* 输出搜索剪枝统计 */
+    extern SearchProfile get_search_profile(void);
+    extern void reset_search_profile(void);
+    SearchProfile p = get_search_profile();
+    fprintf(stderr, "Search Profile:\n");
+    fprintf(stderr, "  eval_calls=%lld, qs_calls=%lld, qs_nodes=%lld\n", p.eval_calls, p.qs_calls, p.qs_nodes);
+    fprintf(stderr, "  nmp_triggered=%lld, nmp_cutoffs=%lld (%.1f%%)\n", p.nmp_triggered, p.nmp_cutoffs,
+            p.nmp_triggered > 0 ? 100.0 * p.nmp_cutoffs / p.nmp_triggered : 0);
+    fprintf(stderr, "  lmr_applied=%lld, lmr_full_research=%lld (%.1f%%)\n", p.lmr_applied, p.lmr_full_research,
+            p.lmr_applied > 0 ? 100.0 * p.lmr_full_research / p.lmr_applied : 0);
+    fprintf(stderr, "  razoring=%lld, futility_pruned=%lld, lmp_pruned=%lld, see_pruned=%lld, history_pruned=%lld\n",
+            p.razoring_triggered, p.futility_pruned, p.lmp_pruned, p.see_pruned, p.history_pruned);
+    fprintf(stderr, "  probcut_triggered=%lld, probcut_cutoffs=%lld\n", p.probcut_triggered, p.probcut_cutoffs);
+    fprintf(stderr, "  rfp_triggered=%lld\n", p.rfp_triggered);
+    fprintf(stderr, "  make_move=%lld, unmake_move=%lld\n", p.make_move_calls, p.unmake_move_calls);
+    reset_search_profile();
 }
 
 int main(void)
