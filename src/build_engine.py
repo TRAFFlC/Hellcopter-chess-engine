@@ -996,13 +996,14 @@ def build(config_path: Optional[str] = None, force: bool = False, optimize: bool
             print(f"警告: 参数头文件不存在: {params_header}", file=sys.stderr)
             print("将使用默认参数编译", file=sys.stderr)
 
-    # 确定输出文件
+    # 确定输出文件（输出到项目根目录，供 Python 层加载）
+    output_dir = os.path.dirname(script_dir)
     if system == "Windows":
-        output_file = os.path.join(script_dir, "engine_core.dll")
+        output_file = os.path.join(output_dir, "engine_core.dll")
     elif system == "Linux":
-        output_file = os.path.join(script_dir, "engine_core.so")
+        output_file = os.path.join(output_dir, "engine_core.so")
     elif system == "Darwin":
-        output_file = os.path.join(script_dir, "engine_core.dylib")
+        output_file = os.path.join(output_dir, "engine_core.dylib")
     else:
         print(f"错误: 不支持的操作系统: {system}", file=sys.stderr)
         return False
@@ -1222,7 +1223,8 @@ def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: 
             print("错误: 无法生成参数头文件", file=sys.stderr)
             return False
 
-    dist_dir = os.path.join(script_dir, "dist")
+    output_dir = os.path.dirname(script_dir)
+    dist_dir = os.path.join(output_dir, "dist")
     os.makedirs(dist_dir, exist_ok=True)
 
     if system == "Windows":
@@ -1377,6 +1379,7 @@ def build_exe(config_path: Optional[str] = None, force: bool = False, optimize: 
 def clean():
     """删除生成的共享库和中间文件。"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(script_dir)
     files_to_remove = [
         "engine_core.dll",
         "engine_core.so",
@@ -1389,11 +1392,12 @@ def clean():
     print("清理生成文件...")
     removed_count = 0
     for name in files_to_remove:
-        path = os.path.join(script_dir, name)
-        if os.path.exists(path):
-            os.remove(path)
-            print(f"  已删除: {name}")
-            removed_count += 1
+        for d in (root_dir, script_dir):
+            path = os.path.join(d, name)
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"  已删除: {d}\\{name}")
+                removed_count += 1
 
     if removed_count == 0:
         print("  没有需要清理的文件")
