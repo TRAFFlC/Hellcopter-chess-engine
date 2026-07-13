@@ -1,0 +1,300 @@
+# Hellcopter Chess Engine — 开发与实验流程
+
+## 项目结构
+
+```
+src/
+  engine_core.c          # 主入口（unity build）
+  engine_core.h          # 公开接口
+  engine_params.h        # 编译期参数（auto-generated from JSON）
+  engine_params_loader.c # 运行时参数加载
+  engine_eval.c          # 评估函数
+  engine_search_v2.c     # 递归搜索核心
+  engine_search_root.c   # 迭代加深 + PV 输出 + Lazy SMP
+  uci_main.c             # UCI 协议层
+  build_engine.py        # 编译脚本
+  fathom/                # Syzygy 残局库
+  engine_debug.c         # 诊断工具
+web_chess.py             # Web 界面
+engine_wrapper.py        # DLL 加载层（Python 侧入口）
+engine.py                # UCI 引擎封装
+engine_registry.py       # 引擎注册/发现
+match_manager.py         # 对弈管理
+match_utils.py           # 对弈工具函数（Elo/SPRT/统计）
+uci_engine.py            # UCI 协议客户端
+book_provider.py         # 开局库支持
+sse_hub.py               # SSE 推送
+chess_logic.py           # 棋局逻辑
+config.py                # 配置加载
+run_match.py             # 命令行对弈入口
+configs/                 # 参数配置 JSON
+dist/                    # 开局库 Goi5.1.bin
+EGTB/                    # Syzygy 残局表
+test_engines/            # 对手引擎
+cutechess-1.3.1-win64/   # 对弈工具
+```
+
+## 编译
+
+```powershell
+# 编译共享库
+python src/build_engine.py
+
+# 编译独立 UCI 可执行文件
+python src/build_engine.py exe
+
+# 指定配置
+python src/build_engine.py --config v1.9.5
+
+# 强制重编
+python src/build_engine.py --force
+
+# 清理
+python src/build_engine.py clean
+```
+
+编译产物：
+- `engine_core.dll` → 根目录（`engine_wrapper.py` 自动加载）
+- `dist/Hellcopter.exe` → 复制到根目录供 cutechess 使用
+
+## 三层实验流水线
+
+### Tier 0 — 冒烟（每次改动必过）
+
+运行固定回归集，确认改动没有破坏基础正确性：
+
+```powershell
+# perft
+echo "position startpos\ngo perft 6" | Hellcopter.exe
+# 期望: 119,060,324 个节点
+
+# 战术深度可达性
+echo "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -\ngo depth 12" | Hellcopter.exe
+
+echo "position fen 8/5p2/8/2k3P1/p3P3/2K5/1P6/8 b - - - - -\ngo depth 12" | Hellcopter.exe
+
+# UCI 协议合法性
+echo "uci\nucinewgame\nisready\nquit" | Hellcopter.exe | findstr "id name uciok readyok"
+```
+
+**通过条件：** 全部通过。一项失败 = 立即回滚，不进入 Tier 1。
+
+### Tier 1 — 快筛（blitz，SPRT）
+
+淘汰无效改动。禁止手动判定"看起来不错"。
+
+```powershell
+cutechess-1.3.1-win64\cutechess-cli.exe `
+  -engine name=Baseline proto=uci cmd=Hellcopter.exe `
+  -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe `
+  -each tc=10+0.1 -rounds 500 -concurrency 4 `
+  -draw movenumber=40 movecount=5 score=20 `
+  -resign movecount=3 score=500 `
+  -sprt elo0=0 elo1=5 alpha=0.05 beta=0.05 `
+  -pgnout results\exp_YYYYMMDD_HHMM.pgn
+```
+
+**通过条件（必须同时满足）：**
+- SPRT 接受 H1（elo1=5），或
+- 非 SPRT 模式下 Elo 下限 > 0（95% CI），且 ≥ 300 盘
+- 任意一条 Profile 指标没有显著恶化（见下方 Profile 定义）
+
+**一票否决条件（满足任一条即回滚）：**
+- LOS < 80% 且盘数 ≥ 300
+- 中局漏算类输棋比例上升 > 10%
+- 时间崩溃率上升 > 5%
+
+### Tier 2 — 确认（standard，SPRT）
+
+仅 Tier 1 通过的改动进入此阶段。
+
+```powershell
+cutechess-1.3.1-win64\cutechess-cli.exe `
+  -engine name=Baseline proto=uci cmd=Hellcopter.exe `
+  -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe `
+  -each tc=60+0.6 -rounds 300 -concurrency 2 `
+  -draw movenumber=40 movecount=5 score=20 `
+  -resign movecount=3 score=500 `
+  -sprt elo0=-2 elo1=5 alpha=0.05 beta=0.10 `
+  -pgnout results\confirm_YYYYMMDD_HHMM.pgn
+```
+
+**通过条件（必须同时满足）：**
+- SPRT 接受 H1，或 Elo 估算 ≥ 0 且盘数 ≥ 300
+- 输棋类型分布无系统性恶化（与 baseline 对比）
+- 固定回归集重新运行全部通过
+
+**一票否决条件：**
+- Elo 下限 < -5
+- 残局无力类输棋比例上升 > 10%
+- 标准时控下时间崩溃率上升 > 3%
+
+## A/B 自对弈方案
+
+**TODO — 第一个工程任务：扩展 run_match.py**
+
+当前 `run_match.py` 只支持 Hellcopter vs 外部引擎。需要新增：
+
+```
+--config-a PATH    # 实验 A 的 engine_params.json
+--config-b PATH    # 实验 B 的 engine_params.json
+--rounds N         # 对弈盘数
+--sprt             # 启用 SPRT 判定
+--tc TIME          # 时控
+```
+
+实现方式：通过临时 UCI adapter 进程，每个 instance 绑不同 `ENGINE_PARAMS` 环境变量指向对应 JSON，无需复制二进制。
+
+示例（预期用法）：
+
+```powershell
+run_match.py --mode self --config-a configs\v1.9.5.json --config-b configs\experiment.json --rounds 500 --tc 10+0.1 --sprt
+```
+
+## Search Profile 指标
+
+**当前状态：** C 层已统计，Python 层待补导出接口（`engine_wrapper.py`）。
+
+### 核心指标
+
+| 指标 | 公式 | 信息 | 方向信号 |
+|------|------|------|----------|
+| lmr_research_rate | lmr_full_research / lmr_applied | LMR 过度缩减率 | ↓ 好（缩减准确） |
+| nmp_efficiency | nmp_cutoffs / nmp_triggered | Null move 裁剪有效率 | ↑ 好 |
+| qs_share | qs_nodes / total_nodes | QS 节点占比 | 太高中局战术弱 |
+| tt_activity | tt_hits / (tt_hits + tt_misses) | TT 命中率 | ↑ 好（需补 miss 导出） |
+| aw_fail_rate | aw_fails / (aw_hits + aw_fails) | Aspiration 失败率 | ↓ 好 |
+| avg_depth | total_nodes 分布反推 | 平均搜索深度 | ↑ 好（但需配合 qs_share） |
+
+### 实验记录模板
+
+每次改动必须记录：
+
+```
+实验编号: 20260714_lmr_delta_2
+改动: LMR base 0.75 → 1.25, LMR delta 0.5 → 0.25
+T0 回归: 通过
+T1 快筛: 300 盘, SPRT 接受, +8±6 Elo, LOS 91%
+  lmr_research: 18% → 14% (好)
+  avg_depth: 14.2 → 13.8 (略降, 可接受)
+T2 确认: 300 盘, +5±9 Elo, LOS 78%
+  输棋归类: 中局漏算 4/10 (baseline 3/10), 残局 2/10 (baseline 2/10)
+判定: 保留，但 LMR delta 需继续微调
+```
+
+## 输棋归类
+
+### 五类标准
+
+| 类型 | 特征 | 怀疑模块 |
+|------|------|----------|
+| 开局劣势 | 10 步内 eval < -100 | 开局库覆盖 / PST 校准 / time mgmt |
+| 中局漏算 | 子力被吃 / 将杀漏看 | QS depth / SEE / futility / LMR 过度 |
+| 残局无力 | 优势未能转化 | 残局缩放 / mop-up / king activity / passed pawn |
+| 时间崩溃 | 超时或最后几步速降 | easy move 阈值 / panic mode / aspiration fail |
+| 重复误判 | 优势局面主动三次重复 | contempt / 重复检测逻辑 |
+
+### 归类规则
+
+- 每场确认实验输棋提取前 5-10 步关键局面
+- 按局面的 phase（opening / middlegame / endgame）和 material 分类
+- 记录哪个模块最可能是根因
+- 如果同一类型占比连续 3 次实验上升，该模块列为优先优化目标
+
+## 参数实验规则
+
+### 参数实验（改 JSON 即可）
+
+允许改动的范围（每次只选一组）：
+
+- LMR: base / delta / limit / history_div
+- History: decay / max_bonus / threshold
+- King safety: attack_weight / pawn_shield / open_file
+- Time management: easy_move_threshold / panic_threshold / phase_factor
+- Evaluation weight: bishop_pair / doubled_pawn / isolated_pawn / passed_pawn
+
+**禁止：** 一次同时改两组不相关参数。
+
+### 结构实验（改 .c）
+
+允许改动的范围：
+
+- 新增 / 删除剪枝条件
+- 修改走法排序逻辑
+- 调整评估函数结构
+
+**前置条件：** 必须先过 Tier 0 回归集，再进 Tier 1 快筛。
+
+**特殊规则：** 结构实验通过后，需要将对应参数提炼到 JSON 供后续参数实验使用，避免每次改结构都重新编译。
+
+### 减法 ablation
+
+关掉模块对比 baseline 是最快的定位手段：
+
+```
+实验 A: eval_king_safety = OFF
+实验 B: eval_pawn_structure = OFF
+实验 C: LMR = OFF
+实验 D: history_pruning = OFF
+```
+
+如果关掉某项 Elo 不降（±3 以内），该项贡献未证实，应删除或重写。
+
+## Texel 调参修复
+
+**紧急程度：高。** 当前 `v1.9.5.json` 的 `tuning_metadata.error_reduction_percent = 0` 表明调参流程已失效。
+
+修复路径：
+
+1. **确认损失函数** — 当前用 MSE 还是 cross-entropy？如果是 MSE，确认梯度是否正确
+2. **确认训练数据** — 数据是否足够多样？自对弈数据容易过拟合，需要混入外部大师对局
+3. **确认可调参数范围** — 不要一次调太多。先从 bishop_pair 单参数验证流程收敛
+4. **先做单参数验证** — 只调 bishop_pair，看调参能否收敛到合理值（经验值 40-60）
+5. **再扩大范围** — 确认流程稳定后，逐步增加参数量
+
+**预期 checkpoint：** 参数调优后，在快筛中至少观察到 +3 Elo 改善（否则说明数据或目标函数有问题）。
+
+## 代码规范
+
+- 关键路径的**不变量**、**剪枝前提**、**恢复状态逻辑**必须有注释。例如：`make_move` 后棋盘状态假设、TT 条目何时有效、NMP 恢复条件
+- C 语言：C99 标准，unity build
+- 搜索参数一致性：`engine_params.h`（编译期）与 `engine_params.json`（运行时）保持同步
+- 参数实验只改 `engine_params.json` 或 `evolvable_params.json`
+- 结构实验改 `.c`，但通过后必须将参数提炼到 JSON 供后续使用
+
+## 实验隔离制度
+
+1. **一次只改一组相关参数** — 违反此条，改动的归因能力归零
+2. **数据驱动** — 不靠直觉判断，靠 Elo + Profile + 输棋归类
+3. **先减法后加法** — 删除无效代码比添加新代码更重要。关掉某项不降 Elo → 删
+4. **快筛慢确认** — 快筛 SPRT 淘汰噪音，确认 SPRT 验证真实收益
+5. **归因优先** — 没有分类能力的改动不提交
+6. **不信任直觉** — 每次改动必记三样：Elo、Profile、失败类型
+
+## 优先级路线图
+
+### 第 1 周：实验工具补全
+1. **SearchProfile Python 导出** — 在 `engine_wrapper.py` 新增 `get_last_search_profile()` 返回结构体
+2. **A/B 自对弈** — 扩展 `run_match.py` 支持 `--config-a / --config-b`
+3. **固定回归脚本** — 把 Tier 0 冒烟测试写成可执行脚本
+
+### 第 2 周：搜索 ablation
+逐项关/开 LMR、history pruning、SEE pruning、null move、razoring、futility，找最敏感模块。每项 300 盘快棋 SPRT。
+
+### 第 3 周：走法排序参数扫描
+LMR base/delta、history decay、killer 数量、countermove 权重联合调优。盯 `lmr_research_rate` 和 Elo 变化。
+
+### 第 4 周：时间管理
+分 blitz（10+0.1）与 standard（60+0.6）两个时控单独优化 easy move、panic mode、opening reduction 阈值。
+
+### 第 5 周：评估减法
+兵结构 + 王安全 + 残局缩放，先 ablation 找无效维度删除，再调剩余维度权重。
+
+### 第 6 周：残局专项
+结合 EGTB 覆盖局面，测试残局收束稳定性，调 mop-up / opposite bishop 等因子。
+
+### 第 7 周：合并确认
+前 6 周有效改动合并为标准时控完全确认（300 盘 SPRT）。
+
+### 第 8 周：分析 + 规划
+整理"最常见输棋模式排行榜"，决定下一轮主攻方向。
