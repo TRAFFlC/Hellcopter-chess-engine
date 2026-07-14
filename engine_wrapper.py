@@ -33,6 +33,31 @@ class Pruning_Stats(ctypes.Structure):
     ]
 
 
+class SearchProfile(ctypes.Structure):
+    _fields_ = [
+        ("eval_calls", ctypes.c_longlong),
+        ("qs_calls", ctypes.c_longlong),
+        ("make_move_calls", ctypes.c_longlong),
+        ("unmake_move_calls", ctypes.c_longlong),
+        ("nmp_triggered", ctypes.c_longlong),
+        ("nmp_cutoffs", ctypes.c_longlong),
+        ("rfp_triggered", ctypes.c_longlong),
+        ("lmr_applied", ctypes.c_longlong),
+        ("lmr_full_research", ctypes.c_longlong),
+        ("futility_pruned", ctypes.c_longlong),
+        ("razoring_triggered", ctypes.c_longlong),
+        ("lmp_pruned", ctypes.c_longlong),
+        ("see_pruned", ctypes.c_longlong),
+        ("history_pruned", ctypes.c_longlong),
+        ("probcut_triggered", ctypes.c_longlong),
+        ("probcut_cutoffs", ctypes.c_longlong),
+        ("tt_hits", ctypes.c_longlong),
+        ("tt_stores", ctypes.c_longlong),
+        ("total_nodes", ctypes.c_longlong),
+        ("qs_nodes", ctypes.c_longlong),
+    ]
+
+
 def _sq_to_algebraic(sq: int) -> str:
     file = sq & 7
     rank = sq >> 3
@@ -199,6 +224,12 @@ def _load_library():
 
     lib.clear_global_tt.argtypes = []
     lib.clear_global_tt.restype = None
+
+    lib.get_search_profile.argtypes = []
+    lib.get_search_profile.restype = SearchProfile
+
+    lib.reset_search_profile.argtypes = []
+    lib.reset_search_profile.restype = None
 
     try:
         lib.init_syzygy_c.argtypes = [ctypes.c_char_p]
@@ -553,6 +584,56 @@ def reload_params(path: str) -> bool:
     """
     _ensure_loaded()
     return bool(_lib.reload_params(path.encode("utf-8")))
+
+
+def get_search_profile(total_nodes: int | None = None) -> dict:
+    """Get search profile counters from the last search.
+    
+    Args:
+        total_nodes: total nodes searched (from search() return). If None,
+                     uses the struct's total_nodes field (may be 0).
+    
+    Returns dict with raw counters and derived metrics:
+    - lmr_research_rate: lmr_full_research / lmr_applied (lower = better)
+    - nmp_efficiency: nmp_cutoffs / nmp_triggered (higher = better)
+    - qs_share: qs_nodes / total_nodes (high = weak in tactics)
+    - tt_activity: tt_hits / (tt_hits + tt_stores) (higher = better)
+    """
+    _ensure_loaded()
+    p = _lib.get_search_profile()
+    total = total_nodes if total_nodes is not None else (p.total_nodes if p.total_nodes > 0 else 1)
+    return {
+        "eval_calls": p.eval_calls,
+        "qs_calls": p.qs_calls,
+        "make_move_calls": p.make_move_calls,
+        "unmake_move_calls": p.unmake_move_calls,
+        "nmp_triggered": p.nmp_triggered,
+        "nmp_cutoffs": p.nmp_cutoffs,
+        "rfp_triggered": p.rfp_triggered,
+        "lmr_applied": p.lmr_applied,
+        "lmr_full_research": p.lmr_full_research,
+        "futility_pruned": p.futility_pruned,
+        "razoring_triggered": p.razoring_triggered,
+        "lmp_pruned": p.lmp_pruned,
+        "see_pruned": p.see_pruned,
+        "history_pruned": p.history_pruned,
+        "probcut_triggered": p.probcut_triggered,
+        "probcut_cutoffs": p.probcut_cutoffs,
+        "tt_hits": p.tt_hits,
+        "tt_stores": p.tt_stores,
+        "total_nodes": total,
+        "qs_nodes": p.qs_nodes,
+        "lmr_research_rate": p.lmr_full_research / max(p.lmr_applied, 1),
+        "nmp_efficiency": p.nmp_cutoffs / max(p.nmp_triggered, 1),
+        "qs_share": p.qs_nodes / total,
+        "tt_activity": p.tt_hits / max(p.tt_hits + p.tt_stores, 1),
+    }
+
+
+def reset_search_profile():
+    """Reset all search profile counters to zero."""
+    _ensure_loaded()
+    _lib.reset_search_profile()
 
 
 def tt_clear_global():

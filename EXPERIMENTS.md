@@ -54,3 +54,18 @@ T1 快筛: 10 盘 self-play (v1.9.5 vs v1.9.5, 10+0.1, SPRT 0/5/0.05/0.05)，SPR
 
 判定: 保留
 理由: run_match.py 扩展完成，A/B 自对弈流程可运行，SPRT 参数传递正确。此为实验基础设施，标记"第 1 周任务 2 完成"
+
+---
+
+### 20260715_search_profile_export
+
+改动: engine_wrapper.py 新增 get_search_profile(total_nodes) 和 reset_search_profile()
+目的: 将 C 层搜索统计导出到 Python，支持批量收集中局 profile 指标
+
+T0 回归: 通过（验证: search + get_search_profile 调用正常）
+  验证: 起始位置 depth=8, 82,023 nodes
+  lmr_research_rate=2.7%, nmp_efficiency=43.2%, qs_share=52.9%, tt_activity=0.4%
+  比率计算正确，total_nodes 参数传递无误
+
+判定: 保留
+理由: C 层 get_search_profile() 已完整，Python 绑定完成。标记"第 1 周任务 1 完成"

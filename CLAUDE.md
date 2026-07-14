@@ -220,7 +220,7 @@ run_match.py --mode self --config-a configs\v1.9.5.json --config-b configs\exper
 
 ## Search Profile 指标
 
-**当前状态：** C 层已统计，Python 层待补导出接口（`engine_wrapper.py`）。
+**当前状态：** 已实现。`engine_wrapper.get_search_profile(total_nodes)` 返回全部 20 个原始计数器 + 5 个导出指标。
 
 ### 核心指标
 
@@ -229,7 +229,7 @@ run_match.py --mode self --config-a configs\v1.9.5.json --config-b configs\exper
 | lmr_research_rate | lmr_full_research / lmr_applied | LMR 过度缩减率 | ↓ 好（缩减准确） |
 | nmp_efficiency | nmp_cutoffs / nmp_triggered | Null move 裁剪有效率 | ↑ 好 |
 | qs_share | qs_nodes / total_nodes | QS 节点占比 | 太高中局战术弱 |
-| tt_activity | tt_hits / (tt_hits + tt_misses) | TT 命中率 | ↑ 好（需补 miss 导出） |
+| tt_activity | tt_hits / (tt_hits + tt_stores) | TT 命中率 | ↑ 好 |
 | aw_fail_rate | aw_fails / (aw_hits + aw_fails) | Aspiration 失败率 | ↓ 好 |
 | avg_depth | total_nodes 分布反推 | 平均搜索深度 | ↑ 好（但需配合 qs_share） |
 
@@ -340,9 +340,9 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 ## 优先级路线图
 
-### 第 1 周：实验工具补全
-1. **SearchProfile Python 导出** — 在 `engine_wrapper.py` 新增 `get_last_search_profile()` 返回结构体
-2. **A/B 自对弈** — 扩展 `run_match.py` 支持 `--config-a / --config-b`
+### 第 1 周：实验工具补全（进行中）
+1. ✅ **SearchProfile Python 导出** — `engine_wrapper.get_search_profile(total_nodes)` 已实现
+2. ✅ **A/B 自对弈** — `run_match.py --mode self --config-a/--config-b` 已实现
 3. **固定回归脚本** — 把 Tier 0 冒烟测试写成可执行脚本
 
 ### 第 2 周：搜索 ablation
