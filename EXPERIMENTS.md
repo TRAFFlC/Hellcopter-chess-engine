@@ -39,3 +39,18 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 判定: 保留，但 LMR delta 需继续微调
 理由: Elo 为正，ldr_research 下降说明缩减更准了；中局漏算略有上升，可能是 delta 偏小导致部分走法扩展不足
+
+---
+
+### 20260715_run_match_selfplay
+
+改动: 扩展 run_match.py，新增 --mode self、--config-a、--config-b、--sprt
+目的: 支持同引擎双配置 A/B 自对弈，无需复制二进制
+
+T0 回归: 通过
+T1 快筛: 10 盘 self-play (v1.9.5 vs v1.9.5, 10+0.1, SPRT 0/5/0.05/0.05)，SPRT 未出结论（预期，同配置 baseline 差异为噪声）
+  校验通过: 两个 UCI adapter 独立加载不同 ENGINE_PARAMS，temp dir 正确清理
+  -draw/-resign/-sprt 参数格式修正（空格分隔 vs 逗号分隔）
+
+判定: 保留
+理由: run_match.py 扩展完成，A/B 自对弈流程可运行，SPRT 参数传递正确。此为实验基础设施，标记"第 1 周任务 2 完成"
