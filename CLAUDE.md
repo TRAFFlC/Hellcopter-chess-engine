@@ -340,10 +340,12 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 ## 优先级路线图
 
-### 第 1 周：实验工具补全（进行中）
+### 第 1 周：实验工具补全（已完成）
 1. ✅ **SearchProfile Python 导出** — `engine_wrapper.get_search_profile(total_nodes)` 已实现
 2. ✅ **A/B 自对弈** — `run_match.py --mode self --config-a/--config-b` 已实现
-3. **固定回归脚本** — 把 Tier 0 冒烟测试写成可执行脚本
+3. ✅ **固定回归脚本** — `regression.py` 一键验证 perft + 战术 + UCI
+
+### 第 2 周（当前）：搜索 ablation
 
 ### 第 2 周：搜索 ablation
 逐项关/开 LMR、history pruning、SEE pruning、null move、razoring、futility，找最敏感模块。每项 300 盘快棋 SPRT。

@@ -69,3 +69,19 @@ T0 回归: 通过（验证: search + get_search_profile 调用正常）
 
 判定: 保留
 理由: C 层 get_search_profile() 已完整，Python 绑定完成。标记"第 1 周任务 1 完成"
+
+---
+
+### 20260715_regression_script
+
+改动: 新增 regression.py，使用 engine_wrapper.perft() + search() + subprocess 验证
+目的: 一键运行 Tier 0 回归集
+
+T0 回归: 4/4 通过
+  perft depth 5: 4,865,609 (正确)
+  KiwiPete depth 12: d5e6 (正确)
+  endgame depth 12: c5d6 (正确)
+  UCI protocol: id name + uciok + readyok (正确)
+
+判定: 保留
+理由: 标记"第 1 周任务 3 完成"。第 1 周全部完成，进入第 2 周搜索 ablation
