@@ -389,6 +389,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
     int early_terminate = 0;
+    (void)early_terminate;
     for (i = 0; i < MAX_MOVES; i++)
         root_scores[i] = -MATE_SCORE;
 
@@ -1248,24 +1249,17 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 }
             }
 
-            /* Easy move: best_move stable ≥ EASY_MOVE_STABILITY_COUNT layers and
-             * score stable (change < EASY_MOVE_SCORE_THRESHOLD).
-             * Conservative: only allow early termination when position is truly
-             * stable (stable_count >= 3, score change < 10cp) and we're winning.
-             * The previous relaxed condition (stable_count >= 2, < 15cp) was
-             * causing premature termination on positions that needed deeper search. */
+            /* Easy move: stable for 4+ iterations with score change < 10cp.
+             * 不再提前终止搜索，改为稍后在时间调整中应用 easy 系数。 */
             {
                 int easy_condition = 0;
-                if (tm.stable_count >= EASY_MOVE_STABILITY_COUNT && abs(current_score - prev_score) < EASY_MOVE_SCORE_THRESHOLD)
-                    easy_condition = 1;
-                else if (tm.stable_count >= 3 && abs(current_score - prev_score) < 10 && current_score > 100)
+                if (tm.stable_count >= 4 && abs(current_score - prev_score) < 10)
                     easy_condition = 1;
 
                 if (easy_condition && max_depth <= 0)
                 {
-                    double em_elapsed = get_time() - tm.start_time;
-                    if (em_elapsed >= tm.optimal_time * EASY_MOVE_TIME_FRACTION_NUM / EASY_MOVE_TIME_FRACTION_DEN)
-                        early_terminate = 1;
+                    /* Set flag — 后续时间调整段将使用此标志设置 time_limit = base_optimal */
+                    tm.critical_position_flag = 2;  /* 2 = easy mode */
                 }
             }
 
@@ -1334,6 +1328,14 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 }
 
                 /* 移除 — 单一上限 max_time 已在 init_time_manager 中保障，不再二次限缩 */
+
+                /* Apply easy mode: cap time_limit at base_optimal (no boost) */
+                if (tm.critical_position_flag == 2)
+                {
+                    if (time_limit > tm.base_optimal_time)
+                        time_limit = tm.base_optimal_time;
+                    tm.critical_position_flag = 0;
+                }
 
                 /* Critical position detection + time bank (Task 5) */
                 if (depth >= 3 && max_depth <= 0)
