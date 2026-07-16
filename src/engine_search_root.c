@@ -100,7 +100,7 @@ reset_smp_stats(void)
     memset(&g_smp_stats, 0, sizeof(g_smp_stats));
 }
 
-/* Critical position detection: compute a 0-100 score based on 5 signals.
+/* Critical position detection: compute a 0-100 score based on 8 signals.
  * Higher score = more critical position = deserves more search time. */
 static int compute_criticality_score(const TimeManager *tm, int current_score, int prev_score,
                                      int best_move_changed, int aw_fails_this_iter,
@@ -108,38 +108,38 @@ static int compute_criticality_score(const TimeManager *tm, int current_score, i
 {
     int score = 0;
 
-    /* Signal 1: Best move instability (weight 30) */
+    /* Signal 1: Best move instability (weight 25) */
     if (best_move_changed)
-        score += 30;
-    else if (tm->instability_count >= 2)
-        score += 15;
-
-    /* Signal 2: Aspiration window failures (weight 25) */
-    if (aw_fails_this_iter >= 3)
         score += 25;
-    else if (aw_fails_this_iter >= 1)
-        score += 10 + aw_fails_this_iter * 5;
+    else if (tm->instability_count >= 2)
+        score += 12;
 
-    /* Signal 3: Node explosion (weight 20) */
+    /* Signal 2: Aspiration window failures (weight 20) */
+    if (aw_fails_this_iter >= 3)
+        score += 20;
+    else if (aw_fails_this_iter >= 1)
+        score += 8 + aw_fails_this_iter * 4;
+
+    /* Signal 3: Node explosion (weight 15) */
     if (tm->nodes_last_iter > 0)
     {
         long long ratio = nodes_this_iter / (tm->nodes_last_iter + 1);
         if (ratio >= 5)
-            score += 20;
+            score += 15;
         else if (ratio >= 3)
-            score += 12;
+            score += 10;
         else if (ratio >= 2)
-            score += 6;
+            score += 5;
     }
 
-    /* Signal 4: Top 2 moves close (weight 15) */
+    /* Signal 4: Top 2 moves close (weight 10) */
     if (prev_score > -MATE_SCORE + 1000)
     {
         int top2_gap = abs(current_score - prev_score);
         if (top2_gap < 10)
-            score += 15;
+            score += 10;
         else if (top2_gap < 25)
-            score += 8;
+            score += 5;
     }
 
     /* Signal 5: Static eval vs search score divergence (weight 10) */
@@ -151,7 +151,25 @@ static int compute_criticality_score(const TimeManager *tm, int current_score, i
             score += 5;
     }
 
-    (void)legal_moves_count; /* reserved for future use */
+    /* Signal 6: 合法走法 ≤ 3 → 强制局面（weight 20） */
+    if (legal_moves_count >= 1 && legal_moves_count <= 3)
+        score += 20;
+    else if (legal_moves_count <= 5)
+        score += 8;
+
+    /* Signal 7: 中局相位 +10（weight 10） */
+    if (!tm->is_endgame)
+        score += 10;
+
+    /* Signal 8: 战术密度 — 每个走法的平均节点数（weight 15） */
+    if (legal_moves_count > 0)
+    {
+        long long nodes_per_move = nodes_this_iter / legal_moves_count;
+        if (nodes_per_move > 5000)
+            score += 15;
+        else if (nodes_per_move > 2000)
+            score += 8;
+    }
 
     if (score > 100)
         score = 100;
@@ -1325,7 +1343,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     int crit = compute_criticality_score(&tm, current_score, prev_score,
                         best_move_changed, aw_fails_this_iter, nodes_this_iter, legal_moves_count);
 
-                    if (crit >= 70)
+                    if (crit >= 55)
                     {
                         /* Critical position: use max_time + withdraw from bank */
                         double crit_limit = tm.max_time;
@@ -1340,7 +1358,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         if (tm.time_bank < 0)
                             tm.time_bank = 0;
                     }
-                    else if (crit >= 40)
+                    else if (crit >= 25)
                     {
                         /* Moderate: 1.5x base optimal */
                         double mod_limit = tm.base_optimal_time * 1.5;
@@ -1348,7 +1366,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                             time_limit = mod_limit;
                         tm.critical_position_flag = 0;
                     }
-                    else if (crit <= 15 && tm.stable_count >= 3)
+                    else if (crit <= 12 && tm.stable_count >= 3)
                     {
                         /* Simple position: save time to bank */
                         double simple_limit = tm.base_optimal_time * 0.7;
