@@ -54,7 +54,10 @@ def resolve_config(config: dict) -> dict:
         if "parameters" not in result:
             result["parameters"] = {}
         for group_name, group_value in current_params.items():
-            result["parameters"][group_name] = copy.deepcopy(group_value)
+            if group_name in result["parameters"] and isinstance(group_value, dict) and isinstance(result["parameters"][group_name], dict):
+                result["parameters"][group_name].update(group_value)
+            else:
+                result["parameters"][group_name] = copy.deepcopy(group_value)
 
     return result
 

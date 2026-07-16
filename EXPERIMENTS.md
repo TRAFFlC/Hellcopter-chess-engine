@@ -322,3 +322,66 @@ T1 快筛: 50 盘 @ 10+0.2, SPRT 未出结论但接近拒绝 (llr −2.80)
 
 判定: ❌ 多线程有严重问题，锁单线程为默认值（num_threads=1）。
 理由: LOS 5.8% 表明 4 线程几乎不可能优于 1 线程。LLR −2.80 逼近拒绝边界。多线程不仅没有加速搜索，反而因 TT 竞争或任务分配不均导致棋力下降。后续需专项排查 Lazy SMP 实现。
+
+### 20260716_config_merge_bug_fix（重要）
+
+改动: 修复 config.py resolve_config() 参数合并 bug
+目的: 变体配置通过 base_version 继承时，参数分组被整体替换而非深度合并
+
+问题发现: LMR 扫描中 b0.5_d2.5 在粗扫=−42，但相邻 b0.5_d2.25=+42、b0.5_d2.75=+56。
+这种"波谷夹波峰"违反物理规律，用户指出后追查根因。
+
+根因: config.py:57 行 `result["parameters"][group_name] = copy.deepcopy(group_value)`
+变体配置如 `lmr_b0.5_d2.5.json` 只写了:
+```json
+"search_params": { "lmr_base": 0.5, "lmr_divisor": 2.5 }
+```
+由于整组替换，resolution 后 `search_params` 仅剩 2 个 key，v1.9.5 其余 ~58 个参数全部丢失。
+
+影响分析:
+- 基线（v1.9.5.json）无 base_version，直接返回全 60 参数 — 正确
+- 变体（lmr_bX_dY.json）经 base_version 继承 — 仅 2 参数，其余落入 engine_params.h 编译期默认值
+- 两条路径参数集不同，对比不纯（非单一 LMR 变量）
+- **所有 LMR 网格数据因此无效**
+
+修复: 改为深度合并：
+```python
+if group_name in result["parameters"] and isinstance(group_value, dict) and isinstance(result["parameters"][group_name], dict):
+    result["parameters"][group_name].update(group_value)
+else:
+    result["parameters"][group_name] = copy.deepcopy(group_value)
+```
+
+验证: 修复后变体 search_params 恢复 60 key，仅 lmr_base/divisor 两处不同。
+
+判定: 已修复。所有之前 LMR 数据作废，需重新扫描。
+
+方向验证: 粗扫结果方向确认无误（A=基线 B=变体时 Elo 取反，A=变体 B=基线时 Elo 直用）。
+但这不影响数据作废的事实 — 对比的参数集不同。
+
+重新扫描结果见下方。
+
+---
+
+### 20260717_lmr_3x3_grid_clean
+
+改动: config merge bug 修复后重扫 LMR 3×3 网格（base=0.50/0.75/1.00 × div=1.5/2.0/2.5）
+目的: 在正确参数继承下重新确定 LMR 最佳参数方向
+
+流程: A=变体, B=基线(v1.9.5), 200 局 @ 10+0.2/局, SPRT elo0=-2 elo1=5, 8 并跑
+
+| base | div=1.5 | div=2.0 | div=2.5 |
+|:----:|:-------:|:-------:|:-------:|
+| 0.50 | 58-50-92 **+14±36** LOS 78% | 54-51-95 +5±35 LOS 62% | 47-49-104 −3±33 LOS 42% |
+| 0.75 | 35-59-106 **−42±33** LOS 1% | **基线(v1.9.5)** | **54-41-105 +23±33 LOS 91%** |
+| 1.00 | 55-53-92 +3±36 LOS 58% | 49-47-104 +3±33 LOS 58% | 55-44-101 +19±34 LOS 87% |
+
+判定: b0.75_d2.5 (+23 Elo, LOS 90.9%) 为最优；b1.0_d2.5 (+19 Elo, LOS 86.6%) 次优。
+趋势: 较高 divisor（缩减更少）一致优于较低 divisor。base=0.50 全排表现差，base=0.75/1.00 中性偏正。
+
+注意: 两个正值得分（b0.75_d2.5, b1.0_d2.5）200 局 95% CI 约 ±33 Elo，均未跨过统计显著门槛。
+
+下一步:
+- 选择 b0.75_d2.5 做 Tier 2 确认（300-500 局 @ 96+0.8）
+- 或在 b0.75_d2.5 和 b1.0_d2.5 间做更细扫（b0.85/0.90, d2.25/2.50/2.75）
+- 或切换到下一参数组（history decay / NMP 参数调优）

@@ -378,20 +378,21 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 **产出**：敏感度排序表，标明"哪个关了 Elo 不降 ← 删掉"
 
-### 第 2.5 周：多线程诊断（新加）
+✅ **已完成**：全部 10 组消融实验（A-I）+ 多线程诊断，记录在 EXPERIMENTS.md。
+消融结论：
+- 核心贡献（关掉即暴跌）：走法排序（127 Elo）> LMP+History Pruning（100 Elo）> SEE 有 bug（86 Elo）> 静态裁剪（49 Elo）> LMR（48 Elo）> NMP（35 Elo）
+- 无贡献（标记可删）：capture/continuation history、G 组（ProbCut+Singular+IID）、延伸
+- 多线程：Threads=4 比 Threads=1 弱 56 Elo，锁单线程
+- SEE 修复：see_prune_enabled 默认设为 false，发现阈值过激
 
-并行于消融，用 1 晚确认多线程现状：
+### 第 2.5 周：多线程诊断 ✅
 
-| 实验 | 对比 | 预期 |
-|------|------|------|
-| M1 | Threads=1 vs Threads=4（10+0.2） | 若线程效率高，Elo+；若退化，Elo- |
-| M2 | Threads=1 vs Threads=2 | 看是否有任何正收益 |
-| M3 | 收集 Profile：辅助线程节点占比、TT 竞争计数 | 辅助线程是否浪费节点 |
+已确认 Threads=4 弱于 Threads=1（−56 Elo），锁单线程。待第 7 周专项排查。
 
-**判定**：若 M1 中 Threads=4 Elo 不显著高于 Threads=1（甚至更低），则锁定 Threads=1 跑完消融，多线程放到后期专项修。
-
-### 第 3 周：走法排序参数扫描
-LMR base/delta、history decay、killer 数量、countermove 权重联合调优。盯 `lmr_research_rate` 和 Elo 变化。
+### 第 3 周（当前）：LMR 参数调优
+config merge bug 修复后重扫 3×3 网格完成。
+最优: b0.75_d2.5（+23 Elo, LOS 91%）, b1.0_d2.5（+19 Elo, LOS 87%）。
+下一步：Tier 2 确认或换参数组。
 
 ### 第 4 周：时间管理
 分 blitz（10+0.1）与 standard（60+0.6）两个时控单独优化 easy move、panic mode、opening reduction 阈值。
