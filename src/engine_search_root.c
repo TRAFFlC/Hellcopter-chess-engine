@@ -193,34 +193,33 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
         tm->best_promo_history[i] = 0;
     }
 
-    /* Estimated remaining moves — simple phase-based estimation.
-     * When moves_to_go is provided by the GUI, use it directly. */
+    /* 阶段感知分配：根据 move_number 选择所在阶段，各阶段有独立预估步数 */
     int estimated_moves;
     if (moves_to_go > 0)
     {
         estimated_moves = moves_to_go;
     }
+    else if (move_number <= PHASE_OPENING_MAX_MOVE)
+    {
+        /* 开局：预留足够步数 */
+        estimated_moves = PHASE_OPENING_MOVES_REMAINING;
+    }
+    else if (move_number <= PHASE_MIDGAME_MAX_MOVE)
+    {
+        /* 中局：关键阶段，每步获得更多时间 */
+        estimated_moves = PHASE_MIDGAME_MOVES_REMAINING;
+    }
     else
     {
-        if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[0])
-            estimated_moves = EST_MOVES_BY_MATERIAL[0] - move_number;
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[1])
-            estimated_moves = EST_MOVES_BY_MATERIAL[1];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[2])
-            estimated_moves = EST_MOVES_BY_MATERIAL[2];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[3])
-            estimated_moves = EST_MOVES_BY_MATERIAL[3];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[4])
-            estimated_moves = EST_MOVES_BY_MATERIAL[4];
-        else
-            estimated_moves = EST_MOVES_BY_MATERIAL[5];
+        /* 残局：保守剩余步数 */
+        estimated_moves = PHASE_ENDGAME_MOVES_REMAINING;
     }
 
     /* Core time allocation formula:
-     * optimum = time_left / estimated_moves + increment × OPTIMAL_TIME_INC_FRACTION_NUM/OPTIMAL_TIME_INC_FRACTION_DEN
-     * maximum = min(time_left × MAX_TIME_FRACTION_NUM/MAX_TIME_FRACTION_DEN, optimum × MAX_TIME_OPTIMAL_MULTIPLIER) */
+     * optimum = time_left / estimated_moves + increment fraction
+     * maximum = min(time_left × fraction, optimum × multiplier) */
     tm->optimal_time = time_left / estimated_moves + inc * OPTIMAL_TIME_INC_FRACTION_NUM / OPTIMAL_TIME_INC_FRACTION_DEN;
-    tm->max_time = time_left * MAX_TIME_FRACTION_NUM / MAX_TIME_FRACTION_DEN;
+    tm->max_time = time_left * PHASE_BASE_MAX_TIME_FRACTION_NUM / PHASE_BASE_MAX_TIME_FRACTION_DEN;
     if (tm->max_time > tm->optimal_time * MAX_TIME_OPTIMAL_MULTIPLIER)
         tm->max_time = tm->optimal_time * MAX_TIME_OPTIMAL_MULTIPLIER;
 
@@ -1316,17 +1315,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     tm.panic_flag = 0;
                 }
 
-                /* Safety cap using actual remaining time */
-                double actual_remaining = tm.remaining - (get_time() - tm.start_time);
-                if (actual_remaining < 0.01)
-                    actual_remaining = 0.01;
-                double safety_cap = actual_remaining * SAFETY_CAP_REMAINING_FRACTION_NUM / SAFETY_CAP_REMAINING_FRACTION_DEN + tm.increment * SAFETY_CAP_INC_FRACTION_NUM / SAFETY_CAP_INC_FRACTION_DEN;
-                if (safety_cap < (double)SAFETY_CAP_MIN_TIME_MS / 1000.0)
-                    safety_cap = (double)SAFETY_CAP_MIN_TIME_MS / 1000.0; /* Ensure minimum time for next iteration */
-                if (safety_cap > tm.max_time)
-                    safety_cap = tm.max_time;
-                if (time_limit > safety_cap)
-                    time_limit = safety_cap;
+                /* 移除 — 单一上限 max_time 已在 init_time_manager 中保障，不再二次限缩 */
 
                 /* Critical position detection + time bank (Task 5) */
                 if (depth >= 3 && max_depth <= 0)
@@ -1378,9 +1367,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         tm.critical_position_flag = 0;
                     }
 
-                    /* Re-apply safety cap after criticality adjustment */
-                    if (time_limit > safety_cap)
-                        time_limit = safety_cap;
+                    /* 移除 — safety_cap 已不再使用 */
                 }
 
                 s->time_limit = time_limit;
@@ -2194,23 +2181,15 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
         int estimated_moves;
         if (moves_to_go > 0)
             estimated_moves = moves_to_go;
+        else if (move_number <= PHASE_OPENING_MAX_MOVE)
+            estimated_moves = PHASE_OPENING_MOVES_REMAINING;
+        else if (move_number <= PHASE_MIDGAME_MAX_MOVE)
+            estimated_moves = PHASE_MIDGAME_MOVES_REMAINING;
         else
-        {
-            if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[0])
-                estimated_moves = EST_MOVES_BY_MATERIAL[0] - move_number;
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[1])
-                estimated_moves = EST_MOVES_BY_MATERIAL[1];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[2])
-                estimated_moves = EST_MOVES_BY_MATERIAL[2];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[3])
-                estimated_moves = EST_MOVES_BY_MATERIAL[3];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[4])
-                estimated_moves = EST_MOVES_BY_MATERIAL[4];
-            else
-                estimated_moves = EST_MOVES_BY_MATERIAL[5];
-        }
+            estimated_moves = PHASE_ENDGAME_MOVES_REMAINING;
+
         smp_optimal = time_left / estimated_moves + increment * OPTIMAL_TIME_INC_FRACTION_NUM / OPTIMAL_TIME_INC_FRACTION_DEN;
-        smp_max = time_left * MAX_TIME_FRACTION_NUM / MAX_TIME_FRACTION_DEN;
+        smp_max = time_left * PHASE_BASE_MAX_TIME_FRACTION_NUM / PHASE_BASE_MAX_TIME_FRACTION_DEN;
         if (smp_max > smp_optimal * MAX_TIME_OPTIMAL_MULTIPLIER)
             smp_max = smp_optimal * MAX_TIME_OPTIMAL_MULTIPLIER;
         if (smp_max > time_left - 0.1)

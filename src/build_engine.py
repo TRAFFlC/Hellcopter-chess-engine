@@ -728,6 +728,15 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             f.write("    " + ", ".join(str(v) for v in est_thresholds) + "\n")
             f.write("};\n\n")
 
+            # 阶段感知时间分配常量
+            f.write(f"#define PHASE_OPENING_MOVES_REMAINING {time_mgmt.get('phase_opening_moves_remaining', 20)}\n")
+            f.write(f"#define PHASE_MIDGAME_MOVES_REMAINING {time_mgmt.get('phase_midgame_moves_remaining', 12)}\n")
+            f.write(f"#define PHASE_ENDGAME_MOVES_REMAINING {time_mgmt.get('phase_endgame_moves_remaining', 20)}\n")
+            f.write(f"#define PHASE_OPENING_MAX_MOVE {time_mgmt.get('phase_opening_max_move', 12)}\n")
+            f.write(f"#define PHASE_MIDGAME_MAX_MOVE {time_mgmt.get('phase_midgame_max_move', 30)}\n")
+            f.write(f"#define PHASE_BASE_MAX_TIME_FRACTION_NUM {time_mgmt.get('phase_base_max_time_fraction_num', 1)}\n")
+            f.write(f"#define PHASE_BASE_MAX_TIME_FRACTION_DEN {time_mgmt.get('phase_base_max_time_fraction_den', 3)}\n\n")
+
             root_capture = time_mgmt.get('root_capture_value', [
                                          0, 100, 300, 320, 500, 900, 0])
             f.write(
