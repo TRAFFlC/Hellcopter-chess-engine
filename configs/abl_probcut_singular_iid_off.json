@@ -1,0 +1,10 @@
+{
+  "base_version": "v1.9.5",
+  "parameters": {
+    "search_params": {
+      "probcut_enabled": false,
+      "singular_ext_enabled": false,
+      "iid_enabled": false
+    }
+  }
+}

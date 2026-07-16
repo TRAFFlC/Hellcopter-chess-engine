@@ -58,8 +58,6 @@ save_heuristic_snapshot(const SearchState *s)
     memcpy(g_heuristic_snapshot.history, s->history, sizeof(s->history));
     memcpy(g_heuristic_snapshot.countermove, s->countermove, sizeof(s->countermove));
     memcpy(g_heuristic_snapshot.followup, s->followup, sizeof(s->followup));
-    memcpy(g_heuristic_snapshot.capture_history, g_capture_history, sizeof(g_capture_history));
-    memcpy(g_heuristic_snapshot.cont_history, g_cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 1;
     g_preserve_heuristics = 0;
 }
@@ -76,8 +74,6 @@ restore_heuristic_snapshot(SearchState *s)
     memcpy(s->history, g_heuristic_snapshot.history, sizeof(s->history));
     memcpy(s->countermove, g_heuristic_snapshot.countermove, sizeof(s->countermove));
     memcpy(s->followup, g_heuristic_snapshot.followup, sizeof(s->followup));
-    memcpy(g_capture_history, g_heuristic_snapshot.capture_history, sizeof(g_capture_history));
-    memcpy(g_cont_history, g_heuristic_snapshot.cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 0; /* One-time use */
 }
 
@@ -244,6 +240,16 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
 
     if (tm->optimal_time < (double)MIN_OPTIMAL_TIME_MS / 1000.0)
         tm->optimal_time = (double)MIN_OPTIMAL_TIME_MS / 1000.0;
+}
+static int count_total_material(Board *b)
+{
+    static const int piece_vals[] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0};
+    int total = 0;
+    int side, pt;
+    for (side = 0; side < 2; side++)
+        for (pt = PAWN; pt <= QUEEN; pt++)
+            total += count_bits(b->pieces[side][pt]) * piece_vals[pt];
+    return total;
 }
 
 #ifdef _WIN32
@@ -1108,12 +1114,41 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 int pv_len = s->pv_length[0];
                 if (pv_len <= 0)
                     pv_len = 1;
+                Board replay_board = s->board;
                 int pi;
                 for (pi = 0; pi < pv_len && pi < 32; pi++)
                 {
                     Move *pm = &s->pv_table[0][pi];
                     if (pm->from == 0 && pm->to == 0 && pi > 0)
                         break;
+                    Move legal_moves[256];
+                    int n_legal = generate_pseudo_legal_moves(&replay_board, legal_moves);
+                    int found = 0;
+                    int j;
+                    for (j = 0; j < n_legal; j++)
+                    {
+                        if (legal_moves[j].from == pm->from && legal_moves[j].to == pm->to && legal_moves[j].promotion == pm->promotion)
+                        {
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        fprintf(stderr, "PV_REPLAY: illegal move %c%c%c%c at depth %d pv[%d], truncating\n",
+                                'a' + (pm->from & 7), '1' + (pm->from >> 3),
+                                'a' + (pm->to & 7), '1' + (pm->to >> 3), depth, pi);
+                        break;
+                    }
+                    UndoInfo replay_undo;
+                    make_move(&replay_board, pm, &replay_undo);
+                    if (is_check(&replay_board, replay_board.side_to_move ^ 1))
+                    {
+                        fprintf(stderr, "PV_REPLAY: move %c%c%c%c leaves king in check at depth %d pv[%d], truncating\n",
+                                'a' + (pm->from & 7), '1' + (pm->from >> 3),
+                                'a' + (pm->to & 7), '1' + (pm->to >> 3), depth, pi);
+                        break;
+                    }
                     if (pv_pos > 0)
                         pv_pos += sprintf(pv_buf + pv_pos, " ");
                     pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",

@@ -1315,14 +1315,14 @@
       "nmp_med_adv_reduction": -1,
       "nmp_low_phase_threshold": 10,
       "nmp_low_phase_reduction": -1,
-      "see_prune_depth_scale": 120,
+      "see_prune_depth_scale": 60,
       "history_prune_base": 3,
       "lmp_base": 6,
       "se_beta_depth_scale": 2,
       "history_score_limit": 8000,
       "history_update_scale": 1,
-      "capture_history_enabled": true,
-      "continuation_history_enabled": true
+      "capture_history_enabled": false,
+      "continuation_history_enabled": false
     },
     "time_management": {
       "est_moves_by_material": [
@@ -1433,7 +1433,7 @@
     },
     "threading": {
       "enabled": true,
-      "num_threads": 1
+      "num_threads": 4
     }
   },
   "tuning_metadata": {

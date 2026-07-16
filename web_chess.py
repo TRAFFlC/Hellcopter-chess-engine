@@ -462,14 +462,17 @@ def analyze_fen():
                     pv_idx = parts.index("pv")
                     pv_moves = parts[pv_idx + 1:]
                     key = (d, mpv)
-                    parsed[key] = {
-                        "depth": d,
-                        "multipv": mpv,
-                        "scoreType": score_type,
-                        "score": score_val,
-                        "pv": pv_moves,
-                        "move": pv_moves[0] if pv_moves else "",
-                    }
+                    existing = parsed.get(key)
+                    pv_len = len(pv_moves)
+                    if existing is None or pv_len > len(existing["pv"]):
+                        parsed[key] = {
+                            "depth": d,
+                            "multipv": mpv,
+                            "scoreType": score_type,
+                            "score": score_val,
+                            "pv": pv_moves,
+                            "move": pv_moves[0] if pv_moves else "",
+                        }
                 except (ValueError, IndexError):
                     pass
 

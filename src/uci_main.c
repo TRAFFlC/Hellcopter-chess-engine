@@ -562,17 +562,6 @@ static void run_search(double time_limit, int max_depth)
         return;
     }
 
-    if (depth > 0) {
-        if (abs(score) >= 30000) {
-            int mate_in = (MATE_SCORE - abs(score) + 1) / 2;
-            if (score < 0) mate_in = -mate_in;
-            printf("info depth %d score mate %d nodes %d time %d pv %s\n",
-                   depth, mate_in, nodes, time_ms, uci_move);
-        } else {
-            printf("info depth %d score cp %d nodes %d time %d pv %s\n",
-                   depth, score, nodes, time_ms, uci_move);
-        }
-    }
     if (g_last_ponder_move[0] != '\0')
         printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
     else

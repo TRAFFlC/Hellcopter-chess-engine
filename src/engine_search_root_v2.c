@@ -43,8 +43,6 @@ save_heuristic_snapshot(const SearchState *s)
     memcpy(g_heuristic_snapshot.history, s->history, sizeof(s->history));
     memcpy(g_heuristic_snapshot.countermove, s->countermove, sizeof(s->countermove));
     memcpy(g_heuristic_snapshot.followup, s->followup, sizeof(s->followup));
-    memcpy(g_heuristic_snapshot.capture_history, g_capture_history, sizeof(g_capture_history));
-    memcpy(g_heuristic_snapshot.cont_history, g_cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 1;
     g_preserve_heuristics = 0;
 }
@@ -61,8 +59,6 @@ restore_heuristic_snapshot(SearchState *s)
     memcpy(s->history, g_heuristic_snapshot.history, sizeof(s->history));
     memcpy(s->countermove, g_heuristic_snapshot.countermove, sizeof(s->countermove));
     memcpy(s->followup, g_heuristic_snapshot.followup, sizeof(s->followup));
-    memcpy(g_capture_history, g_heuristic_snapshot.capture_history, sizeof(g_capture_history));
-    memcpy(g_cont_history, g_heuristic_snapshot.cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 0; /* One-time use */
 }
 

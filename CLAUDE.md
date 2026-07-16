@@ -79,30 +79,28 @@ echo "uci\nucinewgame\nisready\nquit" | Hellcopter.exe | findstr "id name uciok 
 
 **通过条件：** 全部通过。一项失败 = 立即回滚，不进入 Tier 1。
 
-### Tier 1 — 快筛（blitz，SPRT）
+### Tier 1 — 消融快筛（blitz，SPRT）
 
-淘汰无效改动。禁止手动判定"看起来不错"。
+用于搜索消融（第 2 周）：关掉某项功能 vs 基线，测是否显著变弱。
+SPRT 方向为"弱侧判断"——检测实验版是否比基线明显更差。
 
 ```powershell
 cutechess-1.3.1-win64\cutechess-cli.exe `
   -engine name=Baseline proto=uci cmd=Hellcopter.exe `
-  -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe `
-  -each tc=10+0.1 -rounds 500 -concurrency 4 `
+  -engine name=Ablation proto=uci cmd=Hellcopter_mod.exe `
+  -each tc=10+0.2 -rounds 100 -concurrency 2 `
   -draw movenumber=40 movecount=5 score=20 `
   -resign movecount=3 score=500 `
-  -sprt elo0=0 elo1=5 alpha=0.05 beta=0.05 `
-  -pgnout results\exp_YYYYMMDD_HHMM.pgn
+  -sprt elo0=10 elo1=50 alpha=0.05 beta=0.05 `
+  -pgnout results\abl_YYYYMMDD_HHMM.pgn
 ```
 
-**通过条件（必须同时满足）：**
-- SPRT 接受 H1（elo1=5），或
-- 非 SPRT 模式下 Elo 下限 > 0（95% CI），且 ≥ 300 盘
-- 任意一条 Profile 指标没有显著恶化（见下方 Profile 定义）
+**判定逻辑：**
+- SPRT 接受 H1（损耗 ≥ 50 Elo）→ **该模块重要**，保持或优化
+- SPRT 接受 H0（损耗 ≤ 10 Elo）→ **该模块贡献不大**，标记可删
+- SPRT 未出结论 → 效应在 10-50 Elo 之间，需升 Tier 2 进一步确认
 
-**一票否决条件（满足任一条即回滚）：**
-- LOS < 80% 且盘数 ≥ 300
-- 中局漏算类输棋比例上升 > 10%
-- 时间崩溃率上升 > 5%
+**注意：** 消融阶段只回答"这个模块有没有用"，不回答"这个改动涨不涨 Elo"。
 
 ### Tier 2 — 确认（standard，SPRT）
 
@@ -112,7 +110,7 @@ cutechess-1.3.1-win64\cutechess-cli.exe `
 cutechess-1.3.1-win64\cutechess-cli.exe `
   -engine name=Baseline proto=uci cmd=Hellcopter.exe `
   -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe `
-  -each tc=60+0.6 -rounds 300 -concurrency 2 `
+  -each tc=96+0.8 -rounds 100 -concurrency 2 `
   -draw movenumber=40 movecount=5 score=20 `
   -resign movecount=3 score=500 `
   -sprt elo0=-2 elo1=5 alpha=0.05 beta=0.10 `
@@ -120,7 +118,7 @@ cutechess-1.3.1-win64\cutechess-cli.exe `
 ```
 
 **通过条件（必须同时满足）：**
-- SPRT 接受 H1，或 Elo 估算 ≥ 0 且盘数 ≥ 300
+- SPRT 接受 H1，或 Elo 估算 ≥ 0 且盘数 ≥ 100
 - 输棋类型分布无系统性恶化（与 baseline 对比）
 - 固定回归集重新运行全部通过
 
@@ -347,8 +345,50 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 ### 第 2 周（当前）：搜索 ablation
 
-### 第 2 周：搜索 ablation
-逐项关/开 LMR、history pruning、SEE pruning、null move、razoring、futility，找最敏感模块。每项 300 盘快棋 SPRT。
+搜索技术全清单（共 26+ 项）：
+- 框架: 迭代加深、PVS、Aspiration Windows
+- 缩减: LMR、IIR
+- 延伸: Check Ext、Singular Ext、Promotion Ext、Endgame Ext
+- 裁剪: NMP、Razoring、RFP、Futility、SEE Pruning、History Pruning、LMP、ProbCut、Delta Pruning
+- 辅助: IID、TT、SEE、QS、Syzygy TB
+- 走法排序: MVV-LVA、Killers、Countermove/Followup、History/Cont/Capture History
+- 评估: 20+ 组件
+- 时间管理: Easy/Hard/Panic/Time Bank
+- 多线程: Lazy SMP
+
+#### 消融策略
+
+**不逐一测 26 项**。按功能聚合为 8 组，每组独立开关，按敏感度排序执行：
+
+| 序号 | 组 | 开关方式 | 预期 | 优先级 |
+|------|-----|----------|------|--------|
+| A | **LMR**（含 IIR） | JSON: lmr_enabled=false | 暴跌（核心） | ★★★ P0 |
+| B | **NMP**（空步裁剪） | JSON: null_move_min_depth=99 | 大跌 | ★★★ P0 |
+| C | **走法排序**（历史表/杀手/反制/延续/捕获） | JSON 逐个关 | 中跌 | ★★☆ P1 |
+| D | **静态裁剪**（Razoring+RFP+Futility） | JSON 逐个关 | 小~中跌 | ★★☆ P1 |
+| E | **SEE Pruning + Delta Pruning** | 需改 C 加开关 | 小跌 | ★☆☆ P2 |
+| F | **LMP + History Pruning** | JSON 参数调极值 | 小跌 | ★☆☆ P2 |
+| G | **ProbCut + Singular Ext** | 需改 C 加开关 | 微小 | ★☆☆ P2 |
+| H | **延伸**（检查/唯一/升变/残局） | 需改 C 加开关 | 微小 | ★☆☆ P3 |
+
+**每项流程**：T0 回归 → T1 快筛 100 盘 @ 10+0.2 SPRT → 记录 Profile → 判定
+**最终确认（第 7 周合并）**：Tier 2 100 盘 @ 96+0.8 SPRT
+
+**总预计耗时**：A+B=1 晚，C=1 晚，D+E=1 晚，F+G+H=1 晚 → 约 4 晚
+
+**产出**：敏感度排序表，标明"哪个关了 Elo 不降 ← 删掉"
+
+### 第 2.5 周：多线程诊断（新加）
+
+并行于消融，用 1 晚确认多线程现状：
+
+| 实验 | 对比 | 预期 |
+|------|------|------|
+| M1 | Threads=1 vs Threads=4（10+0.2） | 若线程效率高，Elo+；若退化，Elo- |
+| M2 | Threads=1 vs Threads=2 | 看是否有任何正收益 |
+| M3 | 收集 Profile：辅助线程节点占比、TT 竞争计数 | 辅助线程是否浪费节点 |
+
+**判定**：若 M1 中 Threads=4 Elo 不显著高于 Threads=1（甚至更低），则锁定 Threads=1 跑完消融，多线程放到后期专项修。
 
 ### 第 3 周：走法排序参数扫描
 LMR base/delta、history decay、killer 数量、countermove 权重联合调优。盯 `lmr_research_rate` 和 Elo 变化。

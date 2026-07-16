@@ -325,34 +325,6 @@ static int g_tt_cluster_count = 0;
 static int g_tt_generation = 1;
 static int g_tt_hash_mb = 128;
 
-/* Capture History: tracks success of captures indexed by [attacker_type][to_sq][captured_type] */
-int16_t g_capture_history[7][64][7];
-
-/* Continuation History: tracks move success after specific previous moves [prev_piece][prev_to][curr_piece][curr_to] */
-int16_t g_cont_history[7][64][7][64];
-
-/* Atomic, clamped update for the globally-shared history tables in SMP mode.
- * Uses a compare-and-swap loop so concurrent updates from multiple workers do
- * not silently overwrite each other.  The value is clamped to
- * +/- HISTORY_SCORE_LIMIT before being stored. */
-static void history_atomic_add(int16_t *ptr, int delta)
-{
-    int16_t old_val, new_val;
-    do
-    {
-        old_val = *ptr;
-        new_val = old_val + (int16_t)delta;
-        if (new_val > HISTORY_SCORE_LIMIT)
-            new_val = HISTORY_SCORE_LIMIT;
-        if (new_val < -HISTORY_SCORE_LIMIT)
-            new_val = -HISTORY_SCORE_LIMIT;
-#ifdef _MSC_VER
-    } while (_InterlockedCompareExchange16((volatile short *)ptr, (short)new_val, (short)old_val) != (short)old_val);
-#else
-    } while (!__atomic_compare_exchange_n(ptr, &old_val, new_val,
-                                          0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
-#endif
-}
 
 static void tt_init_global(int hash_mb)
 {
@@ -1014,16 +986,19 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
          * delta pruning, so that positions where a queen capture is still
          * relevant are not incorrectly pruned.  Uses get_piece_value() so
          * runtime-loaded piece values are respected. */
-        if (stand_pat + get_piece_value(QUEEN) + get_piece_value(QUEEN) - get_piece_value(PAWN) < alpha)
-            return alpha;
+        if (g_runtime_params.delta_prune_enabled)
         {
-            int delta_margin = get_piece_value(QUEEN);
-            int my_npm = s->board.npm[s->board.side_to_move];
-            int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
-            if (my_npm < opp_npm - 100)
-                delta_margin = delta_margin * 3 / 2;
-            if (stand_pat + delta_margin < alpha)
+            if (stand_pat + get_piece_value(QUEEN) + get_piece_value(QUEEN) - get_piece_value(PAWN) < alpha)
                 return alpha;
+            {
+                int delta_margin = get_piece_value(QUEEN);
+                int my_npm = s->board.npm[s->board.side_to_move];
+                int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
+                if (my_npm < opp_npm - 100)
+                    delta_margin = delta_margin * 3 / 2;
+                if (stand_pat + delta_margin < alpha)
+                    return alpha;
+            }
         }
         if (ply >= 60)
             return alpha;
@@ -1277,11 +1252,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     }
 
     int in_check = is_check(&s->board, s->board.side_to_move);
-    if (in_check && ext_count < 2)
-    {
-        depth++;
-        ext_count++;
-    }
+    /* check extension removed — ablation showed 0 Elo contribution */
 
     int is_endgame = 0;
     int is_simple_endgame = 0;
@@ -1331,26 +1302,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
     }
 
-    /* Endgame checkmate extension: in clearly winning endgames (e.g. KQ+P vs K),
-     * extend search depth to help find checkmate paths more efficiently.
-     * Only apply when one side has Q or R and the other has no Q/R at all. */
-    if (is_endgame && ext_count < 3)
-    {
-        int w_mat = s->board.npm[0];
-        int b_mat = s->board.npm[1];
-        int w_has_major = (count_bits(s->board.pieces[WHITE][QUEEN]) + count_bits(s->board.pieces[WHITE][ROOK])) > 0;
-        int b_has_major = (count_bits(s->board.pieces[BLACK][QUEEN]) + count_bits(s->board.pieces[BLACK][ROOK])) > 0;
-        if (w_has_major && !b_has_major && w_mat - b_mat > 400)
-        {
-            depth++;
-            ext_count++;
-        }
-        else if (b_has_major && !w_has_major && b_mat - w_mat > 400)
-        {
-            depth++;
-            ext_count++;
-        }
-    }
+
 
     int static_eval = evaluate(&s->board);
     if (s->board.side_to_move == BLACK)
@@ -1459,59 +1411,51 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             {
                 moves[i].score = BAD_CAPTURE_BASE + see_val;
             }
-            /* Capture History: refine capture ordering based on past success */
-            if (g_runtime_params.capture_history_enabled)
-            {
-                int ch_attacker = piece_on_square(b, moves[i].from);
-                int ch_captured = moves[i].capture;
-                if (ch_attacker > 0 && ch_attacker <= 6 && ch_captured > 0 && ch_captured <= 6)
-                    moves[i].score += g_capture_history[ch_attacker][moves[i].to][ch_captured];
-            }
+
         }
         else
         {
-            int k1, k2;
-            if (ply < 64)
+            if (g_runtime_params.killers_enabled)
             {
-                for (k1 = 0; k1 < 2; k1++)
+                int k1, k2;
+                if (ply < 64)
                 {
-                    if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
+                    for (k1 = 0; k1 < 2; k1++)
                     {
-                        moves[i].score = KILLER_BASE_SCORE - k1 * KILLER_STEP;
-                        break;
+                        if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
+                        {
+                            moves[i].score = KILLER_BASE_SCORE - k1 * KILLER_STEP;
+                            break;
+                        }
                     }
                 }
             }
-            if (moves[i].score == 0 && ply >= 1)
+            if (g_runtime_params.countermove_followup_enabled)
             {
-                Move prev_move_cm = s->move_stack[ply - 1];
-                int prev_side = 1 - s->board.side_to_move;
-                Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
-                if (cm->from == moves[i].from && cm->to == moves[i].to)
+                if (moves[i].score == 0 && ply >= 1)
                 {
-                    moves[i].score = COUNTERMOVE_SCORE;
+                    Move prev_move_cm = s->move_stack[ply - 1];
+                    int prev_side = 1 - s->board.side_to_move;
+                    Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
+                    if (cm->from == moves[i].from && cm->to == moves[i].to)
+                    {
+                        moves[i].score = COUNTERMOVE_SCORE;
+                    }
+                }
+                if (moves[i].score == 0 && ply >= 3)
+                {
+                    Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
+                    if (fu->from == moves[i].from && fu->to == moves[i].to)
+                    {
+                        moves[i].score = FOLLOWUP_SCORE;
+                    }
                 }
             }
-            if (moves[i].score == 0 && ply >= 3)
-            {
-                Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
-                if (fu->from == moves[i].from && fu->to == moves[i].to)
-                {
-                    moves[i].score = FOLLOWUP_SCORE;
-                }
-            }
-            if (moves[i].score == 0)
+            if (moves[i].score == 0 && g_runtime_params.history_table_enabled)
             {
                 moves[i].score = s->history[moves[i].from][moves[i].to];
             }
-            /* Continuation History: refine quiet move ordering with previous-move context */
-            if (g_runtime_params.continuation_history_enabled && ply >= 1)
-            {
-                int ch_prev_pt = s->piece_type_stack[ply - 1];
-                int ch_curr_pt = piece_on_square(b, moves[i].from);
-                if (ch_prev_pt > 0 && ch_prev_pt <= 6 && ch_curr_pt > 0 && ch_curr_pt <= 6)
-                    moves[i].score += g_cont_history[ch_prev_pt][s->move_stack[ply - 1].to][ch_curr_pt][moves[i].to];
-            }
+
             /* Promotion bonus: always prioritize promotions regardless of game phase.
              * A promotion is one of the most critical moves in any position and must
              * be searched early to avoid missing mates or tactical wins. */
@@ -1820,13 +1764,10 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
-        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 8 &&
+        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 5 &&
             legal_count >= 1 && (beta - alpha <= 1))
         {
-            /* Task #110: Use pure SEE value stored during scoring phase.
-             * Previously used (score - BAD_CAPTURE_BASE) which included
-             * capture_history adjustment, causing false SEE pruning when
-             * capture_history was strongly negative. */
+            /* Use pure SEE value stored during scoring phase */
             int cached_see = move_see_vals[i];
             g_see_zero_window++;
             if (cached_see < 0)
@@ -1892,7 +1833,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         /* Promotion extension: extend search by 1 ply when a pawn promotes.
          * This ensures critical promotion lines (often leading to mates) are
          * searched deeply enough to be correctly evaluated. */
-        int promo_ext = (moves[i].promotion && ext_count < 3) ? 1 : 0;
+        int promo_ext = 0;
 
         if (ply < 128)
             s->move_stack[ply] = moves[i];
@@ -1985,31 +1926,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
         if (!moves[i].capture && !moves[i].promotion && score <= alpha)
         {
-            s->history[moves[i].from][moves[i].to] -= depth * depth;
-            if (s->history[moves[i].from][moves[i].to] < -HISTORY_SCORE_LIMIT)
-                s->history[moves[i].from][moves[i].to] = -HISTORY_SCORE_LIMIT;
-            /* Continuation History fail-low penalty */
-            if (g_runtime_params.continuation_history_enabled && ply >= 1)
+            if (g_runtime_params.history_table_enabled)
             {
-                int fl_prev_pt = s->piece_type_stack[ply - 1];
-                int fl_curr_pt = s->piece_type_stack[ply];
-                if (fl_prev_pt > 0 && fl_prev_pt <= 6 && fl_curr_pt > 0 && fl_curr_pt <= 6)
-                {
-                    int16_t *ce = &g_cont_history[fl_prev_pt][s->move_stack[ply - 1].to][fl_curr_pt][moves[i].to];
-                    history_atomic_add(ce, -depth * depth);
-                }
-            }
-        }
-
-        /* Capture History fail-low penalty */
-        if (g_runtime_params.capture_history_enabled && moves[i].capture && !moves[i].promotion && score <= alpha)
-        {
-            int fl_att = s->piece_type_stack[ply];
-            int fl_cap = moves[i].capture;
-            if (fl_att > 0 && fl_att <= 6 && fl_cap > 0 && fl_cap <= 6)
-            {
-                int16_t *che = &g_capture_history[fl_att][moves[i].to][fl_cap];
-                history_atomic_add(che, -depth * depth);
+                s->history[moves[i].from][moves[i].to] -= depth * depth;
+                if (s->history[moves[i].from][moves[i].to] < -HISTORY_SCORE_LIMIT)
+                    s->history[moves[i].from][moves[i].to] = -HISTORY_SCORE_LIMIT;
             }
         }
 
@@ -2029,49 +1950,31 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     flag = 2;
                     if (!moves[i].capture && ply < 128)
                     {
-                        if (moves[i].from != s->killers[ply][0].from || moves[i].to != s->killers[ply][0].to)
+                        if (g_runtime_params.killers_enabled)
                         {
-                            /* Only shift if the new move is also different from killer[1],
-                             * otherwise we'd duplicate killer[1] into killer[0]. */
-                            if (moves[i].from != s->killers[ply][1].from || moves[i].to != s->killers[ply][1].to)
+                            if (moves[i].from != s->killers[ply][0].from || moves[i].to != s->killers[ply][0].to)
                             {
-                                s->killers[ply][1] = s->killers[ply][0];
-                                s->killers[ply][0] = moves[i];
+                                if (moves[i].from != s->killers[ply][1].from || moves[i].to != s->killers[ply][1].to)
+                                {
+                                    s->killers[ply][1] = s->killers[ply][0];
+                                    s->killers[ply][0] = moves[i];
+                                }
                             }
                         }
-                        s->history[moves[i].from][moves[i].to] += depth * depth;
-                        if (s->history[moves[i].from][moves[i].to] > HISTORY_SCORE_LIMIT)
-                            s->history[moves[i].from][moves[i].to] = HISTORY_SCORE_LIMIT;
-                        /* Continuation History beta cutoff bonus */
-                        if (g_runtime_params.continuation_history_enabled && ply >= 1)
+                        if (g_runtime_params.history_table_enabled)
                         {
-                            int bc_prev_pt = s->piece_type_stack[ply - 1];
-                            int bc_curr_pt = s->piece_type_stack[ply];
-                            if (bc_prev_pt > 0 && bc_prev_pt <= 6 && bc_curr_pt > 0 && bc_curr_pt <= 6)
-                            {
-                                int16_t *bce = &g_cont_history[bc_prev_pt][s->move_stack[ply - 1].to][bc_curr_pt][moves[i].to];
-                                history_atomic_add(bce, depth * depth);
-                            }
+                            s->history[moves[i].from][moves[i].to] += depth * depth;
+                            if (s->history[moves[i].from][moves[i].to] > HISTORY_SCORE_LIMIT)
+                                s->history[moves[i].from][moves[i].to] = HISTORY_SCORE_LIMIT;
                         }
                     }
-                    /* Capture History beta cutoff bonus */
-                    if (g_runtime_params.capture_history_enabled && moves[i].capture && ply < 128)
-                    {
-                        int bc_att = s->piece_type_stack[ply];
-                        int bc_cap = moves[i].capture;
-                        if (bc_att > 0 && bc_att <= 6 && bc_cap > 0 && bc_cap <= 6)
-                        {
-                            int16_t *bche = &g_capture_history[bc_att][moves[i].to][bc_cap];
-                            history_atomic_add(bche, depth * depth);
-                        }
-                    }
-                    if (ply >= 1)
+                    if (ply >= 1 && g_runtime_params.countermove_followup_enabled)
                     {
                         Move prev_move = s->move_stack[ply - 1];
                         int prev_side = 1 - b->side_to_move;
                         s->countermove[prev_side][prev_move.from][prev_move.to] = moves[i];
                     }
-                    if (ply >= 2)
+                    if (ply >= 2 && g_runtime_params.countermove_followup_enabled)
                     {
                         Move prev_own_move = s->move_stack[ply - 2];
                         s->followup[b->side_to_move][prev_own_move.from][prev_own_move.to] = moves[i];

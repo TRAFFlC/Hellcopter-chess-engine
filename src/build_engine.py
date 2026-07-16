@@ -582,7 +582,7 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             # 其他搜索参数
             f.write("/* --- Other Search --- */\n")
             f.write(
-                f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 60)}\n")
+                f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 120)}\n")
             f.write(
                 f"#define HISTORY_PRUNE_BASE {search_params.get('history_prune_base', 3)}\n")
             f.write(f"#define LMP_BASE {search_params.get('lmp_base', 6)}\n")

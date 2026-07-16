@@ -1271,7 +1271,7 @@
       "endgame_depth_bonus": 1,
       "qs_max_depth_mg": 12,
       "qs_max_depth_eg": 16,
-      "lmr_enabled": true,
+      "lmr_enabled": false,
       "lmr_min_depth": 3,
       "lmr_move_threshold": 2,
       "lmr_base": 0.75,
@@ -1315,7 +1315,7 @@
       "nmp_med_adv_reduction": -1,
       "nmp_low_phase_threshold": 10,
       "nmp_low_phase_reduction": -1,
-      "see_prune_depth_scale": 120,
+      "see_prune_depth_scale": 60,
       "history_prune_base": 3,
       "lmp_base": 6,
       "se_beta_depth_scale": 2,
@@ -1433,7 +1433,7 @@
     },
     "threading": {
       "enabled": true,
-      "num_threads": 1
+      "num_threads": 4
     }
   },
   "tuning_metadata": {

@@ -69,8 +69,10 @@ typedef struct
     int probcut_min_depth;
     int probcut_margin;
     int probcut_reduction;
-    int capture_history_enabled;
-    int continuation_history_enabled;
+    int history_table_enabled;
+    int killers_enabled;
+    int countermove_followup_enabled;
+    int delta_prune_enabled;
     int mate_score;
     int delta;
     int endgame_phase_threshold;
