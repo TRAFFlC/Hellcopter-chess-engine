@@ -1348,8 +1348,8 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         /* Critical position: use max_time + withdraw from bank */
                         double crit_limit = tm.max_time;
                         double withdraw = tm.time_bank * 0.5;
-                        if (withdraw > 0.5)
-                            withdraw = 0.5;
+                        if (withdraw > 2.0)
+                            withdraw = 2.0;
                         crit_limit += withdraw;
                         if (time_limit < crit_limit)
                             time_limit = crit_limit;
@@ -1373,9 +1373,9 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         double saved = time_limit - simple_limit;
                         if (saved > 0.05)
                         {
-                            tm.time_bank += saved * 0.5;
-                            if (tm.time_bank > tm.base_optimal_time * 3.0)
-                                tm.time_bank = tm.base_optimal_time * 3.0;
+                            tm.time_bank += saved * 0.7;
+                            if (tm.time_bank > tm.base_optimal_time * 8.0)
+                                tm.time_bank = tm.base_optimal_time * 8.0;
                             time_limit = simple_limit;
                         }
                         tm.critical_position_flag = 0;
