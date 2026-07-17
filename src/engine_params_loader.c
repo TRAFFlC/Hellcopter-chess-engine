@@ -285,7 +285,7 @@ static void init_runtime_params_defaults(void)
     g_runtime_params.rfp_enabled = 1;
     g_runtime_params.nmp_enabled = 1;
     g_runtime_params.lmp_enabled = 1;
-    g_runtime_params.see_prune_enabled = 0;
+    g_runtime_params.see_prune_enabled = 1;
     g_runtime_params.history_prune_enabled = 1;
     g_runtime_params.singular_ext_enabled = 1;
     g_runtime_params.iid_enabled = 1;

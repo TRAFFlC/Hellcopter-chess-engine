@@ -273,7 +273,7 @@ static int count_total_material(Board *b)
 __declspec(dllexport)
 #endif
 Move
-find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
+find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, long long node_limit, int *out_nodes,
                  U64 *game_history, int game_history_count)
 {
     static int params_loaded = 0;
@@ -312,6 +312,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     s->start_time = get_time();
     s->aborted = 0;
     s->nodes = 0;
+    s->node_limit = node_limit;
     s->thread_id = 0;        /* Main thread */
     extern void set_eval_thread_id(int tid);
     set_eval_thread_id(0);
@@ -1605,6 +1606,7 @@ typedef struct
     double start_time;
     double time_limit;
     double time_limit_max;
+    long long node_limit;
     int max_depth;
     int thread_id;
     int num_threads;
@@ -1640,6 +1642,7 @@ static void smp_worker_search(LazySMPWorker *w)
     s->board = w->board;
     s->start_time = w->start_time;
     s->time_limit = w->time_limit;
+    s->node_limit = w->node_limit;
     s->aborted = 0;
     s->nodes = 0;
     s->thread_id = w->thread_id;
@@ -2134,7 +2137,7 @@ __declspec(dllexport)
 #endif
 Move
 find_best_move_smp(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth,
-                   int *out_nodes, U64 *game_history, int game_history_count)
+                   long long node_limit, int *out_nodes, U64 *game_history, int game_history_count)
 {
     static int params_loaded_smp = 0;
     ensure_engine_tables_initialized();
@@ -2165,15 +2168,15 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
 
     if (num_threads == 1)
     {
-        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
+        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, out_nodes,
                                 game_history, game_history_count);
     }
 
     int tt_cluster_count_smp;
     tt_init_global(128);
     /* Ponderhit path: keep TT entries from ponder search.  In normal searches
-     * advance the global generation once at search start (matching the single-
-     * threaded path); individual workers then advance it per iteration via
+     * advance the global generation once at search start (checking the
+     * single-threaded path); individual workers then advance it per iteration via
      * smp_inc_tt_generation(). */
     if (g_preserve_tt_generation)
         g_preserve_tt_generation = 0;
@@ -2185,7 +2188,7 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
     LazySMPWorker *workers = (LazySMPWorker *)calloc(num_threads, sizeof(LazySMPWorker));
     if (!workers)
     {
-        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, out_nodes,
+        return find_best_move_c(fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, out_nodes,
                                 game_history, game_history_count);
     }
 
@@ -2229,6 +2232,7 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
         workers[i].start_time = start_time;
         workers[i].time_limit = smp_optimal;
         workers[i].time_limit_max = smp_max;
+        workers[i].node_limit = node_limit;
         workers[i].max_depth = max_depth;
         workers[i].thread_id = i;
         workers[i].num_threads = num_threads;

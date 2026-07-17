@@ -385,3 +385,30 @@ else:
 - 选择 b0.75_d2.5 做 Tier 2 确认（300-500 局 @ 96+0.8）
 - 或在 b0.75_d2.5 和 b1.0_d2.5 间做更细扫（b0.85/0.90, d2.25/2.50/2.75）
 - 或切换到下一参数组（history decay / NMP 参数调优）
+
+---
+
+### 20260717_see_fix_confirmation
+
+改动: SEE pruning 参数修复 + 默认启用
+- `SEE_PRUNE_DEPTH_SCALE` 120→300（编译期宏，engine_params.h）
+- 深度检查 `<= 5`→`<= 3`
+- 条件 `legal_count >= 1`→`legal_count >= 2 && i >= 2`
+- `see_prune_enabled` 默认值 `0`→`1`（engine_params_loader.c）
+- 同时为 UCI 适配器添加了 `Nodes` 选项支持（go nodes N + setoption name Nodes）
+目的: 修复旧 SEE 修剪在位置无好捕获时误剪最佳着法导致的 −86 Elo 回退
+
+注意: 消融实验中原版 SEE 修剪 = −86 Elo（说明阈值过激、净效果有害）。
+本实验比较的是修正后版本 (SEE on) vs 完全关闭 (SEE off)。
+
+T0 回归: 通过（perft 6, 战术 depth 12 × 2, UCI 协议）
+T1 快筛: 50 局 @ nodes=1M/move, 8 并跑
+  SEE_off vs SEE_on: 4−17−29 (25.0%), Elo −191 ± 85, LOS 0.0%
+
+判定: **保留**（对应: SEE_on 为 75.0% 得分，等效 +191 Elo，LOS 100.0%）
+理由: 修正后的 SEE 修剪贡献巨大 — 从 −86 Elo（原版有 bug）翻转为 +191 Elo（修正版 vs 关闭）。
+这是一个约 277 Elo 的净改善。SEE 修剪应默认启用。阈值可进一步优化，但当前版本已大幅优于关闭。
+
+下一步:
+- 考虑精细化 SEE 阈值参数（depth_scale, margin 等）作为参数实验
+- 与 LMR b0.75_d2.5 合并后跑 Tier 2 确认

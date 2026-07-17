@@ -866,7 +866,8 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     if ((s->nodes & s->time_check_mask) == 0)
     {
         double elapsed = get_time() - s->start_time;
-        if (elapsed >= s->time_limit || g_engine_abort_flag)
+        if (elapsed >= s->time_limit || g_engine_abort_flag ||
+            (s->node_limit > 0 && s->nodes >= s->node_limit))
         {
             s->aborted = 1;
             return 0;
@@ -1119,7 +1120,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     if ((s->nodes & s->time_check_mask) == 0)
     {
         double elapsed = get_time() - s->start_time;
-        if (elapsed >= s->time_limit || g_engine_abort_flag)
+        if (elapsed >= s->time_limit || g_engine_abort_flag ||
+            (s->node_limit > 0 && s->nodes >= s->node_limit))
         {
             s->aborted = 1;
             return 0;
@@ -1764,8 +1766,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
-        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 5 &&
-            legal_count >= 1 && (beta - alpha <= 1))
+        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 3 &&
+            legal_count >= 2 && i >= 2 && (beta - alpha <= 1))
         {
             /* Use pure SEE value stored during scoring phase */
             int cached_see = move_see_vals[i];
