@@ -279,6 +279,8 @@ static int g_go_params_binc;
 static int g_go_params_depth;
 static int g_go_params_movetime;
 static int g_go_params_movestogo;
+static long long g_go_params_nodes;
+static long long g_uci_nodes;
 static int g_go_infinite;
 
 static volatile int g_ponder_mode = 0;
@@ -464,8 +466,10 @@ static void uci_info_callback(int depth, int score, int nodes, int time_ms, cons
     fflush(stdout);
 }
 
-static void run_search(double time_limit, int max_depth)
+static void run_search(double time_limit, int max_depth, long long node_limit)
 {
+    if (node_limit == 0)
+        node_limit = g_uci_nodes;
     set_engine_abort(0);
 
     char fen[MAX_FEN];
@@ -498,7 +502,7 @@ static void run_search(double time_limit, int max_depth)
     if (get_threading_enabled())
     {
         result = find_best_move_smp(
-            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, &nodes,
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, &nodes,
             g_position_history_count > 0 ? g_position_history : NULL,
             g_position_history_count
         );
@@ -506,7 +510,7 @@ static void run_search(double time_limit, int max_depth)
     else
     {
         result = find_best_move_c(
-            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, &nodes,
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, &nodes,
             g_position_history_count > 0 ? g_position_history : NULL,
             g_position_history_count
         );
@@ -586,7 +590,7 @@ static unsigned __stdcall search_thread_func(void *arg)
     double *time_limit_ptr = (double *)arg;
     double tl = *time_limit_ptr;
     free(time_limit_ptr);
-    run_search(tl, g_go_params_depth);
+    run_search(tl, g_go_params_depth, g_go_params_nodes);
     g_search_running = 0;
     return 0;
 }
@@ -596,7 +600,7 @@ static void *search_thread_func(void *arg)
     double *time_limit_ptr = (double *)arg;
     double tl = *time_limit_ptr;
     free(time_limit_ptr);
-    run_search(tl, g_go_params_depth);
+    run_search(tl, g_go_params_depth, g_go_params_nodes);
     g_search_running = 0;
     return NULL;
 }
@@ -639,6 +643,7 @@ static void cmd_uci(void)
     printf("option name BookRandomness type spin default 20 min 0 max 100\n");
     printf("option name SyzygyPath type string default dist/syzygy\n");
     printf("option name Threads type spin default 4 min 1 max 64\n");
+    printf("option name Nodes type spin default 0 min 0 max 999999999\n");
     printf("uciok\n");
     fflush(stdout);
 }
@@ -715,6 +720,19 @@ static void cmd_setoption(const char *args)
             if (val > 64) val = 64;
             set_num_threads(val);
             fprintf(stderr, "Threads set to %d\n", val);
+        }
+    } else if (strncmp(p, "Nodes", 5) == 0 && (p[5] == ' ' || p[5] == '\0')) {
+        p += 5;
+        while (*p == ' ') p++;
+        if (strncmp(p, "value", 5) != 0) return;
+        p += 5;
+        while (*p == ' ') p++;
+        {
+            long long val = atoll(p);
+            if (val < 0) val = 0;
+            if (val > 999999999LL) val = 999999999LL;
+            g_uci_nodes = val;
+            fprintf(stderr, "Nodes set to %lld\n", val);
         }
     }
 }
@@ -834,6 +852,7 @@ static void cmd_go(const char *args)
     g_go_params_depth = 100;
     g_go_params_movetime = 0;
     g_go_params_movestogo = 0;
+    g_go_params_nodes = 0;
     g_go_infinite = 0;
     g_ponder_mode = 0;
     g_ponderhit_received = 0;
@@ -857,6 +876,8 @@ static void cmd_go(const char *args)
             g_go_params_movetime = atoi(p + 8);
         } else if (strncmp(p, "movestogo", 9) == 0) {
             g_go_params_movestogo = atoi(p + 9);
+        } else if (strncmp(p, "nodes", 5) == 0) {
+            g_go_params_nodes = atoll(p + 5);
         } else if (strncmp(p, "infinite", 8) == 0) {
             g_go_infinite = 1;
         }
@@ -920,7 +941,7 @@ static void cmd_go(const char *args)
         }
     } else {
         free(tl_ptr);
-        run_search(time_limit, g_go_params_depth);
+        run_search(time_limit, g_go_params_depth, g_go_params_nodes);
         g_search_running = 0;
     }
 #else
@@ -939,7 +960,7 @@ static void cmd_go(const char *args)
         } else {
             pthread_attr_destroy(&attr);
             free(tl_ptr);
-            run_search(time_limit, g_go_params_depth);
+            run_search(time_limit, g_go_params_depth, g_go_params_nodes);
             g_search_running = 0;
         }
     }
@@ -1007,7 +1028,7 @@ static void cmd_ponderhit(void)
     set_preserve_heuristics(1);
 
     set_engine_abort(0);
-    run_search(time_limit, g_go_params_depth);
+    run_search(time_limit, g_go_params_depth, g_go_params_nodes);
 }
 
 static void cmd_bench(void)
@@ -1037,7 +1058,7 @@ static void cmd_bench(void)
 
     for (int i = 0; i < num_fens; i++) {
         int nodes = 0;
-        find_best_move_c(bench_fens[i], 100000.0, 0, 0, 0, 0, bench_depth, &nodes, NULL, 0);
+        find_best_move_c(bench_fens[i], 100000.0, 0, 0, 0, 0, bench_depth, 0, &nodes, NULL, 0);
         total_nodes += nodes;
         fprintf(stdout, "Position %2d/%2d: nodes=%d\n", i + 1, num_fens, nodes);
     }

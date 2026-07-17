@@ -134,6 +134,7 @@ typedef struct
     Move pv_table[128][64];
     int pv_length[128];
     long long nodes;
+    long long node_limit;
     double start_time;
     double time_limit;
     int aborted;
@@ -212,10 +213,10 @@ int is_game_over(Board *b);
 int evaluate(Board *b);
 int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth);
 int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int ply);
-Move find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
-                      U64 *game_history, int game_history_count);
-Move find_best_move_smp(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, int *out_nodes,
-                        U64 *game_history, int game_history_count);
+Move find_best_move_c(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, long long node_limit, int *out_nodes,
+                 U64 *game_history, int game_history_count);
+Move find_best_move_smp(const char *fen, double time_limit, double time_left, double increment, int moves_to_go, int move_number, int max_depth, long long node_limit, int *out_nodes,
+                 U64 *game_history, int game_history_count);
 U64 compute_hash_from_fen(const char *fen);
 int popcount(U64 x);
 U64 get_attacks(const Board *b, int sq, int side);

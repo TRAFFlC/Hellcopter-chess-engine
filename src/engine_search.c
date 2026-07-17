@@ -1436,8 +1436,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             continue;
         }
 
-        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 8 &&
-            legal_count >= 1 && (beta - alpha <= 1))
+        if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 3 &&
+            legal_count >= 2 && (beta - alpha <= 1))
         {
             /* Extract SEE value from move score (computed during scoring phase):
              * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  → see_val >= 0, never pruned
