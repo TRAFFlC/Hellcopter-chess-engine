@@ -297,6 +297,8 @@ static void init_runtime_params_defaults(void)
     g_runtime_params.killers_enabled = 1;
     g_runtime_params.countermove_followup_enabled = 1;
     g_runtime_params.delta_prune_enabled = 1;
+    g_runtime_params.eval_king_safety_enabled = 1;
+    g_runtime_params.eval_endgame_enabled = 1;
     g_runtime_params.mate_score = MATE_SCORE;
     g_runtime_params.delta = DELTA;
     g_runtime_params.endgame_phase_threshold = ENDGAME_PHASE_THRESHOLD;
@@ -1841,6 +1843,16 @@ load_params_from_file(const char *filename)
             if (parse_json_boolean(val, &value))
                 g_runtime_params.see_prune_enabled = value;
         }
+        if ((val = find_json_key(search_params_obj, "eval_king_safety_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.eval_king_safety_enabled = value;
+        }
+        if ((val = find_json_key(search_params_obj, "eval_endgame_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.eval_endgame_enabled = value;
+        }
         if ((val = find_json_key(search_params_obj, "history_prune_enabled")) != NULL)
         {
             if (parse_json_boolean(val, &value))
@@ -2296,6 +2308,8 @@ set_search_param(const char *name, int value)
     if (strcmp(name, "killers_enabled") == 0) { g_runtime_params.killers_enabled = value; return 1; }
     if (strcmp(name, "countermove_followup_enabled") == 0) { g_runtime_params.countermove_followup_enabled = value; return 1; }
     if (strcmp(name, "delta_prune_enabled") == 0) { g_runtime_params.delta_prune_enabled = value; return 1; }
+    if (strcmp(name, "eval_king_safety_enabled") == 0) { g_runtime_params.eval_king_safety_enabled = value; return 1; }
+    if (strcmp(name, "eval_endgame_enabled") == 0) { g_runtime_params.eval_endgame_enabled = value; return 1; }
     return 0;
 }
 
@@ -2325,5 +2339,7 @@ get_search_param(const char *name)
     if (strcmp(name, "killers_enabled") == 0) return g_runtime_params.killers_enabled;
     if (strcmp(name, "countermove_followup_enabled") == 0) return g_runtime_params.countermove_followup_enabled;
     if (strcmp(name, "delta_prune_enabled") == 0) return g_runtime_params.delta_prune_enabled;
+    if (strcmp(name, "eval_king_safety_enabled") == 0) return g_runtime_params.eval_king_safety_enabled;
+    if (strcmp(name, "eval_endgame_enabled") == 0) return g_runtime_params.eval_endgame_enabled;
     return -1;
 }
