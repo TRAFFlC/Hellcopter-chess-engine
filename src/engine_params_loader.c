@@ -298,7 +298,7 @@ static void init_runtime_params_defaults(void)
     g_runtime_params.countermove_followup_enabled = 1;
     g_runtime_params.delta_prune_enabled = 1;
     g_runtime_params.eval_king_safety_enabled = 1;
-    g_runtime_params.eval_endgame_enabled = 1;
+    g_runtime_params.eval_endgame_enabled = 0;
     g_runtime_params.mate_score = MATE_SCORE;
     g_runtime_params.delta = DELTA;
     g_runtime_params.endgame_phase_threshold = ENDGAME_PHASE_THRESHOLD;
