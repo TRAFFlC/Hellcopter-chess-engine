@@ -315,6 +315,11 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
 
     TimeManager tm;
     init_time_manager(&tm, time_left > 0 ? time_left : time_limit, increment, moves_to_go, move_number, s->start_time);
+    {
+        int npm = s->board.npm[0] + s->board.npm[1];
+        if (npm <= g_runtime_params.endgame_phase_threshold)
+            tm.is_endgame = 1;
+    }
     if (time_left <= 0)
     {
         /* When time_left is not provided, fall back to time_limit.
@@ -1615,6 +1620,8 @@ static void smp_worker_search(LazySMPWorker *w)
     s->aborted = 0;
     s->nodes = 0;
     s->thread_id = w->thread_id;
+    if (w->thread_id == 0)
+        fprintf(stderr, "DEBUG smp_worker_search[%d]: node_limit=%lld\n", w->thread_id, (long long)s->node_limit);
     set_eval_thread_id(w->thread_id);
 
     s->tt_cluster_count = w->tt_cluster_count;

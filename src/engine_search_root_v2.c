@@ -286,6 +286,11 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
 
     TimeManager tm;
     init_time_manager(&tm, time_left > 0 ? time_left : time_limit, increment, moves_to_go, move_number, s->start_time);
+    {
+        int npm = s->board.npm[0] + s->board.npm[1];
+        if (npm <= g_runtime_params.endgame_phase_threshold)
+            tm.is_endgame = 1;
+    }
     if (time_left <= 0)
     {
         /* When time_left is not provided, fall back to time_limit.
