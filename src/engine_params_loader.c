@@ -1666,7 +1666,7 @@ load_params_from_file(const char *filename)
     }
 
     /* Parse mobility_tables */
-    const char *mobility_obj = find_json_key(params_obj, "mobilityTables");
+    const char *mobility_obj = find_json_key(params_obj, "mobility_tables");
     if (mobility_obj)
     {
         const char *table;
