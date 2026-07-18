@@ -246,6 +246,17 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
         tm->optimal_time = (double)MIN_OPTIMAL_TIME_MS / 1000.0;
 }
 
+static int count_total_material(Board *b)
+{
+    static const int piece_vals[] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0};
+    int total = 0;
+    int side, pt;
+    for (side = 0; side < 2; side++)
+        for (pt = PAWN; pt <= QUEEN; pt++)
+            total += count_bits(b->pieces[side][pt]) * piece_vals[pt];
+    return total;
+}
+
 #ifdef _WIN32
 __declspec(dllexport)
 #endif
