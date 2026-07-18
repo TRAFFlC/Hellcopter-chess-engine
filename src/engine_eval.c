@@ -2202,44 +2202,42 @@ evaluate(Board *b)
 
             if (is_kqk_white || is_krk_white)
             {
-                int w_king = b->king_sq[WHITE];
+                /* These endgames are always forced wins. Use a high base score
+                 * with steep progress gradient to guide search toward mate. */
                 int b_king = b->king_sq[BLACK];
-                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
+                int w_king = b->king_sq[WHITE];
                 int b_kf = file_of(b_king), b_kr = rank_of(b_king);
+                int w_kf = file_of(w_king), w_kr = rank_of(w_king);
                 int edge_dist_f = (b_kf < (7 - b_kf)) ? b_kf : (7 - b_kf);
                 int edge_dist_r = (b_kr < (7 - b_kr)) ? b_kr : (7 - b_kr);
                 int edge_dist = (edge_dist_f < edge_dist_r) ? edge_dist_f : edge_dist_r;
                 int file_dist = (w_kf > b_kf) ? (w_kf - b_kf) : (b_kf - w_kf);
                 int rank_dist = (w_kr > b_kr) ? (w_kr - b_kr) : (b_kr - w_kr);
                 int chebyshev = (file_dist > rank_dist) ? file_dist : rank_dist;
-                int manhattan = file_dist + rank_dist;
 
-                /* Push enemy king to edge/corner */
-                int corner_bonus = (3 - edge_dist) * mopup_edge_weight;
-                /* Keep our king close to enemy king */
-                int proximity_bonus = (7 - chebyshev) * mopup_proximity_weight;
-                /* Opposition bonus: kings face each other with one square gap */
-                int opposition_bonus = 0;
-                if (chebyshev == 2 && manhattan % 2 == 0)
-                    opposition_bonus = mopup_opposition_weight;
-
-                /* KRK-specific: encourage rook to cut off enemy king */
-                int rook_cutoff_bonus = 0;
+                /* Base win score: ~12000 cp = KNOW_WIN */
+                int base_win = MATE_SCORE / 8;
+                /* Progress: 0-3000 bonus based on confinement */
+                int progress = (3 - edge_dist) * 600 + (7 - chebyshev) * 150;
+                /* Rook cutoff bonus for KRK */
+                int rook_extra = 0;
                 if (is_krk_white)
                 {
                     int rook_sq = lsb_index(b->pieces[WHITE][ROOK]);
                     int r_f = file_of(rook_sq), r_r = rank_of(rook_sq);
-                    /* Rook on same rank/file as enemy king cuts off escape */
-                    if (r_f == b_kf || r_r == b_kr)
-                        rook_cutoff_bonus = krk_rook_cutoff_bonus;
-                    /* Rook far from enemy king is bad (should stay close to control) */
-                    int r_dist_f = (r_f > b_kf) ? (r_f - b_kf) : (b_kf - r_f);
-                    int r_dist_r = (r_r > b_kr) ? (r_r - b_kr) : (b_kr - r_r);
-                    if (r_dist_f > 3 && r_dist_r > 3)
-                        rook_cutoff_bonus += krk_rook_far_penalty;
+                    if (r_f == b_kf)
+                        rook_extra = 400;
+                    else if (r_r == b_kr)
+                        rook_extra = 250;
+                    if (rook_atk[WHITE][0] & (1ULL << b_king))
+                        rook_extra += 300;
                 }
+                /* Near mate bonus: edge + close king, signals mate within few moves */
+                int near_mate = 0;
+                if (edge_dist == 0 && chebyshev <= 2)
+                    near_mate = (MATE_SCORE / 4) - progress;
 
-                score += corner_bonus + proximity_bonus + opposition_bonus + rook_cutoff_bonus;
+                score += base_win + progress + rook_extra + near_mate;
             }
             else if (is_kqkr_white)
             {
