@@ -1,0 +1,128 @@
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "1"]
+[White "Baseline"]
+[Black "Experiment"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.297 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "2"]
+[White "Experiment"]
+[Black "Baseline"]
+[Result "0-1"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.326 中国标准时间"]
+[PlyCount "0"]
+[Termination "stalled connection"]
+[TimeControl "2/move"]
+
+{White's connection stalls} 0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "3"]
+[White "Baseline"]
+[Black "Experiment"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.345 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "4"]
+[White "Experiment"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.351 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "5"]
+[White "Baseline"]
+[Black "Experiment"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.358 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "6"]
+[White "Experiment"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.363 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "7"]
+[White "Baseline"]
+[Black "Experiment"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.366 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "8"]
+[White "Experiment"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:20"]
+[GameEndTime "2026-07-18T22:51:36.904 中国标准时间"]
+[GameStartTime "2026-07-18T22:51:16.366 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "2/move"]
+
+{No result} *
+
