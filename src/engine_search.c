@@ -1,4 +1,4 @@
-/* engine_search.c — 搜索核心：TT、SEE、走法排序、quiescence、negamax（从 engine_core.c 拆分） */
+﻿/* engine_search.c 鈥?鎼滅储鏍稿績锛歍T銆丼EE銆佽蛋娉曟帓搴忋€乹uiescence銆乶egamax锛堜粠 engine_core.c 鎷嗗垎锛?*/
 
 /* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
 extern unsigned TB_LARGEST;
@@ -508,22 +508,22 @@ static int see(Board *b, int from, int to)
 
         if (next_piece == KING)
         {
-            /* 国王吃子前，检查目标格是否被对方滑动棋子攻击。
-             * 如果被攻击，国王不能安全吃子（会走入将军），
-             * 交换在此终止，不含国王这步。 */
+            /* 鍥界帇鍚冨瓙鍓嶏紝妫€鏌ョ洰鏍囨牸鏄惁琚鏂规粦鍔ㄦ瀛愭敾鍑汇€?
+             * 濡傛灉琚敾鍑伙紝鍥界帇涓嶈兘瀹夊叏鍚冨瓙锛堜細璧板叆灏嗗啗锛夛紝
+             * 浜ゆ崲鍦ㄦ缁堟锛屼笉鍚浗鐜嬭繖姝ャ€?*/
             U64 opp_bq = b->pieces[1 - stm][BISHOP] | b->pieces[1 - stm][QUEEN];
             U64 opp_rq = b->pieces[1 - stm][ROOK] | b->pieces[1 - stm][QUEEN];
 
             if ((sliding_attacks_bishop(current_sq, occupied) & opp_bq) ||
                 (sliding_attacks_rook(current_sq, occupied) & opp_rq))
             {
-                /* 国王不能安全吃子，撤销国王的 gain 并终止交换 */
+                /* 鍥界帇涓嶈兘瀹夊叏鍚冨瓙锛屾挙閿€鍥界帇鐨?gain 骞剁粓姝氦鎹?*/
                 gain_count--;
                 break;
             }
 
-            /* 国王安全吃子，对手无法回吃国王。
-             * 直接返回净收益。 */
+            /* 鍥界帇瀹夊叏鍚冨瓙锛屽鎵嬫棤娉曞洖鍚冨浗鐜嬨€?
+             * 鐩存帴杩斿洖鍑€鏀剁泭銆?*/
             int g = gain_count - 1;
             while (g > 0)
             {
@@ -660,7 +660,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
                 else
                     qs_tb_score = -(MATE_SCORE - 200) + ply;
                 s->tb_hits++;
-                /* TB result is exact — store in TT with EXACT flag and return */
+                /* TB result is exact 鈥?store in TT with EXACT flag and return */
                 {
                     Move zero_move = {0};
                     tt_store(s, pos_key, 0, qs_tb_score, 0, zero_move, ply);
@@ -705,7 +705,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     else
     {
         n = qsearch_generate_moves(&s->board, moves);
-        /* 在浅层 QS 中加入安静将军着法，提升战术视野 */
+        /* 鍦ㄦ祬灞?QS 涓姞鍏ュ畨闈欏皢鍐涚潃娉曪紝鎻愬崌鎴樻湳瑙嗛噹 */
         if (qs_depth < QS_CHECK_MAX_DEPTH)
         {
             n = generate_checking_moves(&s->board, moves, n);
@@ -715,7 +715,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     for (i = 0; i < n; i++)
     {
         moves[i].score = mvv_lva(&s->board, &moves[i]);
-        /* 安静将军着法给固定分数，低于吃子但高于普通安静走法 */
+        /* 瀹夐潤灏嗗啗鐫€娉曠粰鍥哄畾鍒嗘暟锛屼綆浜庡悆瀛愪絾楂樹簬鏅€氬畨闈欒蛋娉?*/
         if (!moves[i].capture && !moves[i].promotion && moves[i].score == 0)
             moves[i].score = QS_CHECK_SCORE;
         /* Give TT move the highest priority for better move ordering */
@@ -732,7 +732,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         pick_next_move(moves, n, i);
         if (!in_check && moves[i].capture && !moves[i].promotion)
         {
-            /* SEE 只读 Board 不修改，直接传指针避免 436 字节拷贝 */
+            /* SEE 鍙 Board 涓嶄慨鏀癸紝鐩存帴浼犳寚閽堥伩鍏?436 瀛楄妭鎷疯礉 */
             int see_score = see(&s->board, moves[i].from, moves[i].to);
             if (see_score < 0)
                 continue;
@@ -1161,7 +1161,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 moves[i].score += PROMOTION_SCORE;
             if (is_endgame)
             {
-                /* Check bonus removed from scoring phase — move_gives_check()
+                /* Check bonus removed from scoring phase 鈥?move_gives_check()
                  * does full make/unmake which is too expensive per-move.
                  * Checks will still be found during search naturally. */
                 if (!moves[i].capture && !moves[i].promotion)
@@ -1254,7 +1254,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
      *   The old check (beta < INF - 1000) was useless because MATE_SCORE (900000)
      *   is far below INF (1000000), so NMP would still fire at mate scores.
      * Guard 2: abs(static_eval) < MATE_SCORE - 500 prevents NMP when the position
-     *   is already evaluated as "nearly mated" — pruning here risks false positives
+     *   is already evaluated as "nearly mated" 鈥?pruning here risks false positives
      *   (missing the opponent's defense) or false negatives (missing our own mate).
      * Guard 3: In won positions (eval > 2000), reduce NMP depth to be more careful.
      * Guard 4: In clearly winning positions (static_eval > 2000), reduce NMP
@@ -1269,7 +1269,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     {
         g_prof_nmp_triggered++;
         /* Guard 6: Disable NMP in pure pawn endgames.
-         * Zugzwang is extremely common in pawn endgames — a null move
+         * Zugzwang is extremely common in pawn endgames 鈥?a null move
          * gives an unrealistically optimistic result because being forced
          * to move is often a disadvantage. */
         {
@@ -1283,7 +1283,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int saved_side = b->side_to_move;
         int saved_ep = b->en_passant;
         U64 saved_hash = b->hash;
-        U64 saved_pawn_hash = b->pawn_hash;
         int saved_eval_score = b->eval_score;
         int saved_halfmove = b->halfmove_clock;
         if (saved_ep >= 0 && saved_ep < 64)
@@ -1327,7 +1326,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->side_to_move = saved_side;
         b->en_passant = saved_ep;
         b->hash = saved_hash;
-        b->pawn_hash = saved_pawn_hash;
         b->eval_score = saved_eval_score;
         b->halfmove_clock = saved_halfmove;
         if (s->aborted)
@@ -1440,8 +1438,8 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             legal_count >= 2 && (beta - alpha <= 1))
         {
             /* Extract SEE value from move score (computed during scoring phase):
-             * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  → see_val >= 0, never pruned
-             * SEE <  0: score = 200000 + see_val                → see_val = score - 200000 */
+             * SEE >= 0: score = 1000000 + see_val*10 + mvv_lva  鈫?see_val >= 0, never pruned
+             * SEE <  0: score = 200000 + see_val                鈫?see_val = score - 200000 */
             int cached_see = (moves[i].score >= GOOD_CAPTURE_BASE) ? 0 : (moves[i].score - BAD_CAPTURE_BASE);
             if (cached_see < -depth * SEE_PRUNE_DEPTH_SCALE)
             {
@@ -1472,7 +1470,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         legal_count++;
 
-        /* TT Prefetch: 预取子节点的 TT 槽，减少递归调用时的 cache miss */
+        /* TT Prefetch: 棰勫彇瀛愯妭鐐圭殑 TT 妲斤紝鍑忓皯閫掑綊璋冪敤鏃剁殑 cache miss */
         {
             int tt_idx = (int)(b->hash & (U64)(s->tt_cluster_count - 1));
             __builtin_prefetch(&s->tt[tt_idx], 0, 1);

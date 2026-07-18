@@ -104,9 +104,12 @@ def check_dependencies_self(base_dir, cutechess_path):
 
 
 def make_each_opts(args):
-    opts = [f"tc={args.tc}"]
-    if args.inc and args.inc > 0:
-        opts.append(f"inc={args.inc}")
+    if args.nodes and args.nodes > 0:
+        opts = [f"st=999999", f"nodes={args.nodes}"]
+    else:
+        opts = [f"tc={args.tc}"]
+        if args.inc and args.inc > 0:
+            opts.append(f"inc={args.inc}")
     return opts
 
 
@@ -150,8 +153,9 @@ def build_self_command(cutechess, base_dir, args, uci_script_a, uci_script_b, la
         f"arg={uci_script_b}",
         f"dir={os.path.dirname(uci_script_b) if uci_script_b else base_dir}",
         "-each",
-        ",".join(each_opts),
+    ] + each_opts + [
         "-rounds", str(args.rounds),
+        "-concurrency", str(args.concurrency),
         "-pgnout", pgn_path,
     ]
     add_adjudication(cmd)
@@ -183,8 +187,9 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script=None
         f"proto={opp_proto}",
         f"cmd={opp_exe}",
         "-each",
-        ",".join(each_opts),
+    ] + each_opts + [
         "-rounds", str(args.rounds),
+        "-concurrency", str(args.concurrency),
         "-pgnout", pgn_path,
     ]
 
@@ -309,6 +314,8 @@ def main():
                         help="Time control string (e.g. 96+0.8, 60+2)")
     parser.add_argument("--tc-standard", action="store_true", help="Use standard time control: 96+0.8s")
     parser.add_argument("--tc-slow", action="store_true", help="Use slow time control: 300+2.0s")
+    parser.add_argument("--nodes", type=int, default=0, help="Node limit per move (0 = disabled, fixed-node testing)")
+    parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent games")
     parser.add_argument("--inc", type=int, default=0, help="Increment in seconds (overrides tc increment)")
     parser.add_argument("--cutechess", type=str, default=None, help="Path to cutechess-cli executable")
     parser.add_argument("--pgnout", type=str, default=None, help="PGN output filename")

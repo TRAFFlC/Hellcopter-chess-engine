@@ -97,7 +97,7 @@ typedef struct {
 static PolyglotEntry *g_book_entries = NULL;
 static int g_book_count = 0;
 static int g_book_capacity = 0;
-static int g_own_book = 1;
+static int g_own_book = 0;
 static char g_book_path[MAX_LINE] = "";
 static int g_book_randomness = 20;
 
@@ -627,12 +627,12 @@ static void cmd_uci(void)
     printf("id name Hellcopter\n");
     printf("id author Trafflc\n");
     printf("option name Ponder type check default true\n");
-    printf("option name OwnBook type check default true\n");
+    printf("option name OwnBook type check default false\n");
     printf("option name BookPath type string default \n");
     printf("option name BookRandomness type spin default 20 min 0 max 100\n");
     printf("option name SyzygyPath type string default dist/syzygy\n");
-    printf("option name Threads type spin default 4 min 1 max 64\n");
-    printf("option name Nodes type spin default 0 min 0 max 999999999\n");
+    printf("option name Threads type spin default 1 min 1 max 64\n");
+    printf("option name nodes type spin default 0 min 0 max 999999999\n");
     printf("uciok\n");
     fflush(stdout);
 }
@@ -643,6 +643,18 @@ static void cmd_isready(void)
     fflush(stdout);
 }
 
+static int ci_eq(const char *s, const char *t, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        char a = s[i], b = t[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 static void cmd_setoption(const char *args)
 {
     const char *p = args;
@@ -651,17 +663,17 @@ static void cmd_setoption(const char *args)
     p += 4;
     while (*p == ' ') p++;
 
-    if (strncmp(p, "OwnBook", 7) == 0 && (p[7] == ' ' || p[7] == '\0')) {
+    if (ci_eq(p, "OwnBook", 7) && (p[7] == ' ' || p[7] == '\0')) {
         p += 7;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
-        g_own_book = (strncmp(p, "true", 4) == 0) ? 1 : 0;
-    } else if (strncmp(p, "BookPath", 8) == 0 && (p[8] == ' ' || p[8] == '\0')) {
+        g_own_book = ci_eq(p, "true", 4) ? 1 : 0;
+    } else if (ci_eq(p, "BookPath", 8) && (p[8] == ' ' || p[8] == '\0')) {
         p += 8;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
         strncpy(g_book_path, p, MAX_LINE - 1);
@@ -669,20 +681,20 @@ static void cmd_setoption(const char *args)
         int len = (int)strlen(g_book_path);
         while (len > 0 && (g_book_path[len - 1] == '\n' || g_book_path[len - 1] == '\r'))
             g_book_path[--len] = '\0';
-        load_opening_book();
-    } else if (strncmp(p, "BookRandomness", 14) == 0 && (p[14] == ' ' || p[14] == '\0')) {
+    if (g_own_book) load_opening_book();
+    } else if (ci_eq(p, "BookRandomness", 14) && (p[14] == ' ' || p[14] == '\0')) {
         p += 14;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
         g_book_randomness = atoi(p);
         if (g_book_randomness < 0) g_book_randomness = 0;
         if (g_book_randomness > 100) g_book_randomness = 100;
-    } else if (strncmp(p, "SyzygyPath", 10) == 0 && (p[10] == ' ' || p[10] == '\0')) {
+    } else if (ci_eq(p, "SyzygyPath", 10) && (p[10] == ' ' || p[10] == '\0')) {
         p += 10;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
         {
@@ -697,10 +709,10 @@ static void cmd_setoption(const char *args)
                 fprintf(stderr, "SyzygyPath failed to load: %s\n", p);
             }
         }
-    } else if (strncmp(p, "Threads", 7) == 0 && (p[7] == ' ' || p[7] == '\0')) {
+    } else if (ci_eq(p, "Threads", 7) && (p[7] == ' ' || p[7] == '\0')) {
         p += 7;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
         {
@@ -710,10 +722,10 @@ static void cmd_setoption(const char *args)
             set_num_threads(val);
             fprintf(stderr, "Threads set to %d\n", val);
         }
-    } else if (strncmp(p, "Nodes", 5) == 0 && (p[5] == ' ' || p[5] == '\0')) {
+    } else if (ci_eq(p, "nodes", 5) && (p[5] == ' ' || p[5] == '\0')) {
         p += 5;
         while (*p == ' ') p++;
-        if (strncmp(p, "value", 5) != 0) return;
+        if (!ci_eq(p, "value", 5)) return;
         p += 5;
         while (*p == ' ') p++;
         {
@@ -1083,7 +1095,7 @@ int main(void)
 #endif
 
     get_exe_dir();
-    load_opening_book();
+    if (g_own_book) load_opening_book();
     set_engine_info_callback(uci_info_callback);
 
     /* Auto-load Syzygy EGTB if available */
@@ -1108,6 +1120,16 @@ int main(void)
         if (!egtb_loaded) {
             fprintf(stderr, "Syzygy EGTB not found in standard paths. "
                     "Use 'setoption name SyzygyPath value <path>' to load manually.\n");
+        }
+    }
+
+    {
+        const char *env_nodes = getenv("ENGINE_NODES");
+        if (env_nodes) {
+            long long val = atoll(env_nodes);
+            if (val > 0 && val <= 999999999LL)
+                g_uci_nodes = val;
+            fprintf(stderr, "ENGINE_NODES=%s -> g_uci_nodes=%lld\n", env_nodes, (long long)g_uci_nodes);
         }
     }
 

@@ -1,0 +1,128 @@
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "1"]
+[White "Baseline"]
+[Black "Abl_Pawn"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.586 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "2"]
+[White "Abl_Pawn"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.503 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "3"]
+[White "Baseline"]
+[Black "Abl_Pawn"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.596 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "4"]
+[White "Abl_Pawn"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.596 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "5"]
+[White "Baseline"]
+[Black "Abl_Pawn"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.687 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "6"]
+[White "Abl_Pawn"]
+[Black "Baseline"]
+[Result "0-1"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.255 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.688 中国标准时间"]
+[PlyCount "0"]
+[Termination "abandoned"]
+[TimeControl "999999/move"]
+
+{White disconnects} 0-1
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "7"]
+[White "Baseline"]
+[Black "Abl_Pawn"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.755 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "8"]
+[White "Abl_Pawn"]
+[Black "Baseline"]
+[Result "*"]
+[GameDuration "00:00:46"]
+[GameEndTime "2026-07-18T01:26:14.257 中国标准时间"]
+[GameStartTime "2026-07-18T01:25:27.726 中国标准时间"]
+[PlyCount "0"]
+[Termination "unterminated"]
+[TimeControl "999999/move"]
+
+{No result} *
+

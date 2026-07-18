@@ -57,6 +57,16 @@ python src/build_engine.py clean
 - `engine_core.dll` → 根目录（`engine_wrapper.py` 自动加载）
 - `dist/Hellcopter.exe` → 复制到根目录供 cutechess 使用
 
+**编译警告：** 基线 tag `baseline-20260715` 的代码缺少 `count_total_material()` 函数定义（仅在 `engine_search_root.c` 被引用但未实现）。编译基线 EXE 时必须先添加该函数。该函数已在当前主分支中。
+
+### 开局库
+
+**UCI 选项：** `OwnBook`（默认 false）、`BookPath`（字符串）、`BookRandomness`（0-100，默认20）
+
+引擎启动时不再自动加载开局库。可通过 UCI `setoption name BookPath value dist/Goi5.1.bin` + `setoption name OwnBook true` 启用。
+
+Goi5.1.bin 存在 `dist/` 下（约 130MB），含 9,292,868 个局面。
+
 ## 三层实验流水线
 
 ### Tier 0 — 冒烟（每次改动必过）
@@ -86,14 +96,16 @@ SPRT 方向为"弱侧判断"——检测实验版是否比基线明显更差。
 
 ```powershell
 cutechess-1.3.1-win64\cutechess-cli.exe `
-  -engine name=Baseline proto=uci cmd=Hellcopter.exe `
-  -engine name=Ablation proto=uci cmd=Hellcopter_mod.exe `
+  -engine name=Baseline proto=uci cmd=Hellcopter.exe option.Threads=1 `
+  -engine name=Ablation proto=uci cmd=Hellcopter_mod.exe option.Threads=1 `
   -each tc=10+0.2 -rounds 100 -concurrency 2 `
   -draw movenumber=40 movecount=5 score=20 `
   -resign movecount=3 score=500 `
   -sprt elo0=10 elo1=50 alpha=0.05 beta=0.05 `
   -pgnout results\abl_YYYYMMDD_HHMM.pgn
 ```
+
+**CPU 说明：** UCI 选项 `Threads` 默认已改为 1（`default 1`）。`set_num_threads()` 不再对 `Threads=1` 禁用 threading，引擎始终走 `find_best_move_smp` 路径。`Threads=4` 时引擎会创建 3 个 worker 线程（共 4 搜索线程），在 16 LP 上占 25% CPU。
 
 **判定逻辑：**
 - SPRT 接受 H1（损耗 ≥ 50 Elo）→ **该模块重要**，保持或优化
@@ -108,8 +120,8 @@ cutechess-1.3.1-win64\cutechess-cli.exe `
 
 ```powershell
 cutechess-1.3.1-win64\cutechess-cli.exe `
-  -engine name=Baseline proto=uci cmd=Hellcopter.exe `
-  -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe `
+  -engine name=Baseline proto=uci cmd=Hellcopter.exe option.Threads=1 `
+  -engine name=Experiment proto=uci cmd=Hellcopter_mod.exe option.Threads=1 `
   -each tc=96+0.8 -rounds 100 -concurrency 2 `
   -draw movenumber=40 movecount=5 score=20 `
   -resign movecount=3 score=500 `
@@ -196,29 +208,17 @@ T2 确认: 盘数, SPRT, ±Elo, LOS
 
 ## A/B 自对弈方案
 
-**TODO — 第一个工程任务：扩展 run_match.py**
-
-当前 `run_match.py` 只支持 Hellcopter vs 外部引擎。需要新增：
-
-```
---config-a PATH    # 实验 A 的 engine_params.json
---config-b PATH    # 实验 B 的 engine_params.json
---rounds N         # 对弈盘数
---sprt             # 启用 SPRT 判定
---tc TIME          # 时控
-```
-
-实现方式：通过临时 UCI adapter 进程，每个 instance 绑不同 `ENGINE_PARAMS` 环境变量指向对应 JSON，无需复制二进制。
-
-示例（预期用法）：
+**当前状态：** 已完成。`run_match.py --mode self --config-a/--config-b` 已实现。
 
 ```powershell
 run_match.py --mode self --config-a configs\v1.9.5.json --config-b configs\experiment.json --rounds 500 --tc 10+0.1 --sprt
 ```
 
+实现方式：通过临时 UCI adapter 进程，每个 instance 绑不同 `ENGINE_PARAMS` 环境变量指向对应 JSON，无需复制二进制。
+
 ## Search Profile 指标
 
-**当前状态：** 已实现。`engine_wrapper.get_search_profile(total_nodes)` 返回全部 20 个原始计数器 + 5 个导出指标。
+**当前状态：** 已实现。`engine_wrapper.get_search_profile(total_nodes)` 返回全部 20 个原始计数器 + 5 个导出指标。`option name nodes` 已加入 UCI 选项列表。
 
 ### 核心指标
 
@@ -389,22 +389,35 @@ T2 确认: 300 盘, +5±9 Elo, LOS 78%
 
 已确认 Threads=4 弱于 Threads=1（−56 Elo），锁单线程。待第 7 周专项排查。
 
-### 第 3 周（当前）：LMR 参数调优
+### 第 3 周：LMR 参数调优
 config merge bug 修复后重扫 3×3 网格完成。
 最优: b0.75_d2.5（+23 Elo, LOS 91%）, b1.0_d2.5（+19 Elo, LOS 87%）。
-下一步：Tier 2 确认或换参数组。
+确认 v1.9.5.json 的 lmr_divisor 已是 2.5，与基线一致 → 无需 LMR 改动。
 
-### 第 4 周：时间管理
-分 blitz（10+0.1）与 standard（60+0.6）两个时控单独优化 easy move、panic mode、opening reduction 阈值。
+### 第 4 周（跳过）：时间管理
+优先级后调，先做评估减法。
 
-### 第 5 周：评估减法
-兵结构 + 王安全 + 残局缩放，先 ablation 找无效维度删除，再调剩余维度权重。
+### 第 5 周：评估减法（已完成）
+P1 兵结构（关掉+4±16 → 已删代码）
+P2 王安全（H1 接受 +156 Elo → 保留）
+P3 机动性（关掉−22±97 → 已删）
+P4 Hanging/in-check（关掉−23±100 → 已删）
+P5 威胁探测（关掉+4±48 → 已删）
+P6 残局评估（关掉−68±182 → 默认关闭 eval_endgame_enabled=0）
 
 ### 第 6 周：残局专项
-结合 EGTB 覆盖局面，测试残局收束稳定性，调 mop-up / opposite bishop 等因子。
+EGTB 自动加载（3-5 子 Syzygy RTB 文件在 `EGTB/`），CCRL 显式允许。
+KRK/KQK 强制胜势评估增强（base_win + 进度梯度）。
+易走步残局标志位修复（tm->is_endgame 根据 npm 正确设置）。
+残局收束测试 6/6 通过。
 
-### 第 7 周：合并确认
-前 6 周有效改动合并为标准时控完全确认（300 盘 SPRT）。
+### 第 7 周（当前）：合并确认
+前 5-6 周有效改动合并为标准时控确认：
+- 保留：P2 王安全 + SEE 修正 + LMR b0.75_d2.0
+- 删除：P3 机动性 / P4 Hanging / P5 威胁 / P6 残局评估 / capture+cont history / G 组扩展 / 延伸
+- 修复：KRK/KQK 评估增强 / 残局标志位 / SEE 阈值 / 开局库默认关闭
+- 排除：多线程（锁 Threads=1）
+- 基线 v1.9.5 vs 实验（当前代码），SPRT(-2,5,0.05,0.10)，96+0.8
 
 ### 第 8 周：分析 + 规划
 整理"最常见输棋模式排行榜"，决定下一轮主攻方向。

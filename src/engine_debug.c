@@ -1,4 +1,4 @@
-/* engine_debug.c — 调试/诊断/API 导出函数（从 engine_core.c 拆分） */
+﻿/* engine_debug.c 鈥?璋冭瘯/璇婃柇/API 瀵煎嚭鍑芥暟锛堜粠 engine_core.c 鎷嗗垎锛?*/
 int count_legal_moves(const char *fen)
 {
     ensure_engine_tables_initialized();
@@ -590,7 +590,7 @@ __declspec(dllexport)
 void
 clear_eval_caches(void)
 {
-    memset((void*)pawn_hash_table, 0, sizeof(pawn_hash_table));
+
 }
 
 #ifdef _WIN32
@@ -649,11 +649,10 @@ test_tb_probe_root(const char *fen, int *out_wdl, int *out_dtz, char *out_move)
  * Bug Hunter: board_consistency_check
  *
  * For a given FEN, tests every legal move:
- *   save state → make_move → verify post-state → unmake_move → verify restored
+ *   save state 鈫?make_move 鈫?verify post-state 鈫?unmake_move 鈫?verify restored
  *
  * Checks (after make):
  *   1. hash matches compute_hash()
- *   2. pawn_hash matches pawn-only recompute
  *   3. phase matches npm-based recompute
  *   4. npm[] matches piece-count recompute
  *   5. king_sq[] matches actual king positions
@@ -694,7 +693,6 @@ board_consistency_check(const char *fen)
     {
         /* Save original state */
         U64 orig_hash = b.hash;
-        U64 orig_pawn_hash = b.pawn_hash;
         int orig_eval = b.eval_score;
         int orig_phase = b.phase;
         int orig_npm0 = b.npm[0];
@@ -729,7 +727,6 @@ board_consistency_check(const char *fen)
             errors++;
         }
 
-        /* Check 2: pawn_hash consistency */
         {
             U64 recomputed_phash = 0;
             for (int s = 0; s < 2; s++)
@@ -742,7 +739,6 @@ board_consistency_check(const char *fen)
                     recomputed_phash ^= zobrist_table[(s * 6 + (PAWN - 1)) * 64 + sq];
                 }
             }
-            if (recomputed_phash != b.pawn_hash)
             {
                 fprintf(stderr, "[BUG] Pawn hash mismatch after move %c%d%c%d\n",
                         'a' + (moves[i].from % 8), 1 + (moves[i].from / 8),
@@ -872,7 +868,6 @@ board_consistency_check(const char *fen)
         unmake_move(&b, &moves[i], &undo);
 
         if (b.hash != orig_hash ||
-            b.pawn_hash != orig_pawn_hash ||
             b.eval_score != orig_eval ||
             b.phase != orig_phase ||
             b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1 ||
@@ -890,9 +885,6 @@ board_consistency_check(const char *fen)
             if (b.hash != orig_hash)
                 fprintf(stderr, "  hash: orig=%llx now=%llx\n",
                         (unsigned long long)orig_hash, (unsigned long long)b.hash);
-            if (b.pawn_hash != orig_pawn_hash)
-                fprintf(stderr, "  pawn_hash: orig=%llx now=%llx\n",
-                        (unsigned long long)orig_pawn_hash, (unsigned long long)b.pawn_hash);
             if (b.phase != orig_phase)
                 fprintf(stderr, "  phase: orig=%d now=%d\n", orig_phase, b.phase);
             if (b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1)
@@ -1029,7 +1021,6 @@ eval_consistency_stress(const char *fen, int cycles)
             int orig_mg = b.mg_score;
             int orig_eg = b.eg_score;
             U64 orig_hash = b.hash;
-            U64 orig_pawn_hash = b.pawn_hash;
             int orig_phase = b.phase;
             int orig_npm0 = b.npm[0];
             int orig_npm1 = b.npm[1];
@@ -1054,10 +1045,8 @@ eval_consistency_stress(const char *fen, int cycles)
                     fprintf(stderr, "[BUG] Stress hash drift cycle %d move %d\n", c, i);
                 errors++;
             }
-            if (b.pawn_hash != orig_pawn_hash)
             {
                 if (errors < 10)
-                    fprintf(stderr, "[BUG] Stress pawn_hash drift cycle %d move %d\n", c, i);
                 errors++;
             }
             if (b.phase != orig_phase || b.npm[0] != orig_npm0 || b.npm[1] != orig_npm1)

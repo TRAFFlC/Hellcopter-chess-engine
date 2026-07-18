@@ -43,7 +43,6 @@ typedef struct
     int eval_score;
     int mailbox[64];
     U64 hash;
-    U64 pawn_hash;
     int king_sq[2];
     int phase;
     int npm[2];
@@ -58,7 +57,6 @@ typedef struct
     int en_passant;
     int halfmove_clock;
     U64 hash;
-    U64 pawn_hash;
     int eval_score;
     int phase;
     int king_sq[2];

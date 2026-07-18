@@ -1,0 +1,4 @@
+uci
+ucinewgame
+position startpos
+go nodes 1000000

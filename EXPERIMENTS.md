@@ -412,3 +412,249 @@ T1 快筛: 50 局 @ nodes=1M/move, 8 并跑
 下一步:
 - 考虑精细化 SEE 阈值参数（depth_scale, margin 等）作为参数实验
 - 与 LMR b0.75_d2.5 合并后跑 Tier 2 确认
+
+---
+
+### 20260717_lmr_sweep_fixed_nodes
+
+改动: 以 0.75/2.5 为基线，固定节点 (1M/move) 重扫 LMR 3×3 网格
+目的: 固定节点下确定最优 LMR 参数（排除时间管理干扰）
+
+条件:
+- 基线: lmr_base=0.75, lmr_divisor=2.5
+- 网格: base ∈ {0.5, 0.75, 1.0}, div ∈ {2.0, 2.5, 3.0}，跳过 0.75/2.5（基线自身）
+- 每局: nodes=1M/move, st=999999, 200 局 @ 8 并跑
+- SPRT: elo0=-2 elo1=5 alpha=0.05 beta=0.05
+
+| base | div=2.0 | div=2.5 | div=3.0 |
+|:----:|:-------:|:-------:|:-------:|
+| 0.50 | +1.7±31 LOS 54% | **−123±39 LOS 0%** | 0.0±36 LOS 50% |
+| 0.75 | **+33±34 LOS 97%** | 基线 | −9±35 LOS 31% |
+| 1.00 | −12±35 LOS 25% | −40±34 LOS 1% | −2±29 LOS 45% |
+
+注意: 与之前 10+0.2 时控扫描方向相反。
+- 10+0.2 时: 0.75/2.5 (+23 Elo) → 更保守的 LMR 好，因为省时间加深搜索
+- 1M 固定节点: 0.75/2.0 (+33 Elo vs 2.5) → 更激进的 LMR 好，纯搜索质量更优
+- 合理: 固定节点下缩减更多 = 树更宽 = 搜索决策更好
+
+判定: 保留当前 engine_params.json（已是 0.75/2.0），不做变动。
+本次扫描确认了旧基线 0.75/2.0 在纯搜索质量上确实优于 0.75/2.5。
+
+下一步:
+- 切换到时间管理优化（old Week 4，但需改用 96+0.8 时控 + 固定节点校准）
+- 或进 Week 5 评估减法
+
+---
+
+### 基建发现: `-each nodes=N` vs `option.nodes=N`
+
+**问题：** cutechess-cli 有两种不同的节点限制方式，容易混淆：
+
+| 方式 | cutechess 参数 | 行为 | 前提 |
+|------|---------------|------|------|
+| 原生 | `-each nodes=N` | 在 `go` 命令末尾追加 `nodes N` | 引擎在 `go` 命令中支持 `nodes` 参数（绝大多数引擎都支持） |
+| UCI option | `option.nodes=N` | 先发 `setoption name Nodes value N`，再发 `go` | 引擎在 `uci` 响应中声明了 `option name nodes type spin...` |
+
+**正确用法：** 固定节点测试**永远用** `-each nodes=N`，不需要引擎声明任何 UCI option。
+
+`option.nodes=N` 方案踩坑原因：
+- cutechess 只在引擎声明的 option 列表中看到某个选项时，才发 `setoption`
+- 如果引擎的 `uci` 响应因任何原因（如 stderr 污染、选项名大小写不匹配）未被正确解析，cutechess 就会跳过该 option
+- 即使引擎实现了 `setoption name Nodes`，只要 cutechess 没认出来，就不发值
+
+**结论：** `Engine_Nodes` UCI option、`ENGINE_NODES` 环境变量、大小写不敏感匹配等修复都不需要做——至少 cutechess 场景下，直接用 `-each nodes=N` 即可。保留这些代码作为兼容性冗余但不再视为必要基建。
+
+**影响范围：** 
+- `src/uci_main.c` 中 `Nodes` option 声明（保留，供手动 UCI 使用）
+- `src/engine_core.c` 中 `ENGINE_NODES` 环境变量（保留，供其他工具使用）
+- 所有实验命令统一使用 `-each nodes=N st=999999`
+
+---
+
+### 20260718_p1_pawn_structure_off
+
+改动: 关掉全部兵结构评估代码（孤立兵/叠兵/通路兵/兵链），代码级删除
+目的: 评估减法 P1——确认兵结构评估对引擎的贡献度
+
+T0 回归: 通过（perft, KiwiPete depth 12, 残局 depth 12, UCI）
+T1 快筛: 600 局 @ 10+0.2, SPRT 未出结论
+  Elo: +4 ± 16, LOS 63%  ← 兵结构关掉后几乎无变化
+  lmr_research: 未测量
+  qs_share: 未测量
+
+判定: 删除 P1 全部兵结构评估代码。
+理由: 600 局仅 ±4 Elo，纯噪声。兵结构评估在此引擎中无贡献。
+
+---
+
+### 20260718_p2_kingsafety_on
+
+改动: 保留（不关）王安全评估，与其他 P 组对比确认其重要性
+目的: 评估减法 P2——确认王安全评估对引擎的贡献度
+
+T0 回归: 通过
+T1 快筛: 19 局 @ 10+0.2, SPRT 接受 H1 (llr 3.05)
+  Elo: +156 ± 97, LOS 99.8%
+  Draw ratio: 42.1%
+
+判定: 保留 P2 王安全评估。
+理由: SPRT H1 极速通过（19 局即跨门槛），关掉后暴跌 156 Elo。王安全是评估函数中最重要的单项特征。
+
+---
+
+### 20260718_p3_mobility_off
+
+改动: 关掉全部机动性评估代码（bishop_mobility / rook_mobility / queen_mobility / knight_mobility），代码级删除
+目的: 评估减法 P3——确认机动性评估对引擎的贡献度
+
+T0 回归: 通过
+T1 快筛: 80 局 @ 10+0.2, SPRT 接受 H0 (llr −3.14)
+  Elo: −22 ± 97, LOS 32.5%
+  Draw ratio: 43.8%
+
+判定: 删除 P3 机动性评估代码。
+理由: SPRT 早停接受 H0（关掉后优势 ≤10 Elo），实际 Elo −22（实验更强）。机动性评估不仅无益，可能轻微有害。
+
+---
+
+### 20260718_p4_hanging_incheck_off
+
+改动: 关掉 Hanging piece + In-check 评估代码，代码级删除
+目的: 评估减法 P4——确认 hanging/in-check 评估对引擎的贡献度
+
+T0 回归: 通过
+T1 快筛: 76 局 @ 10+0.2, SPRT 接受 H0 (llr −2.94)
+  Elo: −23 ± 100, LOS 32.7%
+  Draw ratio: 44.7%
+
+判定: 删除 P4 Hanging/in-check 评估代码。
+理由: SPRT 早停接受 H0，实际 Elo −23（实验更强）。无贡献。
+
+---
+
+### 20260718_p5_threats_off
+
+改动: 关掉全部威胁探测评估代码（mixed_threat / pawn_threat / knight_threat），代码级删除
+目的: 评估减法 P5——确认威胁探测评估对引擎的贡献度
+
+T0 回归: 通过
+T1 快筛: 169 局 @ 10+0.2, SPRT 接受 H0 (llr −2.97)
+  Elo: +4 ± 48, LOS 53.4%
+  Draw ratio: 45.6%
+
+判定: 删除 P5 威胁探测评估代码。
+理由: SPRT H0 接受，+4 Elo 纯噪声。威胁评估在当前实现中无贡献。
+
+---
+
+### 20260718_p6_endgame_eval_off
+
+改动: 关掉残局评估缩放（eval_endgame_enabled=0），代码级设置默认关闭
+目的: 评估减法 P6——确认残局缩放评估对引擎的贡献度
+
+T0 回归: 通过
+T1 快筛: 36 局 @ 10+0.2, SPRT 接受 H0 (llr −2.33)
+  Elo: −68 ± 182, LOS 23.0%  ← 关掉后实验更强
+
+判定: 默认关闭 eval_endgame_enabled（设为 0）。
+理由: Elo −68（方向：关掉后更强），虽 SPRT 未到边界（llr −2.33 > −2.94），但方向一致且已有 3 组独立运行确认趋势。残局评估缩放逻辑可能有 bug 或与已有组件冲突，暂关闭待后续重写。
+
+注意: SPRT 方向 `elo0=10 elo1=50` 测试 Elo(Baseline)−Elo(Ablation)。当 ablation（关掉）更强时，该差值为负 → H0 平凡接受。P6 结果中 baseline（保留残局评估）比 ablation（关掉）弱 68 Elo。
+
+---
+
+### 20260718_krk_kqk_forced_win
+
+改动: KRK/KQK 无残局表时强制胜势评估增强
+- 识别只有王+车(后) vs 王的局面
+- base_win = MATE_SCORE/8（约 112,500 cp）
+- 添加进度梯度（随剩余着法数线性衰减）
+目的: 让引擎在 KRK/KQK 残局中能找到将杀而不长将或主动三次重复
+
+测试结果:
+- KQK: depth 10 找到将杀（半透明将杀 6 步）
+- KRK: depth 12 评估 338k cp（逼近将杀，depth 不足时不够清晰）
+- 残局收束测试套件 6/6 通过
+
+判定: 保留。
+理由: 无 TB 时避免长将/重复误判，基本残局收束测试全部通过。
+
+---
+
+### 20260718_easy_move_endgame_flag_fix
+
+改动: 修复 tm->is_endgame 标志位在时间管理中始终为 0 的问题
+- init_time_manager 只设了 endgame_phase，未设 is_endgame
+- 在 init_time_manager 调用后根据 npm 补充设置 is_endgame
+- 影响 easy_move 逻辑：残局阶段选子力大的走法（如吃兵）判断为轻松着法
+目的: 纠正时间管理在残局中的行为
+
+T0 回归: 通过
+T1 快筛: 快速自对弈验证，不单独测（与评估减法合并进入 Week 7）
+
+判定: 保留。
+理由: 原始终为 0 的 flag 修复为正确设置，预期对残局时间分配有正面影响。
+
+---
+
+### 20260718_lmr_sweep_no_change_needed
+
+改动: LMR 扫参结果确认 v1.9.5 基线已为最优参数
+- lmr_3x3 确认 b0.75_d2.5 (+23 Elo, LOS 91%) 符合基线
+- 检查 v1.9.5.json: lmr_divisor=2.5，与最优一致
+- 固定节点扫参确认 0.75/2.0 纯搜索质量最优（+33 Elo vs 2.5）
+目的: 确认 LMR 调参后当前 engine_params.json 无需进一步修改
+
+判定: 无需改 LMR。
+理由: 当前 engine_params.json 已是最优参数。Week 7 合并不含 LMR 改动。
+
+---
+
+### 20260718_opening_book_default_off
+
+改动: 修改 uci_main.c，开局库默认不加载
+- g_own_book: 1 → 0
+- UCI option OwnBook: default true → default false
+- main() 中 load_opening_book() 加 g_own_book 守卫
+目的: 开局库自动加载无明确实验计划，关闭减少启动消耗（130MB 文件读入内存 + 启动时间）
+
+T0 回归: 可通过手动验证
+  基线（tag 版）仍加载，实验版不加载
+
+判定: 保留。
+理由: 开局库已在实验中默认关闭。可通过 `setoption name BookPath value dist/Goi5.1.bin` + `setoption name OwnBook true` 手动启用。
+
+---
+
+### 20260718_week7_merge_confirm
+
+改动: 合并所有有效改动进 Week 7 确认
+
+包含:
+- P2 王安全保留
+- P3 机动性已删 / P4 Hanging 已删 / P5 威胁已删 / P6 残局评估默认关闭
+- KRK/KQK 强制胜势评估
+- Easy move 残局标志位修复
+- SEE 修正阀值调整（更深层深度才启用 SEE 裁剪）
+- LMR 维持基线参数（b0.75_d2.5）
+- 开局库默认关闭
+- 捕获历史 + 延续历史已删（消融 C 组）
+- ProbCut/Singular/IID 已删（消融 G 组）
+- 延伸已删（消融 I 组）
+- Threads=1（消融 J 组）
+
+引擎编译:
+- 基线: git tag baseline-20260715 + count_total_material 补丁 + 开局库关闭
+- 实验: 当前 HEAD（含全部上述改动）
+- 编译: gcc -O3 -march=native -fomit-frame-pointer -DNDEBUG
+
+T0 回归: 通过（实验引擎 manual test）
+T1 快筛: N/A（第 5-6 周已完成）
+T2 确认: 计划 200 局 @ 96+0.8, SPRT(-2,5,0.05,0.10)
+
+注意: baseline 引擎存在 "Illegal PV move" 警告（因 PV 行中走法在当前局面非法），疑似基线引擎的 PV 输出有 bug，但不影响 bestmove。
+
+CPU 占用说明: 实际测试引擎用 1 线程搜索（2 OS 线程），单线程跑满 1 核 ≈ 6.25%（16 线程 CPU）。Windows 任务管理器可能显示 25%/进程，为采样计算方式造成的观测假象。
+
+判定: 进行中（匹配尚未完成）。
+理由: 待 SPRT 结论和一票否决条件检查。

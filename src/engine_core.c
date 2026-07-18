@@ -366,7 +366,6 @@ void set_num_threads(int n)
     if (n > 64)
         n = 64;
     g_runtime_params.num_threads = n;
-    g_runtime_params.threading_enabled = (n > 1) ? 1 : 0;
 }
 
 int get_threading_enabled(void)

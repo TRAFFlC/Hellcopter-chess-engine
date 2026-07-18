@@ -29,6 +29,7 @@ class UCIEngine:
             'exit_bonus_time': 0.1,
             'tournament_mode': False
         }
+        self._node_limit = 0
         self._load_opening_book()
         self._init_syzygy()
 
@@ -112,6 +113,7 @@ class UCIEngine:
             "option name BookExitBonusTime type spin default 10 min 0 max 100")
         self.send("option name TournamentMode type check default false")
         self.send("option name Ponder type check default false")
+        self.send("option name nodes type spin default 0 min 0 max 999999999")
 
         self.send("uciok")
 
@@ -204,6 +206,9 @@ class UCIEngine:
             if t in ("wtime", "btime", "winc", "binc", "depth",
                      "movetime", "movestime", "movestogo") and i + 1 < len(tokens):
                 params[t] = int(tokens[i + 1])
+                i += 2
+            elif t == "nodes" and i + 1 < len(tokens):
+                self._node_limit = int(tokens[i + 1])
                 i += 2
             else:
                 i += 1
@@ -319,11 +324,13 @@ class UCIEngine:
 
         search_start = time.perf_counter()
         fen = board.fen()
+        self.send(f"info string [NODES] node_limit={self._node_limit} time_limit={search_time} max_depth={max_depth}")
         try:
             uci_move, score, nodes = engine_wrapper.search_with_score(
                 fen, search_time, max_depth, position_history=pos_hist,
                 time_left=time_left, increment=increment,
-                moves_to_go=moves_to_go, move_number=move_number
+                moves_to_go=moves_to_go, move_number=move_number,
+                node_limit=self._node_limit
             )
         except Exception:
             uci_move, score, nodes = None, 0, 0
@@ -433,6 +440,8 @@ class UCIEngine:
             self._book_config['max_ply'] = int(value)
         elif name == "BookRandomness":
             self._book_config['randomness'] = int(value)
+        elif name == "Nodes" or name == "nodes":
+            self._node_limit = int(value) if value else 0
         elif name == "BookMinScore":
             self._book_config['min_score'] = int(value)
         elif name == "BookExitBonusTime":
