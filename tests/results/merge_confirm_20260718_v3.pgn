@@ -1,0 +1,98 @@
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "1"]
+[White "Baseline_v195"]
+[Black "Experiment"]
+[Result "1-0"]
+[ECO "A40"]
+[GameDuration "00:01:42"]
+[GameEndTime "2026-07-18T15:41:23.009 中国标准时间"]
+[GameStartTime "2026-07-18T15:39:40.729 中国标准时间"]
+[Opening "Queen's pawn"]
+[PlyCount "28"]
+[Termination "abandoned"]
+[TimeControl "96+0.8"]
+
+1. d4 {+0.68/16 3.4s} e6 {+0.08/20 4.9s} 2. Nf3 {+0.64/15 3.0s} Nf6 {5.0s}
+3. Nc3 {+0.65/15 3.2s} Nc6 {4.8s} 4. Bf4 {+0.54/15 3.2s} Bd6 {4.6s}
+5. Bg5 {+0.61/14 3.0s} O-O {4.4s} 6. e4 {+1.05/13 3.2s} e5 {4.3s}
+7. d5 {+0.99/15 3.3s} Nb4 {4.1s} 8. Qd2 {+1.08/13 2.9s} Na6 {3.9s}
+9. Bh4 {+1.00/13 3.3s} Nc5 {3.3s} 10. Qg5 {+0.74/12 3.3s} Be7 {3.6s}
+11. Qxe5 {+0.75/13 3.3s} Re8 {3.5s} 12. O-O-O {-0.22/14 2.8s} Nfxe4 {3.4s}
+13. Bxe7 {-0.01/17 2.9s} Rxe7 {3.2s} 14. Qd4 {-0.01/14 3.1s}
+d6 {4.9s, Black disconnects} 1-0
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "2"]
+[White "Experiment"]
+[Black "Baseline_v195"]
+[Result "*"]
+[ECO "A06"]
+[GameDuration "00:01:42"]
+[GameEndTime "2026-07-18T15:41:23.015 中国标准时间"]
+[GameStartTime "2026-07-18T15:39:40.734 中国标准时间"]
+[Opening "Reti Opening"]
+[PlyCount "28"]
+[Termination "unterminated"]
+[TimeControl "96+0.8"]
+
+1. Nf3 {0.00/21 5.0s} d5 {-0.48/14 3.5s} 2. Nc3 {5.0s} Nc6 {-0.26/14 3.2s}
+3. d4 {4.8s} Bf5 {-0.15/14 3.2s} 4. Bf4 {4.6s} e6 {-0.08/16 3.2s} 5. e3 {4.4s}
+Bd6 {-0.31/14 3.2s} 6. Bxd6 {4.3s} cxd6 {-0.15/14 2.8s} 7. Bd3 {4.1s}
+Bg6 {0.00/16 2.9s} 8. O-O {3.9s} Nf6 {0.00/14 3.2s} 9. Re1 {3.8s}
+Qb6 {+0.04/13 3.1s} 10. Qd2 {3.6s} Ne4 {+0.39/14 3.3s} 11. Qc1 {3.0s}
+O-O {+0.76/14 3.3s} 12. Nh4 {2.6s} Nxc3 {+0.27/14 2.5s} 13. bxc3 {3.3s}
+Be4 {+0.06/16 2.2s} 14. Rb1 {4.7s} Qd8 {+0.06/15 3.1s, No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "3"]
+[White "Baseline_v195"]
+[Black "Experiment"]
+[Result "*"]
+[ECO "A40"]
+[GameDuration "00:01:42"]
+[GameEndTime "2026-07-18T15:41:23.015 中国标准时间"]
+[GameStartTime "2026-07-18T15:39:40.734 中国标准时间"]
+[Opening "Queen's pawn"]
+[PlyCount "28"]
+[Termination "unterminated"]
+[TimeControl "96+0.8"]
+
+1. d4 {+0.68/16 3.4s} e6 {+0.08/20 4.9s} 2. Nf3 {+0.74/15 3.0s} Nf6 {5.0s}
+3. Nc3 {+0.69/15 3.2s} Bb4 {4.8s} 4. Bg5 {+0.79/16 3.2s} Nc6 {4.6s}
+5. Qd3 {+1.08/11 3.2s} Be7 {4.4s} 6. e4 {+0.87/13 2.4s} O-O {4.0s}
+7. O-O-O {+0.72/14 2.7s} Nb4 {2.9s} 8. Qe2 {+0.72/15 3.3s} d5 {4.0s}
+9. e5 {+1.02/16 3.3s} Ne4 {3.8s} 10. Bxe7 {+0.47/17 3.4s} Qxe7 {2.6s}
+11. Nxe4 {+0.38/18 3.4s} Nxa2+ {3.6s} 12. Kb1 {+0.38/17 3.3s} dxe4 {3.4s}
+13. Qxe4 {+0.69/15 3.2s} Nb4 {3.3s} 14. Bd3 {+0.40/16 3.1s}
+Nxd3 {5.2s, No result} *
+
+[Event "?"]
+[Site "?"]
+[Date "2026.07.18"]
+[Round "4"]
+[White "Experiment"]
+[Black "Baseline_v195"]
+[Result "*"]
+[ECO "A06"]
+[GameDuration "00:01:42"]
+[GameEndTime "2026-07-18T15:41:23.015 中国标准时间"]
+[GameStartTime "2026-07-18T15:39:40.723 中国标准时间"]
+[Opening "Reti Opening"]
+[PlyCount "28"]
+[Termination "unterminated"]
+[TimeControl "96+0.8"]
+
+1. Nf3 {0.00/21 5.0s} d5 {-0.48/14 3.5s} 2. Nc3 {5.0s} Nc6 {-0.30/14 3.1s}
+3. Nb5 {4.8s} a6 {+0.08/14 3.2s} 4. Nbd4 {4.6s} Nxd4 {+0.08/16 3.2s}
+5. Nxd4 {4.4s} e5 {+0.74/15 3.2s} 6. Nb3 {4.0s} Bd6 {+0.45/15 3.2s} 7. c4 {4.1s}
+dxc4 {+1.51/13 3.2s} 8. Na5 {3.9s} b5 {+1.73/14 3.3s} 9. g3 {3.0s}
+Ne7 {+1.78/15 3.3s} 10. Bg2 {3.7s} Rb8 {+1.46/16 3.3s} 11. d3 {2.7s}
+cxd3 {+1.26/14 3.3s} 12. Qxd3 {3.4s} O-O {+1.42/15 3.2s} 13. O-O {3.2s}
+Bb4 {+0.99/16 3.1s} 14. Nb3 {5.0s} Qxd3 {+0.95/16 3.0s, No result} *
+

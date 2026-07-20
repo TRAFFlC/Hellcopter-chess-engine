@@ -33,6 +33,31 @@ class Pruning_Stats(ctypes.Structure):
     ]
 
 
+class SearchProfile(ctypes.Structure):
+    _fields_ = [
+        ("eval_calls", ctypes.c_longlong),
+        ("qs_calls", ctypes.c_longlong),
+        ("make_move_calls", ctypes.c_longlong),
+        ("unmake_move_calls", ctypes.c_longlong),
+        ("nmp_triggered", ctypes.c_longlong),
+        ("nmp_cutoffs", ctypes.c_longlong),
+        ("rfp_triggered", ctypes.c_longlong),
+        ("lmr_applied", ctypes.c_longlong),
+        ("lmr_full_research", ctypes.c_longlong),
+        ("futility_pruned", ctypes.c_longlong),
+        ("razoring_triggered", ctypes.c_longlong),
+        ("lmp_pruned", ctypes.c_longlong),
+        ("see_pruned", ctypes.c_longlong),
+        ("history_pruned", ctypes.c_longlong),
+        ("probcut_triggered", ctypes.c_longlong),
+        ("probcut_cutoffs", ctypes.c_longlong),
+        ("tt_hits", ctypes.c_longlong),
+        ("tt_stores", ctypes.c_longlong),
+        ("total_nodes", ctypes.c_longlong),
+        ("qs_nodes", ctypes.c_longlong),
+    ]
+
+
 def _sq_to_algebraic(sq: int) -> str:
     file = sq & 7
     rank = sq >> 3
@@ -54,6 +79,9 @@ def _get_base_path() -> str:
 
 
 def _get_dll_path() -> str:
+    env_path = os.environ.get("HELLCOPTER_DLL_PATH")
+    if env_path:
+        return env_path
     base = _get_base_path()
     system = platform.system()
     if system == "Windows":
@@ -89,6 +117,7 @@ def _load_library():
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.c_int,
@@ -103,6 +132,7 @@ def _load_library():
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.c_int,
@@ -165,6 +195,44 @@ def _load_library():
     lib.get_last_search_info.argtypes = [ctypes.c_int]
     lib.get_last_search_info.restype = ctypes.c_int
 
+    lib.board_consistency_check.argtypes = [ctypes.c_char_p]
+    lib.board_consistency_check.restype = ctypes.c_int
+
+    lib.perft_divide.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_uint64),
+        ctypes.POINTER(ctypes.c_uint64),
+    ]
+    lib.perft_divide.restype = ctypes.c_int
+
+    lib.see_test.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+    lib.see_test.restype = ctypes.c_int
+
+    lib.eval_consistency_stress.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.eval_consistency_stress.restype = ctypes.c_int
+
+    lib.set_search_param.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    lib.set_search_param.restype = ctypes.c_int
+
+    lib.get_search_param.argtypes = [ctypes.c_char_p]
+    lib.get_search_param.restype = ctypes.c_int
+
+    lib.reload_params.argtypes = [ctypes.c_char_p]
+    lib.reload_params.restype = ctypes.c_int
+
+    lib.clear_global_tt.argtypes = []
+    lib.clear_global_tt.restype = None
+
+    lib.get_search_profile.argtypes = []
+    lib.get_search_profile.restype = SearchProfile
+
+    lib.reset_search_profile.argtypes = []
+    lib.reset_search_profile.restype = None
+
     try:
         lib.init_syzygy_c.argtypes = [ctypes.c_char_p]
         lib.init_syzygy_c.restype = ctypes.c_int
@@ -214,7 +282,8 @@ def compute_hash(fen: str) -> int:
 def search(fen: str, time_limit: float, max_depth: int,
            position_history: list | None = None, use_smp: bool = False,
            time_left: float = 0.0, increment: float = 0.0,
-           moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int]:
+           moves_to_go: int = 0, move_number: int = 0,
+           node_limit: int = 0) -> tuple[str, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -233,6 +302,7 @@ def search(fen: str, time_limit: float, max_depth: int,
         ctypes.c_int(moves_to_go),
         ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
+        ctypes.c_longlong(node_limit),
         ctypes.byref(nodes),
         hist_array,
         ctypes.c_int(hist_count),
@@ -250,7 +320,8 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
                       position_history: list | None = None,
                       use_smp: bool = False,
                       time_left: float = 0.0, increment: float = 0.0,
-                      moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int, int]:
+                      moves_to_go: int = 0, move_number: int = 0,
+                      node_limit: int = 0) -> tuple[str, int, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -269,6 +340,7 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
         ctypes.c_int(moves_to_go),
         ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
+        ctypes.c_longlong(node_limit),
         ctypes.byref(nodes),
         hist_array,
         ctypes.c_int(hist_count),
@@ -372,6 +444,12 @@ def get_pruning_stats() -> dict:
     }
 
 
+def get_engine_version() -> int:
+    """Get the engine version number."""
+    _ensure_loaded()
+    return _lib.get_engine_version()
+
+
 def perft(fen: str, depth: int) -> int:
     """Calculate perft value for a position at given depth.
     
@@ -387,6 +465,187 @@ def perft(fen: str, depth: int) -> int:
     """
     _ensure_loaded()
     return _lib.perft(fen.encode("utf-8"), ctypes.c_int(depth))
+
+
+def board_consistency_check(fen: str) -> int:
+    """Run make/unmake consistency check on all legal moves of a position.
+
+    Checks hash, pawn_hash, phase, npm, king_sq, mailbox, PST+material
+    after each make_move, and verifies full restoration after unmake_move.
+
+    Args:
+        fen: FEN string of the position to test
+
+    Returns:
+        Number of errors found (0 = all clean)
+    """
+    _ensure_loaded()
+    return _lib.board_consistency_check(fen.encode("utf-8"))
+
+
+def perft_divide(fen: str, depth: int) -> list:
+    """Get per-move perft counts for isolating move generation bugs.
+
+    Args:
+        fen: FEN string of the position
+        depth: Search depth
+
+    Returns:
+        List of dicts: [{'from': int, 'to': int, 'promo': int, 'count': int}, ...]
+        Plus 'total' key in the last element or returned separately.
+    """
+    _ensure_loaded()
+    FROM = (ctypes.c_int * 256)()
+    TO = (ctypes.c_int * 256)()
+    PROMO = (ctypes.c_int * 256)()
+    COUNT = (ctypes.c_uint64 * 256)()
+    TOTAL = ctypes.c_uint64(0)
+
+    n = _lib.perft_divide(
+        fen.encode("utf-8"),
+        ctypes.c_int(depth),
+        FROM, TO, PROMO, COUNT,
+        ctypes.byref(TOTAL),
+    )
+
+    result = []
+    for i in range(n):
+        result.append({
+            'from': FROM[i],
+            'to': TO[i],
+            'promo': PROMO[i],
+            'count': COUNT[i],
+        })
+    return result, TOTAL.value
+
+
+def see_test(fen: str, from_sq: int, to_sq: int) -> int:
+    """Compute SEE (Static Exchange Evaluation) for a move.
+
+    Args:
+        fen: FEN string
+        from_sq: source square (0-63)
+        to_sq: destination square (0-63)
+
+    Returns:
+        SEE score in centipawns
+    """
+    _ensure_loaded()
+    return _lib.see_test(fen.encode("utf-8"), from_sq, to_sq)
+
+
+def eval_consistency_stress(fen: str, cycles: int = 100) -> int:
+    """Stress test: repeated make/unmake on all legal moves.
+
+    Runs `cycles` iterations of make+unmake on every legal move,
+    checking that mg_score, eg_score, hash, pawn_hash, phase, and npm
+    are perfectly restored each time.
+
+    Args:
+        fen: FEN string
+        cycles: number of make/unmake cycles
+
+    Returns:
+        Number of errors found (0 = all clean)
+    """
+    _ensure_loaded()
+    return _lib.eval_consistency_stress(fen.encode("utf-8"), cycles)
+
+
+def set_search_param(name: str, value: int) -> bool:
+    """Set a search parameter toggle (for ablation testing).
+
+    Args:
+        name: parameter name (e.g. 'rfp_enabled', 'nmp_enabled', etc.)
+        value: 0 to disable, 1 to enable
+
+    Returns:
+        True if the parameter was found and set
+    """
+    _ensure_loaded()
+    return bool(_lib.set_search_param(name.encode("utf-8"), value))
+
+
+def get_search_param(name: str) -> int:
+    """Get current value of a search parameter toggle.
+
+    Args:
+        name: parameter name
+
+    Returns:
+        Parameter value, or -1 if unknown
+    """
+    _ensure_loaded()
+    return _lib.get_search_param(name.encode("utf-8"))
+
+
+def reload_params(path: str) -> bool:
+    """Reload engine parameters from a JSON file.
+
+    Args:
+        path: path to the JSON config file
+
+    Returns:
+        True if successful
+    """
+    _ensure_loaded()
+    return bool(_lib.reload_params(path.encode("utf-8")))
+
+
+def get_search_profile(total_nodes: int | None = None) -> dict:
+    """Get search profile counters from the last search.
+    
+    Args:
+        total_nodes: total nodes searched (from search() return). If None,
+                     uses the struct's total_nodes field (may be 0).
+    
+    Returns dict with raw counters and derived metrics:
+    - lmr_research_rate: lmr_full_research / lmr_applied (lower = better)
+    - nmp_efficiency: nmp_cutoffs / nmp_triggered (higher = better)
+    - qs_share: qs_nodes / total_nodes (high = weak in tactics)
+    - tt_activity: tt_hits / (tt_hits + tt_stores) (higher = better)
+    """
+    _ensure_loaded()
+    p = _lib.get_search_profile()
+    total = total_nodes if total_nodes is not None else (p.total_nodes if p.total_nodes > 0 else 1)
+    return {
+        "eval_calls": p.eval_calls,
+        "qs_calls": p.qs_calls,
+        "make_move_calls": p.make_move_calls,
+        "unmake_move_calls": p.unmake_move_calls,
+        "nmp_triggered": p.nmp_triggered,
+        "nmp_cutoffs": p.nmp_cutoffs,
+        "rfp_triggered": p.rfp_triggered,
+        "lmr_applied": p.lmr_applied,
+        "lmr_full_research": p.lmr_full_research,
+        "futility_pruned": p.futility_pruned,
+        "razoring_triggered": p.razoring_triggered,
+        "lmp_pruned": p.lmp_pruned,
+        "see_pruned": p.see_pruned,
+        "history_pruned": p.history_pruned,
+        "probcut_triggered": p.probcut_triggered,
+        "probcut_cutoffs": p.probcut_cutoffs,
+        "tt_hits": p.tt_hits,
+        "tt_stores": p.tt_stores,
+        "total_nodes": total,
+        "qs_nodes": p.qs_nodes,
+        "lmr_research_rate": p.lmr_full_research / max(p.lmr_applied, 1),
+        "nmp_efficiency": p.nmp_cutoffs / max(p.nmp_triggered, 1),
+        "qs_share": p.qs_nodes / total,
+        "tt_activity": p.tt_hits / max(p.tt_hits + p.tt_stores, 1),
+    }
+
+
+def reset_search_profile():
+    """Reset all search profile counters to zero."""
+    _ensure_loaded()
+    _lib.reset_search_profile()
+
+
+def tt_clear_global():
+    """Clear the global transposition table."""
+    _ensure_loaded()
+    _lib.clear_global_tt()
 
 
 def _algebraic_to_sq(sq_str: str) -> int:

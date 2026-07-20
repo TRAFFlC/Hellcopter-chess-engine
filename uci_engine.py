@@ -29,12 +29,13 @@ class UCIEngine:
             'exit_bonus_time': 0.1,
             'tournament_mode': False
         }
+        self._node_limit = 0
         self._load_opening_book()
         self._init_syzygy()
 
     def send(self, msg):
         print(msg, flush=True)
-    
+
     def _load_opening_book(self):
         if self._book_config['path']:
             book_path = self._book_config['path']
@@ -55,7 +56,7 @@ class UCIEngine:
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
             book_path = os.path.join(base_path, "dist", "Goi5.1.bin")
-        
+
         self.book_manager.configure(
             mode=self._book_config['mode'],
             own_book=self._book_config['own_book'],
@@ -70,7 +71,7 @@ class UCIEngine:
     def _init_syzygy(self):
         # 候选路径列表
         candidates = []
-        
+
         if getattr(sys, 'frozen', False):
             # exe 模式：优先检查 exe 所在目录，再检查临时解压目录
             exe_dir = os.path.dirname(sys.executable)
@@ -80,34 +81,40 @@ class UCIEngine:
         else:
             base_path = os.path.dirname(os.path.abspath(__file__))
             candidates.append(os.path.join(base_path, "dist", "syzygy"))
-        
+
         for syzygy_path in candidates:
             if os.path.isdir(syzygy_path) and any(
                 f.endswith(".rtbw") for f in os.listdir(syzygy_path)
             ):
                 result = engine_wrapper.init_syzygy(syzygy_path)
                 if result > 0:
-                    self.send(f"info string Syzygy loaded: {syzygy_path} (TB_LARGEST={result})")
+                    self.send(
+                        f"info string Syzygy loaded: {syzygy_path} (TB_LARGEST={result})")
                     return
                 else:
-                    self.send(f"info string Syzygy path found but failed to load: {syzygy_path}")
-        
+                    self.send(
+                        f"info string Syzygy path found but failed to load: {syzygy_path}")
+
         self.send("info string Syzygy not found")
 
     def cmd_uci(self):
         self.send("id name Hellcopter")
         self.send("id author Trafflc")
-        
+
         self.send("option name OwnBook type check default true")
         self.send("option name BookPath type string default")
-        self.send("option name BookMode type combo default internal var off var internal var generic var hybrid")
+        self.send(
+            "option name BookMode type combo default internal var off var internal var generic var hybrid")
         self.send("option name BookMaxPly type spin default 20 min 0 max 100")
         self.send("option name BookRandomness type spin default 0 min 0 max 100")
-        self.send("option name BookMinScore type spin default -9999 min -32767 max 32767")
-        self.send("option name BookExitBonusTime type spin default 10 min 0 max 100")
+        self.send(
+            "option name BookMinScore type spin default -9999 min -32767 max 32767")
+        self.send(
+            "option name BookExitBonusTime type spin default 10 min 0 max 100")
         self.send("option name TournamentMode type check default false")
         self.send("option name Ponder type check default false")
-        
+        self.send("option name nodes type spin default 0 min 0 max 999999999")
+
         self.send("uciok")
 
     def cmd_isready(self):
@@ -167,22 +174,25 @@ class UCIEngine:
         self._search_gen += 1
         gen = self._search_gen
 
-        current_ply = self.board.fullmove_number * 2 - (2 if self.board.turn == chess.WHITE else 1)
-        
+        current_ply = self.board.fullmove_number * 2 - \
+            (2 if self.board.turn == chess.WHITE else 1)
+
         # 诊断日志：记录开局库查找
-        self.send(f"info string [DIAG] cmd_go: book_loaded={self.book_manager.loaded}, mode={self.book_manager._mode}, ply={current_ply}")
-        
+        self.send(
+            f"info string [DIAG] cmd_go: book_loaded={self.book_manager.loaded}, mode={self.book_manager._mode}, ply={current_ply}")
+
         book_move = self.book_manager.get_book_move(self.board, current_ply)
-        
+
         # 诊断日志：记录开局库结果
         self.send(f"info string [DIAG] cmd_go: book_move={book_move}")
-        
+
         if book_move:
             try:
                 move = chess.Move.from_uci(book_move)
                 if move in self.board.legal_moves:
                     # Book hit: return immediately without searching
-                    self.send(f"info depth 0 score cp 0 nodes 0 time 0 pv {book_move}")
+                    self.send(
+                        f"info depth 0 score cp 0 nodes 0 time 0 pv {book_move}")
                     self.send(f"bestmove {book_move}")
                     return
             except ValueError:
@@ -197,23 +207,29 @@ class UCIEngine:
                      "movetime", "movestime", "movestogo") and i + 1 < len(tokens):
                 params[t] = int(tokens[i + 1])
                 i += 2
+            elif t == "nodes" and i + 1 < len(tokens):
+                self._node_limit = int(tokens[i + 1])
+                i += 2
             else:
                 i += 1
 
         infinite = "infinite" in tokens
+        pondering = "ponder" in tokens
+        if pondering:
+            infinite = True
         optimal_time, max_time, remaining, inc = self._compute_time(params)
-        
+
         # 出书后的时间调整：刚离开开局库时大幅减少思考时间
         # 开局库相当于标准答案，不需要过度思考
         book_exit_factor = self.book_manager.get_book_exit_time_factor()
         if book_exit_factor < 1.0:
             optimal_time *= book_exit_factor
             max_time *= book_exit_factor
-        
+
         exit_bonus = self.book_manager.get_exit_bonus_time(optimal_time)
         if exit_bonus > 0:
             optimal_time += exit_bonus
-        
+
         max_depth = params.get("depth", 100)
 
         time_left_for_engine = 0.0
@@ -261,7 +277,7 @@ class UCIEngine:
             return 2.0, 2.0, 0.0, 0.0
 
         move_num = self.board.fullmove_number
-        
+
         if move_num <= 10:
             estimated_moves_left = 40 - move_num
             time_fraction = 0.5
@@ -299,20 +315,22 @@ class UCIEngine:
         return optimal, max_time, remaining, inc
 
     def _search_worker(self, board, pos_hist, time_limit, max_depth, infinite,
-                        time_left=0.0, increment=0.0, moves_to_go=0, move_number=0,
-                        gen=0):
+                       time_left=0.0, increment=0.0, moves_to_go=0, move_number=0,
+                       gen=0):
         if infinite:
-            search_time = 2.0
+            search_time = 3600.0  # ponder/infinite: 搜索直到收到 stop
         else:
             search_time = time_limit
 
         search_start = time.perf_counter()
         fen = board.fen()
+        self.send(f"info string [NODES] node_limit={self._node_limit} time_limit={search_time} max_depth={max_depth}")
         try:
             uci_move, score, nodes = engine_wrapper.search_with_score(
                 fen, search_time, max_depth, position_history=pos_hist,
                 time_left=time_left, increment=increment,
-                moves_to_go=moves_to_go, move_number=move_number
+                moves_to_go=moves_to_go, move_number=move_number,
+                node_limit=self._node_limit
             )
         except Exception:
             uci_move, score, nodes = None, 0, 0
@@ -329,7 +347,8 @@ class UCIEngine:
                 if move in board.legal_moves:
                     # Get actual depth from engine
                     try:
-                        depth = engine_wrapper.get_last_search_info(0)  # 0 = depth
+                        depth = engine_wrapper.get_last_search_info(
+                            0)  # 0 = depth
                     except:
                         depth = 1
                     time_ms = int(elapsed * 1000)
@@ -337,13 +356,16 @@ class UCIEngine:
                     if score > MATE_SCORE - 100:
                         # Winning mate: convert ply distance to full moves
                         mate_in = (MATE_SCORE - score + 1) // 2
-                        self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
+                        self.send(
+                            f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
                     elif score < -(MATE_SCORE - 100):
                         # Losing mate: negative full moves
                         mate_in = -((MATE_SCORE + score + 1) // 2)
-                        self.send(f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
+                        self.send(
+                            f"info depth {depth} score mate {mate_in} nodes {nodes} time {time_ms}")
                     else:
-                        self.send(f"info depth {depth} score cp {score} nodes {nodes} time {time_ms}")
+                        self.send(
+                            f"info depth {depth} score cp {score} nodes {nodes} time {time_ms}")
                     self.send(f"bestmove {uci_move}")
                 else:
                     self.send("bestmove 0000")
@@ -352,42 +374,62 @@ class UCIEngine:
         else:
             self.send("bestmove 0000")
 
-    def _stop_search(self):
-        self._search_gen += 1
+    def _stop_search(self, discard=True):
+        if discard:
+            self._search_gen += 1
         self.stop_event.set()
         self.eng.search_aborted = True
         engine_wrapper.set_engine_abort(1)
         if self.search_thread is not None and self.search_thread.is_alive():
             self.search_thread.join(timeout=3.0)
             if self.search_thread.is_alive():
-                self.send("info string WARNING: search thread did not stop within 3s")
+                self.send(
+                    "info string WARNING: search thread did not stop within 3s")
         engine_wrapper.set_engine_abort(0)
         self.search_thread = None
 
     def cmd_stop(self):
-        self._stop_search()
-        self.send("bestmove 0000")
+        # UCI stop: 如果搜索线程正在运行，让它输出当前找到的最佳走法
+        # 关键：不递增 _search_gen，这样搜索线程的 gen 检查会通过
+        if self.search_thread is not None and self.search_thread.is_alive():
+            # 搜索仍在运行，设置 abort 并等待线程完成
+            self.stop_event.set()
+            self.eng.search_aborted = True
+            engine_wrapper.set_engine_abort(1)
+            self.search_thread.join(timeout=3.0)
+            engine_wrapper.set_engine_abort(0)
+            if self.search_thread.is_alive():
+                # 线程未在3秒内停止，递增 gen 丢弃其结果，输出兜底
+                self._search_gen += 1
+                self.search_thread = None
+                self.send("bestmove 0000")
+            else:
+                # 线程已停止，它应该已经输出了 bestmove（gen 匹配）
+                self.search_thread = None
+        else:
+            # 搜索已完成或未启动，bestmove 已由 _search_worker 输出
+            self.search_thread = None
 
     def cmd_setoption(self, args):
         tokens = args.split()
         name_idx = -1
         value_idx = -1
-        
+
         for i, t in enumerate(tokens):
             if t == "name" and i + 1 < len(tokens):
                 name_idx = i + 1
             elif t == "value" and i + 1 < len(tokens):
                 value_idx = i + 1
-        
+
         if name_idx < 0:
             return
-        
+
         name = tokens[name_idx]
         value = tokens[value_idx] if value_idx >= 0 else ""
-        
+
         # 诊断日志：记录所有选项变更
         self.send(f"info string [DIAG] setoption: name={name} value={value}")
-        
+
         if name == "OwnBook":
             self._book_config['own_book'] = value.lower() == 'true'
         elif name == "BookPath":
@@ -398,6 +440,8 @@ class UCIEngine:
             self._book_config['max_ply'] = int(value)
         elif name == "BookRandomness":
             self._book_config['randomness'] = int(value)
+        elif name == "Nodes" or name == "nodes":
+            self._node_limit = int(value) if value else 0
         elif name == "BookMinScore":
             self._book_config['min_score'] = int(value)
         elif name == "BookExitBonusTime":
@@ -408,11 +452,12 @@ class UCIEngine:
             if value:
                 result = engine_wrapper.init_syzygy(value)
                 if result > 0:
-                    self.send(f"info string Syzygy loaded: {value} (TB_LARGEST={result})")
+                    self.send(
+                        f"info string Syzygy loaded: {value} (TB_LARGEST={result})")
                 else:
                     self.send(f"info string Syzygy failed to load: {value}")
             return
-        
+
         self._load_opening_book()
 
     def run(self):

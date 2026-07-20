@@ -1,0 +1,8 @@
+Auto-loaded Syzygy EGTB from: ../EGTB (TB_LARGEST=5)
+
+=== PARAMETERS LOADED SUCCESSFULLY ===
+Configuration file: engine_params.json
+Piece values: P=100 N=320 B=340 R=500 Q=900 K=20000
+Search params: LMR=enabled Futility=enabled Razoring=enabled
+Threading: enabled (1 threads)
+Validation: 0 error(s), 0 warning(s)

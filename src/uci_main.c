@@ -1,0 +1,1172 @@
+#include "engine_core.h"
+#include "engine_params.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#include <io.h>
+#include <fcntl.h>
+#else
+#include <pthread.h>
+#include <unistd.h>
+#endif
+
+#define MAX_LINE 4096
+#define MAX_FEN 256
+#define MAX_MOVES 256
+#define MAX_MOVE_STR 8
+#define MAX_POS_HISTORY 512
+
+#ifndef ENGINE_VERSION
+#define ENGINE_VERSION 20260511
+#endif
+
+typedef unsigned short U16;
+typedef unsigned int U32;
+
+/* Polyglot random numbers - hardcoded from python-chess (standard MT19937-64 with seed 1070372) */
+#include "polyglot_randoms.h"
+
+static int g_polyglot_initialized = 0;
+
+static void init_polyglot_random(void)
+{
+    if (g_polyglot_initialized) return;
+    g_polyglot_initialized = 1;
+}
+
+static U64 polyglot_hash(const Board *b)
+{
+    init_polyglot_random();
+    U64 h = 0;
+
+    /* Polyglot piece index: interleaved order (WP=0,BP=1,WN=2,BN=3,...,WK=10,BK=11) */
+    static const int piece_map[2][7] = {
+        {-1, 0, 2, 4, 6, 8, 10},  /* WHITE: pawn=0, knight=2, bishop=4, rook=6, queen=8, king=10 */
+        {-1, 1, 3, 5, 7, 9, 11}   /* BLACK: pawn=1, knight=3, bishop=5, rook=7, queen=9, king=11 */
+    };
+
+    for (int side = 0; side < 2; side++) {
+        for (int ptype = PAWN; ptype <= KING; ptype++) {
+            U64 bb = b->pieces[side][ptype];
+            while (bb) {
+                int sq = __builtin_ctzll(bb);
+                bb &= bb - 1;
+                int idx = piece_map[side][ptype];
+                h ^= POLYGLOT_RANDOMS[64 * idx + sq];
+            }
+        }
+    }
+
+    int castling = 0;
+    if (b->castling_rights & 1) castling |= 1;
+    if (b->castling_rights & 2) castling |= 2;
+    if (b->castling_rights & 4) castling |= 4;
+    if (b->castling_rights & 8) castling |= 8;
+    /* Polyglot: each castling right uses its own random number, XORed independently */
+    if (castling & 1) h ^= POLYGLOT_RANDOMS[768];
+    if (castling & 2) h ^= POLYGLOT_RANDOMS[769];
+    if (castling & 4) h ^= POLYGLOT_RANDOMS[770];
+    if (castling & 8) h ^= POLYGLOT_RANDOMS[771];
+
+    if (b->en_passant >= 0 && b->en_passant < 64) {
+        int ep_file = b->en_passant & 7;
+        h ^= POLYGLOT_RANDOMS[772 + ep_file];
+    }
+
+    /* Polyglot: XOR turn random when WHITE to move (not BLACK) */
+    if (b->side_to_move == WHITE) {
+        h ^= POLYGLOT_RANDOMS[780];
+    }
+
+    return h;
+}
+
+typedef struct {
+    U64 key;
+    U16 move;
+    U16 weight;
+    U32 learn;
+} PolyglotEntry;
+
+static PolyglotEntry *g_book_entries = NULL;
+static int g_book_count = 0;
+static int g_book_capacity = 0;
+static int g_own_book = 0;
+static char g_book_path[MAX_LINE] = "";
+static int g_book_randomness = 20;
+
+static int load_polyglot_book(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size % 16 != 0) {
+        fclose(f);
+        return 0;
+    }
+
+    g_book_count = (int)(file_size / 16);
+    g_book_entries = (PolyglotEntry *)malloc(file_size);
+    if (!g_book_entries) {
+        fclose(f);
+        return 0;
+    }
+
+    for (int i = 0; i < g_book_count; i++) {
+        g_book_entries[i].key   = ((U64)fgetc(f) << 56) | ((U64)fgetc(f) << 48) |
+                                  ((U64)fgetc(f) << 40) | ((U64)fgetc(f) << 32) |
+                                  ((U64)fgetc(f) << 24) | ((U64)fgetc(f) << 16) |
+                                  ((U64)fgetc(f) << 8)  | (U64)fgetc(f);
+        g_book_entries[i].move  = ((U16)fgetc(f) << 8) | (U16)fgetc(f);
+        g_book_entries[i].weight= ((U16)fgetc(f) << 8) | (U16)fgetc(f);
+        g_book_entries[i].learn = ((U32)fgetc(f) << 24) | ((U32)fgetc(f) << 16) |
+                                  ((U32)fgetc(f) << 8) | (U32)fgetc(f);
+    }
+
+    fclose(f);
+    return g_book_count;
+}
+
+static void free_polyglot_book(void)
+{
+    if (g_book_entries) {
+        free(g_book_entries);
+        g_book_entries = NULL;
+    }
+    g_book_count = 0;
+}
+
+static int polyglot_decode_move(U16 encoded, int *from_out, int *to_out, int *promo_out)
+{
+    *from_out = encoded & 0x3F;
+    *to_out = (encoded >> 6) & 0x3F;
+    int promo_code = (encoded >> 12) & 0x7;
+    *promo_out = 0;
+    switch (promo_code) {
+        case 1: *promo_out = KNIGHT; break;
+        case 2: *promo_out = BISHOP; break;
+        case 3: *promo_out = ROOK; break;
+        case 4: *promo_out = QUEEN; break;
+    }
+    return 1;
+}
+
+static U64 xorshift64_state = 0;
+
+static U64 xorshift64(void)
+{
+    if (xorshift64_state == 0)
+        xorshift64_state = (U64)time(NULL) ^ ((U64)clock() << 16);
+    U64 x = xorshift64_state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    xorshift64_state = x;
+    return x;
+}
+
+static int find_book_move(const Board *b, char *out_move)
+{
+    if (!g_own_book) return 0;
+    if (!g_book_entries || g_book_count == 0) return 0;
+
+    U64 target = polyglot_hash(b);
+
+    int left = 0, right = g_book_count - 1;
+    int found_idx = -1;
+    while (left <= right) {
+        int mid = (left + right) / 2;
+        if (g_book_entries[mid].key < target) {
+            left = mid + 1;
+        } else if (g_book_entries[mid].key > target) {
+            right = mid - 1;
+        } else {
+            found_idx = mid;
+            break;
+        }
+    }
+
+    if (found_idx < 0) return 0;
+
+    while (found_idx > 0 && g_book_entries[found_idx - 1].key == target) {
+        found_idx--;
+    }
+
+    int start_idx = found_idx;
+    int match_count = 0;
+    int idx = found_idx;
+    while (idx < g_book_count && g_book_entries[idx].key == target) {
+        match_count++;
+        idx++;
+    }
+
+    int selected_move = -1;
+
+    if (g_book_randomness > 0 && match_count > 1) {
+        int total_weight = 0;
+        for (int i = 0; i < match_count; i++) {
+            int w = (int)g_book_entries[start_idx + i].weight;
+            if (w <= 0) w = 1;
+            total_weight += w;
+        }
+        if (total_weight > 0) {
+            int r = (int)(xorshift64() % (U64)total_weight);
+            int cumulative = 0;
+            for (int i = 0; i < match_count; i++) {
+                int w = (int)g_book_entries[start_idx + i].weight;
+                if (w <= 0) w = 1;
+                cumulative += w;
+                if (r < cumulative) {
+                    selected_move = g_book_entries[start_idx + i].move;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (selected_move < 0) {
+        int best_weight = 0;
+        for (int i = 0; i < match_count; i++) {
+            if (g_book_entries[start_idx + i].weight > best_weight) {
+                best_weight = g_book_entries[start_idx + i].weight;
+                selected_move = g_book_entries[start_idx + i].move;
+            }
+        }
+    }
+
+    if (selected_move < 0) return 0;
+
+    int from, to, promo;
+    polyglot_decode_move((U16)selected_move, &from, &to, &promo);
+
+    out_move[0] = 'a' + (from & 7);
+    out_move[1] = '1' + (from >> 3);
+    out_move[2] = 'a' + (to & 7);
+    out_move[3] = '1' + (to >> 3);
+    out_move[4] = '\0';
+
+    if (promo) {
+        switch (promo) {
+            case KNIGHT: out_move[4] = 'n'; break;
+            case BISHOP: out_move[4] = 'b'; break;
+            case ROOK:   out_move[4] = 'r'; break;
+            case QUEEN:  out_move[4] = 'q'; break;
+        }
+        out_move[5] = '\0';
+    }
+
+    return 1;
+}
+
+static Board g_board;
+static U64 g_position_history[MAX_POS_HISTORY];
+static int g_position_history_count = 0;
+
+static int g_go_params_wtime;
+static int g_go_params_btime;
+static int g_go_params_winc;
+static int g_go_params_binc;
+static int g_go_params_depth;
+static int g_go_params_movetime;
+static int g_go_params_movestogo;
+static long long g_go_params_nodes;
+static long long g_uci_nodes;
+static int g_go_infinite;
+
+static volatile int g_ponder_mode = 0;
+static volatile int g_ponderhit_received = 0;
+#ifdef _WIN32
+static HANDLE g_search_thread = NULL;
+#else
+static pthread_t g_search_thread_id;
+static int g_search_thread_active = 0;
+#endif
+static volatile int g_search_running = 0;
+static char g_last_best_move[MAX_MOVE_STR] = "";
+static char g_last_ponder_move[MAX_MOVE_STR] = "";
+
+static char g_exe_dir[MAX_LINE];
+
+static void get_exe_dir(void)
+{
+    g_exe_dir[0] = '\0';
+#ifdef _WIN32
+    GetModuleFileNameA(NULL, g_exe_dir, MAX_LINE);
+    char *last_sep = strrchr(g_exe_dir, '\\');
+    if (!last_sep) last_sep = strrchr(g_exe_dir, '/');
+    if (last_sep) *last_sep = '\0';
+#else
+    ssize_t len = readlink("/proc/self/exe", g_exe_dir, MAX_LINE - 1);
+    if (len > 0) {
+        g_exe_dir[len] = '\0';
+        char *last_sep = strrchr(g_exe_dir, '/');
+        if (last_sep) *last_sep = '\0';
+    }
+#endif
+}
+
+static char *strip(char *s)
+{
+    while (*s && isspace((unsigned char)*s)) s++;
+    char *end = s + strlen(s) - 1;
+    while (end > s && isspace((unsigned char)*end)) *end-- = '\0';
+    return s;
+}
+
+static int sq_to_str(int sq, char *out)
+{
+    out[0] = 'a' + (sq & 7);
+    out[1] = '1' + (sq >> 3);
+    out[2] = '\0';
+    return 2;
+}
+
+static void move_to_uci(const Move *m, char *out)
+{
+    char from[4], to[4];
+    sq_to_str(m->from, from);
+    sq_to_str(m->to, to);
+    sprintf(out, "%s%s", from, to);
+    if (m->promotion) {
+        char *p = out + 4;
+        switch (m->promotion) {
+            case KNIGHT: *p++ = 'n'; break;
+            case BISHOP: *p++ = 'b'; break;
+            case ROOK:   *p++ = 'r'; break;
+            case QUEEN:  *p++ = 'q'; break;
+        }
+        *p = '\0';
+    }
+}
+
+static int uci_to_sq(const char *s)
+{
+    if (strlen(s) < 2) return -1;
+    int f = s[0] - 'a';
+    int r = s[1] - '1';
+    if (f < 0 || f > 7 || r < 0 || r > 7) return -1;
+    return r * 8 + f;
+}
+
+static int str_to_promotion(char c)
+{
+    switch (c) {
+        case 'n': return KNIGHT;
+        case 'b': return BISHOP;
+        case 'r': return ROOK;
+        case 'q': return QUEEN;
+    }
+    return 0;
+}
+
+static void load_opening_book(void)
+{
+    free_polyglot_book();
+
+    if (g_book_path[0] != '\0') {
+        int count = load_polyglot_book(g_book_path);
+        if (count > 0) {
+            fprintf(stderr, "Loaded opening book from %s: %d positions\n", g_book_path, count);
+            return;
+        }
+        fprintf(stderr, "Failed to load book from BookPath: %s\n", g_book_path);
+    }
+
+    char path[MAX_LINE];
+    const char *book_names[] = {"Goi5.1.bin", "book.bin"};
+    int count = 0;
+    for (int i = 0; i < 2 && count <= 0; i++) {
+        sprintf(path, "%s\\%s", g_exe_dir, book_names[i]);
+        count = load_polyglot_book(path);
+        if (count <= 0) {
+            sprintf(path, "%s/%s", g_exe_dir, book_names[i]);
+            count = load_polyglot_book(path);
+        }
+        if (count > 0) {
+            fprintf(stderr, "Loaded opening book (%s): %d positions\n", book_names[i], count);
+        }
+    }
+}
+
+static double compute_time(int wtime, int btime, int winc, int binc, int movetime)
+{
+    if (movetime > 0) return movetime / 1000.0;
+
+    int remaining_ms, inc_ms;
+    if (g_board.side_to_move == WHITE) {
+        remaining_ms = wtime;
+        inc_ms = winc;
+    } else {
+        remaining_ms = btime;
+        inc_ms = binc;
+    }
+    if (remaining_ms <= 0) return 2.0;
+
+    double remaining = remaining_ms / 1000.0;
+    double inc = inc_ms / 1000.0;
+    int move_num = g_board.fullmove_number;
+
+    int estimated_moves_left;
+    double time_fraction;
+    if (move_num <= 10) {
+        estimated_moves_left = 40 - move_num;
+        time_fraction = 0.5;
+    } else if (move_num <= 20) {
+        estimated_moves_left = 30;
+        time_fraction = 0.8;
+    } else if (move_num <= 40) {
+        estimated_moves_left = 50 - move_num;
+        if (estimated_moves_left < 15) estimated_moves_left = 15;
+        time_fraction = 1.0;
+    } else {
+        estimated_moves_left = 60 - move_num;
+        if (estimated_moves_left < 10) estimated_moves_left = 10;
+        time_fraction = 1.2;
+    }
+
+    double time_limit = remaining / estimated_moves_left + inc * 0.6;
+    if (time_limit > remaining * 0.5 + inc * 0.5) time_limit = remaining * 0.5 + inc * 0.5;
+    time_limit *= time_fraction;
+
+    if (inc > 0 && time_limit < inc * 0.7) time_limit = inc * 0.7;
+    if (remaining < inc * 5 && inc > 0)
+    {
+        if (time_limit < inc * 0.7) time_limit = inc * 0.7;
+        if (time_limit > remaining + inc * 0.9 - 0.05)
+            time_limit = remaining + inc * 0.9 - 0.05;
+    }
+
+    if (time_limit < 0.05) time_limit = 0.05;
+    return time_limit;
+}
+
+static void uci_info_callback(int depth, int score, int nodes, int time_ms, const char *pv_str)
+{
+    if (depth < 0) {
+        printf("%s\n", pv_str);
+    } else if (abs(score) >= MATE_SCORE - 100) {
+        int mate_in = (MATE_SCORE - abs(score) + 1) / 2;
+        if (score < 0) mate_in = -mate_in;
+        printf("info depth %d score mate %d nodes %d time %d pv %s\n",
+               depth, mate_in, nodes, time_ms, pv_str);
+    } else {
+        printf("info depth %d score cp %d nodes %d time %d pv %s\n",
+               depth, score, nodes, time_ms, pv_str);
+    }
+    fflush(stdout);
+}
+
+static void run_search(double time_limit, int max_depth, long long node_limit)
+{
+    if (node_limit == 0)
+        node_limit = g_uci_nodes;
+    set_engine_abort(0);
+
+    char fen[MAX_FEN];
+    board_to_fen(&g_board, fen, MAX_FEN);
+
+    double time_left = 0.0;
+    double increment = 0.0;
+    int moves_to_go = g_go_params_movestogo;
+    int move_number = g_board.fullmove_number;
+
+    if (g_go_params_movetime <= 0) {
+        int remaining_ms, inc_ms;
+        if (g_board.side_to_move == WHITE) {
+            remaining_ms = g_go_params_wtime;
+            inc_ms = g_go_params_winc;
+        } else {
+            remaining_ms = g_go_params_btime;
+            inc_ms = g_go_params_binc;
+        }
+        if (remaining_ms > 0) {
+            time_left = remaining_ms / 1000.0;
+            increment = inc_ms / 1000.0;
+        }
+    }
+
+    clock_t start = clock();
+    int nodes = 0;
+    Move result;
+    extern int get_threading_enabled(void);
+    if (get_threading_enabled())
+    {
+        result = find_best_move_smp(
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, &nodes,
+            g_position_history_count > 0 ? g_position_history : NULL,
+            g_position_history_count
+        );
+    }
+    else
+    {
+        result = find_best_move_c(
+            fen, time_limit, time_left, increment, moves_to_go, move_number, max_depth, node_limit, &nodes,
+            g_position_history_count > 0 ? g_position_history : NULL,
+            g_position_history_count
+        );
+    }
+    clock_t end = clock();
+    int time_ms = (int)((double)(end - start) / CLOCKS_PER_SEC * 1000);
+
+    if (result.from == 0 && result.to == 0) {
+        if (g_ponder_mode && g_ponderhit_received) {
+            /* ponderhit received during search - skip output, cmd_ponderhit will start new search */
+            return;
+        }
+        strcpy(g_last_best_move, "0000");
+        g_last_ponder_move[0] = '\0';
+        printf("bestmove 0000\n");
+        fflush(stdout);
+        return;
+    }
+
+    int depth = get_last_search_info(0);
+    int score = result.score;
+
+    char uci_move[MAX_MOVE_STR];
+    move_to_uci(&result, uci_move);
+    strcpy(g_last_best_move, uci_move);
+
+    g_last_ponder_move[0] = '\0';
+    {
+        Move ponder_mv = {0};
+        if (extract_ponder_move(&g_board, result, &ponder_mv))
+        {
+            move_to_uci(&ponder_mv, g_last_ponder_move);
+        }
+    }
+
+    if (g_ponder_mode) {
+        while (!g_ponderhit_received && !get_engine_abort()) {
+#ifdef _WIN32
+            Sleep(10);
+#else
+            usleep(10000);
+#endif
+        }
+        if (g_ponderhit_received) {
+            /* Ponderhit: don't output old bestmove.
+               cmd_ponderhit() will start a new search on the updated position. */
+            set_engine_abort(0);
+            return;
+        }
+        /* Aborted by stop: DON'T output bestmove here.
+           cmd_stop() will output it after waiting for this thread to finish.
+           This avoids duplicate bestmove output. */
+        return;
+    }
+
+    if (g_last_ponder_move[0] != '\0')
+        printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
+    else
+        printf("bestmove %s\n", g_last_best_move);
+    fflush(stdout);
+}
+
+#ifdef _WIN32
+static unsigned __stdcall search_thread_func(void *arg)
+{
+    double *time_limit_ptr = (double *)arg;
+    double tl = *time_limit_ptr;
+    free(time_limit_ptr);
+    run_search(tl, g_go_params_depth, g_go_params_nodes);
+    g_search_running = 0;
+    return 0;
+}
+#else
+static void *search_thread_func(void *arg)
+{
+    double *time_limit_ptr = (double *)arg;
+    double tl = *time_limit_ptr;
+    free(time_limit_ptr);
+    run_search(tl, g_go_params_depth, g_go_params_nodes);
+    g_search_running = 0;
+    return NULL;
+}
+#endif
+
+static void wait_for_search_thread(void)
+{
+#ifdef _WIN32
+    if (g_search_thread != NULL) {
+        /* 最多等待3秒，避免C层搜索不响应abort时无限阻塞 */
+        DWORD result = WaitForSingleObject(g_search_thread, 3000);
+        if (result == WAIT_TIMEOUT) {
+            fprintf(stderr, "WARNING: search thread did not stop within 3s\n");
+        }
+        CloseHandle(g_search_thread);
+        g_search_thread = NULL;
+    }
+#else
+    if (g_search_thread_active) {
+        /* 最多等待3秒 */
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 3;
+        if (pthread_timedjoin_np(g_search_thread_id, NULL, &ts) != 0) {
+            fprintf(stderr, "WARNING: search thread did not stop within 3s\n");
+        }
+        g_search_thread_active = 0;
+    }
+#endif
+    g_search_running = 0;
+}
+
+static void cmd_uci(void)
+{
+    printf("id name Hellcopter\n");
+    printf("id author Trafflc\n");
+    printf("option name Ponder type check default true\n");
+    printf("option name OwnBook type check default false\n");
+    printf("option name BookPath type string default \n");
+    printf("option name BookRandomness type spin default 20 min 0 max 100\n");
+    printf("option name SyzygyPath type string default dist/syzygy\n");
+    printf("option name Threads type spin default 1 min 1 max 64\n");
+    printf("option name nodes type spin default 0 min 0 max 999999999\n");
+    printf("uciok\n");
+    fflush(stdout);
+}
+
+static void cmd_isready(void)
+{
+    printf("readyok\n");
+    fflush(stdout);
+}
+
+static int ci_eq(const char *s, const char *t, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        char a = s[i], b = t[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static void cmd_setoption(const char *args)
+{
+    const char *p = args;
+    while (*p == ' ') p++;
+    if (strncmp(p, "name", 4) != 0) return;
+    p += 4;
+    while (*p == ' ') p++;
+
+    if (ci_eq(p, "OwnBook", 7) && (p[7] == ' ' || p[7] == '\0')) {
+        p += 7;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        g_own_book = ci_eq(p, "true", 4) ? 1 : 0;
+    } else if (ci_eq(p, "BookPath", 8) && (p[8] == ' ' || p[8] == '\0')) {
+        p += 8;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        strncpy(g_book_path, p, MAX_LINE - 1);
+        g_book_path[MAX_LINE - 1] = '\0';
+        int len = (int)strlen(g_book_path);
+        while (len > 0 && (g_book_path[len - 1] == '\n' || g_book_path[len - 1] == '\r'))
+            g_book_path[--len] = '\0';
+    if (g_own_book) load_opening_book();
+    } else if (ci_eq(p, "BookRandomness", 14) && (p[14] == ' ' || p[14] == '\0')) {
+        p += 14;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        g_book_randomness = atoi(p);
+        if (g_book_randomness < 0) g_book_randomness = 0;
+        if (g_book_randomness > 100) g_book_randomness = 100;
+    } else if (ci_eq(p, "SyzygyPath", 10) && (p[10] == ' ' || p[10] == '\0')) {
+        p += 10;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        {
+            extern int init_syzygy_c(const char *);
+            int tb_largest = init_syzygy_c(p);
+            if (tb_largest > 0)
+            {
+                fprintf(stderr, "SyzygyPath set to: %s (TB_LARGEST=%d)\n", p, tb_largest);
+            }
+            else
+            {
+                fprintf(stderr, "SyzygyPath failed to load: %s\n", p);
+            }
+        }
+    } else if (ci_eq(p, "Threads", 7) && (p[7] == ' ' || p[7] == '\0')) {
+        p += 7;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        {
+            int val = atoi(p);
+            if (val < 1) val = 1;
+            if (val > 64) val = 64;
+            set_num_threads(val);
+            fprintf(stderr, "Threads set to %d\n", val);
+        }
+    } else if (ci_eq(p, "nodes", 5) && (p[5] == ' ' || p[5] == '\0')) {
+        p += 5;
+        while (*p == ' ') p++;
+        if (!ci_eq(p, "value", 5)) return;
+        p += 5;
+        while (*p == ' ') p++;
+        {
+            long long val = atoll(p);
+            if (val < 0) val = 0;
+            if (val > 999999999LL) val = 999999999LL;
+            g_uci_nodes = val;
+            fprintf(stderr, "Nodes set to %lld\n", val);
+        }
+    }
+}
+
+static void cmd_ucinewgame(void)
+{
+    set_engine_abort(1);
+    wait_for_search_thread();
+    g_position_history_count = 0;
+    board_from_fen(&g_board,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    tt_clear_global();
+    set_engine_abort(0);
+}
+
+static void cmd_position(const char *args)
+{
+    const char *p = args;
+
+    while (*p == ' ') p++;
+
+    if (strncmp(p, "startpos", 8) == 0) {
+        board_from_fen(&g_board,
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        p += 8;
+    } else if (strncmp(p, "fen", 3) == 0) {
+        p += 3;
+        while (*p == ' ') p++;
+        char fen_buf[MAX_FEN];
+        int fen_parts = 0;
+        const char *fen_start = p;
+        while (*p && fen_parts < 6) {
+            if (*p == ' ') {
+                fen_parts++;
+                while (*(p + 1) == ' ') p++;
+            }
+            p++;
+        }
+        int fen_len = (int)(p - fen_start);
+        if (fen_len >= MAX_FEN) fen_len = MAX_FEN - 1;
+        memcpy(fen_buf, fen_start, fen_len);
+        fen_buf[fen_len] = '\0';
+
+        int need_defaults = 0;
+        const char *sp = fen_buf;
+        int part = 0;
+        while (*sp) { if (*sp == ' ') part++; sp++; }
+        if (part < 2) { strcat(fen_buf, " w KQkq - 0 1"); }
+        else if (part < 3) { strcat(fen_buf, " KQkq - 0 1"); }
+        else if (part < 4) { strcat(fen_buf, " - 0 1"); }
+        else if (part < 5) { strcat(fen_buf, " 0 1"); }
+        else if (part < 6) { strcat(fen_buf, " 1"); }
+
+        board_from_fen(&g_board, fen_buf);
+    } else {
+        return;
+    }
+
+    g_position_history_count = 0;
+    g_position_history[0] = g_board.hash;
+    g_position_history_count = 1;
+
+    while (*p == ' ') p++;
+    if (strncmp(p, "moves", 5) == 0) {
+        p += 5;
+        while (*p == ' ') p++;
+        while (*p) {
+            char move_str[16];
+            int i = 0;
+            while (*p && *p != ' ' && i < 15) {
+                move_str[i++] = *p++;
+            }
+            move_str[i] = '\0';
+            while (*p == ' ') p++;
+
+            if (strlen(move_str) < 4) continue;
+
+            int from = uci_to_sq(move_str);
+            int to = uci_to_sq(move_str + 2);
+            if (from < 0 || to < 0) continue;
+
+            int promotion = 0;
+            if (strlen(move_str) > 4)
+                promotion = str_to_promotion(move_str[4]);
+
+            Move legal_moves[MAX_MOVES];
+            UndoInfo undo;
+            int n = generate_legal_moves(&g_board, legal_moves);
+            int found = 0;
+            int mi;
+            for (mi = 0; mi < n; mi++) {
+                if (legal_moves[mi].from == from &&
+                    legal_moves[mi].to == to &&
+                    legal_moves[mi].promotion == promotion) {
+                    make_move(&g_board, &legal_moves[mi], &undo);
+                    found = 1;
+                    break;
+                }
+            }
+
+            if (found && g_position_history_count < MAX_POS_HISTORY) {
+                g_position_history[g_position_history_count++] = g_board.hash;
+            }
+        }
+    }
+}
+
+static void cmd_go(const char *args)
+{
+    set_engine_abort(1);
+    wait_for_search_thread();
+
+    g_go_params_wtime = 0;
+    g_go_params_btime = 0;
+    g_go_params_winc = 0;
+    g_go_params_binc = 0;
+    g_go_params_depth = 100;
+    g_go_params_movetime = 0;
+    g_go_params_movestogo = 0;
+    g_go_params_nodes = 0;
+    g_go_infinite = 0;
+    g_ponder_mode = 0;
+    g_ponderhit_received = 0;
+
+    const char *p = args;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (strncmp(p, "ponder", 6) == 0 && (p[6] == ' ' || p[6] == '\0')) {
+            g_ponder_mode = 1;
+        } else if (strncmp(p, "wtime", 5) == 0) {
+            g_go_params_wtime = atoi(p + 5);
+        } else if (strncmp(p, "btime", 5) == 0) {
+            g_go_params_btime = atoi(p + 5);
+        } else if (strncmp(p, "winc", 4) == 0) {
+            g_go_params_winc = atoi(p + 4);
+        } else if (strncmp(p, "binc", 4) == 0) {
+            g_go_params_binc = atoi(p + 4);
+        } else if (strncmp(p, "depth", 5) == 0) {
+            g_go_params_depth = atoi(p + 5);
+        } else if (strncmp(p, "movetime", 8) == 0) {
+            g_go_params_movetime = atoi(p + 8);
+        } else if (strncmp(p, "movestogo", 9) == 0) {
+            g_go_params_movestogo = atoi(p + 9);
+        } else if (strncmp(p, "nodes", 5) == 0) {
+            g_go_params_nodes = atoll(p + 5);
+        } else if (strncmp(p, "infinite", 8) == 0) {
+            g_go_infinite = 1;
+        }
+        while (*p && *p != ' ') p++;
+    }
+
+    char book_move[MAX_MOVE_STR];
+    if (find_book_move(&g_board, book_move)) {
+        printf("info depth 0 score cp 0 nodes 0 time 0 pv %s\n", book_move);
+        printf("bestmove %s\n", book_move);
+        fflush(stdout);
+        return;
+    }
+
+    double time_limit;
+    if (g_go_infinite) {
+        time_limit = 1e9;
+    } else if (g_ponder_mode) {
+        /* Dynamic ponder budget: use opponent's clock to limit ponder search.
+         * ponder_budget = opponent_remaining * 0.5
+         * clamped to [normal_time * 5, opponent_remaining * 0.8]
+         * This prevents ponder from running forever while allowing deep search. */
+        double normal_time = compute_time(
+            g_go_params_wtime, g_go_params_btime,
+            g_go_params_winc, g_go_params_binc,
+            g_go_params_movetime
+        );
+        int opp_ms = (g_board.side_to_move == WHITE) ? g_go_params_btime : g_go_params_wtime;
+        double opp_sec = (opp_ms > 0) ? opp_ms / 1000.0 : 60.0;
+        double ponder_budget = opp_sec * 0.5;
+        double ponder_min = normal_time * 5.0;
+        double ponder_max = opp_sec * 0.8;
+        if (ponder_budget < ponder_min) ponder_budget = ponder_min;
+        if (ponder_budget > ponder_max) ponder_budget = ponder_max;
+        time_limit = ponder_budget;
+    } else if (g_go_params_wtime == 0 && g_go_params_btime == 0 && g_go_params_movetime == 0) {
+        time_limit = 30.0;
+    } else {
+        time_limit = compute_time(
+            g_go_params_wtime, g_go_params_btime,
+            g_go_params_winc, g_go_params_binc,
+            g_go_params_movetime
+        );
+    }
+
+    set_engine_abort(0);
+
+    double *tl_ptr = (double *)malloc(sizeof(double));
+    *tl_ptr = time_limit;
+
+    g_search_running = 1;
+
+#ifdef _WIN32
+    g_search_thread = (HANDLE)_beginthreadex(NULL, 4 * 1024 * 1024, search_thread_func, tl_ptr, 0, NULL);
+    if (g_search_thread) {
+        if (!g_ponder_mode) {
+            WaitForSingleObject(g_search_thread, INFINITE);
+            CloseHandle(g_search_thread);
+            g_search_thread = NULL;
+            g_search_running = 0;
+        }
+    } else {
+        free(tl_ptr);
+        run_search(time_limit, g_go_params_depth, g_go_params_nodes);
+        g_search_running = 0;
+    }
+#else
+    {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 4 * 1024 * 1024);
+        if (pthread_create(&g_search_thread_id, &attr, search_thread_func, tl_ptr) == 0) {
+            pthread_attr_destroy(&attr);
+            g_search_thread_active = 1;
+            if (!g_ponder_mode) {
+                pthread_join(g_search_thread_id, NULL);
+                g_search_thread_active = 0;
+                g_search_running = 0;
+            }
+        } else {
+            pthread_attr_destroy(&attr);
+            free(tl_ptr);
+            run_search(time_limit, g_go_params_depth, g_go_params_nodes);
+            g_search_running = 0;
+        }
+    }
+#endif
+}
+
+static void cmd_stop(void)
+{
+    set_engine_abort(1);
+    if (g_ponder_mode) {
+        wait_for_search_thread();
+        /* Output the bestmove from the ponder search */
+        if (g_last_best_move[0] != '\0') {
+            if (g_last_ponder_move[0] != '\0')
+                printf("bestmove %s ponder %s\n", g_last_best_move, g_last_ponder_move);
+            else
+                printf("bestmove %s\n", g_last_best_move);
+        } else {
+            printf("bestmove 0000\n");
+        }
+        fflush(stdout);
+        g_ponder_mode = 0;
+        g_ponderhit_received = 0;
+    } else if (g_search_running) {
+        /* Non-ponder search: wait for thread and let it output bestmove */
+        wait_for_search_thread();
+    }
+}
+
+static void cmd_ponderhit(void)
+{
+    g_ponderhit_received = 1;
+    /* Set heuristic-preserve flag BEFORE abort, so the ponder search thread
+     * sees it when it reaches save_heuristic_snapshot() at end of search.
+     * Otherwise the snapshot is never saved (flag arrives too late). */
+    set_preserve_heuristics(1);
+    set_engine_abort(1);
+    wait_for_search_thread();
+
+    /* Now start a new search on the updated position with time limit.
+       The GUI should have sent a "position" command before "ponderhit"
+       to update g_board to the post-opponent-move position. */
+    g_ponder_mode = 0;
+    g_ponderhit_received = 0;
+
+    /* Check book first */
+    char book_move[MAX_MOVE_STR];
+    if (find_book_move(&g_board, book_move)) {
+        printf("info depth 0 score cp 0 nodes 0 time 0 pv %s\n", book_move);
+        printf("bestmove %s\n", book_move);
+        fflush(stdout);
+        return;
+    }
+
+    double time_limit = compute_time(
+        g_go_params_wtime, g_go_params_btime,
+        g_go_params_winc, g_go_params_binc,
+        g_go_params_movetime
+    );
+
+    /* Preserve TT entries from ponder search: skip generation increment in find_best_move_c */
+    set_preserve_tt_generation(1);
+
+    /* Preserve heuristic tables (killers/history/countermove/followup) from ponder search */
+    set_preserve_heuristics(1);
+
+    set_engine_abort(0);
+    run_search(time_limit, g_go_params_depth, g_go_params_nodes);
+}
+
+static void cmd_bench(void)
+{
+    static const char *bench_fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "8/P7/8/8/8/8/8/4K2k w - - 0 1",
+        "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+        "rnbqkbnr/pppp1ppp/8/4pP2/8/8/PPPPP1PP/RNBQKBNR w KQkq e6 0 3",
+        "r1bqkb1r/pppppppp/2n2n2/8/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq d3 0 3",
+        "r1bq1rk1/ppp2ppp/2n2n2/3pp3/2B1P3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 6",
+    };
+    int num_fens = sizeof(bench_fens) / sizeof(bench_fens[0]);
+    int bench_depth = 10;
+    long long total_nodes = 0;
+    clock_t start = clock();
+
+    extern void reset_tt_stats(void);
+    extern void print_tt_stats(void);
+    reset_tt_stats();
+
+    for (int i = 0; i < num_fens; i++) {
+        int nodes = 0;
+        find_best_move_c(bench_fens[i], 100000.0, 0, 0, 0, 0, bench_depth, 0, &nodes, NULL, 0);
+        total_nodes += nodes;
+        fprintf(stdout, "Position %2d/%2d: nodes=%d\n", i + 1, num_fens, nodes);
+    }
+
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    long long nps = (long long)(total_nodes / (elapsed > 0.001 ? elapsed : 0.001));
+    fprintf(stdout, "Bench: %lld nodes in %.2fs (%lld nps)\n", total_nodes, elapsed, nps);
+    print_tt_stats();
+
+    /* 输出搜索剪枝统计 */
+    extern SearchProfile get_search_profile(void);
+    extern void reset_search_profile(void);
+    SearchProfile p = get_search_profile();
+    fprintf(stderr, "Search Profile:\n");
+    fprintf(stderr, "  eval_calls=%lld, qs_calls=%lld, qs_nodes=%lld\n", p.eval_calls, p.qs_calls, p.qs_nodes);
+    fprintf(stderr, "  nmp_triggered=%lld, nmp_cutoffs=%lld (%.1f%%)\n", p.nmp_triggered, p.nmp_cutoffs,
+            p.nmp_triggered > 0 ? 100.0 * p.nmp_cutoffs / p.nmp_triggered : 0);
+    fprintf(stderr, "  lmr_applied=%lld, lmr_full_research=%lld (%.1f%%)\n", p.lmr_applied, p.lmr_full_research,
+            p.lmr_applied > 0 ? 100.0 * p.lmr_full_research / p.lmr_applied : 0);
+    fprintf(stderr, "  razoring=%lld, futility_pruned=%lld, lmp_pruned=%lld, see_pruned=%lld, history_pruned=%lld\n",
+            p.razoring_triggered, p.futility_pruned, p.lmp_pruned, p.see_pruned, p.history_pruned);
+    fprintf(stderr, "  probcut_triggered=%lld, probcut_cutoffs=%lld\n", p.probcut_triggered, p.probcut_cutoffs);
+    fprintf(stderr, "  rfp_triggered=%lld\n", p.rfp_triggered);
+    fprintf(stderr, "  make_move=%lld, unmake_move=%lld\n", p.make_move_calls, p.unmake_move_calls);
+    reset_search_profile();
+}
+
+int main(void)
+{
+#ifdef _WIN32
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stdin, NULL, _IONBF, 0);
+#endif
+
+    get_exe_dir();
+    if (g_own_book) load_opening_book();
+    set_engine_info_callback(uci_info_callback);
+
+    /* Auto-load Syzygy EGTB if available */
+    {
+        extern int init_syzygy_c(const char *);
+        const char *egtb_paths[] = {
+            "EGTB",
+            "syzygy",
+            "../EGTB",
+            "../syzygy",
+        };
+        int egtb_loaded = 0;
+        for (int pi = 0; pi < 4; pi++) {
+            int tb_largest = init_syzygy_c(egtb_paths[pi]);
+            if (tb_largest > 0) {
+                fprintf(stderr, "Auto-loaded Syzygy EGTB from: %s (TB_LARGEST=%d)\n",
+                        egtb_paths[pi], tb_largest);
+                egtb_loaded = 1;
+                break;
+            }
+        }
+        if (!egtb_loaded) {
+            fprintf(stderr, "Syzygy EGTB not found in standard paths. "
+                    "Use 'setoption name SyzygyPath value <path>' to load manually.\n");
+        }
+    }
+
+    {
+        const char *env_nodes = getenv("ENGINE_NODES");
+        if (env_nodes) {
+            long long val = atoll(env_nodes);
+            if (val > 0 && val <= 999999999LL)
+                g_uci_nodes = val;
+            fprintf(stderr, "ENGINE_NODES=%s -> g_uci_nodes=%lld\n", env_nodes, (long long)g_uci_nodes);
+        }
+    }
+
+    board_from_fen(&g_board,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+
+    char line[MAX_LINE];
+
+    while (fgets(line, MAX_LINE, stdin)) {
+        char *cmd = strip(line);
+        if (strlen(cmd) == 0) continue;
+
+        if (strcmp(cmd, "uci") == 0) {
+            cmd_uci();
+        } else if (strcmp(cmd, "isready") == 0) {
+            cmd_isready();
+        } else if (strncmp(cmd, "setoption", 9) == 0) {
+            cmd_setoption(cmd + 9);
+        } else if (strcmp(cmd, "ucinewgame") == 0) {
+            cmd_ucinewgame();
+        } else if (strncmp(cmd, "position", 8) == 0) {
+            cmd_position(cmd + 8);
+        } else if (strncmp(cmd, "go", 2) == 0) {
+            if (cmd[2] == ' ' || cmd[2] == '\0')
+                cmd_go(cmd + 2);
+        } else if (strcmp(cmd, "stop") == 0) {
+            cmd_stop();
+        } else if (strcmp(cmd, "ponderhit") == 0) {
+            cmd_ponderhit();
+        } else if (strcmp(cmd, "bench") == 0) {
+            cmd_bench();
+        } else if (strcmp(cmd, "quit") == 0) {
+            set_engine_abort(1);
+            wait_for_search_thread();
+            break;
+        }
+    }
+
+    return 0;
+}

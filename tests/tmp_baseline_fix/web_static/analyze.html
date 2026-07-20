@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chess Arena — 局面分析</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-card: #1c2129;
+  --bg-hover: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-dim: #484f58;
+  --accent: #58a6ff;
+  --accent-glow: rgba(88,166,255,0.15);
+  --green: #3fb950;
+  --green-glow: rgba(63,185,80,0.15);
+  --red: #f85149;
+  --red-glow: rgba(248,81,73,0.15);
+  --yellow: #d29922;
+  --board-light: #ebecd0;
+  --board-dark: #779556;
+  --board-last: #cdd26a;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary); color: var(--text-primary);
+  min-height: 100vh; display: flex; justify-content: center;
+  align-items: center; padding: 20px;
+}
+
+.container { display: flex; gap: 28px; max-width: 1080px; width: 100%; }
+
+.board-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow);
+  display: flex; gap: 0; align-items: flex-start;
+}
+
+.coords-col {
+  display: flex; flex-direction: column;
+  justify-content: space-around; padding: 0 4px;
+}
+
+.coords-col span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  width: 14px; text-align: center; line-height: 62px;
+}
+
+.board-wrap { display: flex; flex-direction: column; }
+
+.coords-row {
+  display: flex; justify-content: space-between;
+  padding: 0; margin-top: 2px;
+}
+
+.coords-row span {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  width: 62px; text-align: center;
+}
+
+.board {
+  display: grid; grid-template-columns: repeat(8, 62px);
+  grid-template-rows: repeat(8, 62px);
+  border: 2px solid var(--border); border-radius: 4px; overflow: hidden;
+}
+
+.square {
+  width: 62px; height: 62px; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 42px; cursor: default; position: relative;
+  user-select: none; transition: background 0.15s;
+}
+
+.square.light { background: var(--board-light); }
+.square.dark { background: var(--board-dark); }
+.square.last-from, .square.last-to { background: var(--board-last) !important; }
+
+.sidebar {
+  flex: 1; display: flex; flex-direction: column; gap: 12px;
+  min-width: 340px; max-width: 420px;
+}
+
+.header { padding-bottom: 4px; display: flex; align-items: center; justify-content: space-between; }
+.logo { font-size: 20px; font-weight: 700; color: var(--accent); }
+.logo span { color: var(--text-secondary); font-weight: 400; font-size: 14px; margin-left: 4px; }
+
+.nav-links { display: flex; gap: 8px; }
+.nav-links a {
+  font-size: 12px; color: var(--text-secondary); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  transition: all 0.2s;
+}
+.nav-links a:hover { background: var(--bg-hover); color: var(--text-primary); border-color: var(--accent); }
+
+.fen-input-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px;
+}
+
+.fen-input-card label {
+  display: block; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 6px;
+}
+
+.fen-row { display: flex; gap: 8px; }
+
+.fen-input {
+  flex: 1; padding: 8px 10px;
+  background: var(--bg-primary); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  outline: none; transition: border-color 0.2s;
+}
+.fen-input:focus { border-color: var(--accent); }
+
+.btn {
+  padding: 8px 16px; border: none; border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+}
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-load {
+  background: var(--accent); color: #fff; box-shadow: 0 2px 8px var(--accent-glow);
+}
+.btn-load:hover:not(:disabled) { background: #4090e0; }
+
+.btn-analyze {
+  background: var(--green); color: #fff; box-shadow: 0 2px 8px var(--green-glow);
+  flex: 1;
+}
+.btn-analyze:hover:not(:disabled) { background: #2ea043; }
+
+.btn-copy {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-copy:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.btn-outline {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+
+.actions-row { display: flex; gap: 8px; }
+
+.status-bar {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.idle { background: var(--text-dim); }
+.status-dot.running { background: var(--green); animation: pulse-dot 1.5s ease-in-out infinite; }
+.status-dot.done { background: var(--yellow); }
+.status-dot.error { background: var(--red); }
+
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.status-text { font-size: 13px; color: var(--text-secondary); flex: 1; }
+
+.analysis-panel {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px; flex: 1;
+  display: flex; flex-direction: column; min-height: 200px;
+}
+
+.analysis-panel h4 {
+  font-size: 11px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
+}
+
+.pv-line {
+  background: var(--bg-primary); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px;
+  transition: border-color 0.2s;
+}
+.pv-line:hover { border-color: var(--accent); }
+.pv-line.best { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+
+.pv-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+
+.pv-rank {
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  background: var(--accent-glow); padding: 2px 8px; border-radius: 10px;
+  min-width: 20px; text-align: center;
+}
+
+.pv-move {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px; font-weight: 600; color: var(--text-primary);
+}
+
+.pv-score {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px; font-weight: 600; margin-left: auto;
+}
+.pv-score.positive { color: var(--green); }
+.pv-score.negative { color: var(--red); }
+.pv-score.neutral { color: var(--text-secondary); }
+
+.pv-depth {
+  font-size: 11px; color: var(--text-dim);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.pv-variation {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; color: var(--text-secondary);
+  line-height: 1.6; word-break: break-all;
+}
+
+.empty-state {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: var(--text-dim); font-size: 14px;
+  min-height: 160px;
+}
+
+.fen-bar {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+.fen-text {
+  flex: 1; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.btn-fen {
+  background: transparent; border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; cursor: pointer;
+  font-size: 14px; transition: all 0.2s;
+}
+.btn-fen:hover { background: var(--bg-hover); border-color: var(--accent); }
+
+.error-banner {
+  display: none; padding: 10px; background: #3d1111;
+  border: 1px solid var(--red); border-radius: var(--radius-sm);
+  font-size: 13px; color: var(--red); font-weight: 600; text-align: center;
+}
+
+.spinner {
+  display: inline-block; width: 16px; height: 16px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+  vertical-align: middle; margin-right: 6px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 800px) {
+  .container { flex-direction: column; align-items: center; }
+  .sidebar { min-width: auto; max-width: 100%; width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="board-panel">
+    <div class="coords-col" id="coordsRank"></div>
+    <div class="board-wrap">
+      <div class="board" id="board"></div>
+      <div class="coords-row" id="coordsFile"></div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="header">
+      <span class="logo">Chess Arena<span>局面分析</span></span>
+      <div class="nav-links">
+        <a href="/">人机</a>
+        <a href="/match.html">对弈</a>
+      </div>
+    </div>
+
+    <div class="fen-input-card">
+      <label>FEN 局面</label>
+      <div class="fen-row">
+        <input type="text" class="fen-input" id="fenInput"
+               value="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+               placeholder="输入 FEN 字符串...">
+        <button class="btn btn-load" id="btnLoad" onclick="loadFEN()">Load</button>
+        <button class="btn btn-copy" id="btnCopyFen" onclick="copyFEN()">Copy FEN</button>
+      </div>
+    </div>
+
+    <div class="actions-row">
+      <button class="btn btn-analyze" id="btnAnalyze" onclick="analyzePosition()">Analyze</button>
+      <button class="btn btn-outline" onclick="loadFEN()">重置棋盘</button>
+    </div>
+
+    <div class="status-bar">
+      <div class="status-dot idle" id="statusDot"></div>
+      <span class="status-text" id="statusText">就绪 — 输入 FEN 并点击 Analyze</span>
+    </div>
+
+    <div class="analysis-panel">
+      <h4>分析结果</h4>
+      <div id="analysisContent">
+        <div class="empty-state">等待分析...</div>
+      </div>
+    </div>
+
+    <div class="fen-bar">
+      <span class="fen-text" id="fenDisplay">FEN: --</span>
+      <button class="btn-fen" id="btnFenBar" onclick="copyFEN()" title="复制FEN">📋</button>
+    </div>
+
+    <div class="error-banner" id="errorBanner"></div>
+  </div>
+</div>
+
+<script>
+const PIECE_GLYPHS = {
+  K: '\u2654', Q: '\u2655', R: '\u2656', B: '\u2657', N: '\u2658', P: '\u2659',
+  k: '\u265A', q: '\u265B', r: '\u265C', b: '\u265D', n: '\u265E', p: '\u265F'
+};
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+let currentFEN = START_FEN;
+let lastMoveFrom = null;
+let lastMoveTo = null;
+
+function buildCoords() {
+  const rankEl = document.getElementById('coordsRank');
+  rankEl.innerHTML = '';
+  for (let r = 7; r >= 0; r--)
+    rankEl.innerHTML += '<span>' + (r + 1) + '</span>';
+  const fileEl = document.getElementById('coordsFile');
+  fileEl.innerHTML = '';
+  for (let c = 0; c < 8; c++)
+    fileEl.innerHTML += '<span>' + String.fromCharCode(97 + c) + '</span>';
+}
+buildCoords();
+
+function parseFEN(fen) {
+  const parts = fen.trim().split(/\s+/);
+  const rows = parts[0].split('/');
+  const board = [];
+  for (let r = 0; r < 8; r++) {
+    board[r] = [];
+    let c = 0;
+    for (const ch of rows[r]) {
+      if (ch >= '1' && ch <= '8') {
+        for (let i = 0; i < parseInt(ch); i++) board[r][c++] = null;
+      } else {
+        board[r][c++] = ch;
+      }
+    }
+  }
+  return board;
+}
+
+function renderBoard(fen, fromSq, toSq) {
+  const board = parseFEN(fen);
+  const el = document.getElementById('board');
+  el.innerHTML = '';
+
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sq = document.createElement('div');
+      sq.className = 'square ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+      const piece = board[r][c];
+      if (piece) {
+        sq.textContent = PIECE_GLYPHS[piece];
+        const isWhite = piece === piece.toUpperCase();
+        sq.style.color = isWhite ? '#fff' : '#222';
+        if (isWhite) sq.style.textShadow = '-1px -1px 0 #222, 1px -1px 0 #222, -1px 1px 0 #222, 1px 1px 0 #222';
+      }
+      if (fromSq && toSq) {
+        const fr = 8 - parseInt(fromSq[1]), fc = fromSq.charCodeAt(0) - 97;
+        const tr = 8 - parseInt(toSq[1]), tc = toSq.charCodeAt(2) - 97;
+        if ((r === fr && c === fc) || (r === tr && c === tc)) sq.classList.add('last-to');
+      }
+      el.appendChild(sq);
+    }
+  }
+
+  document.getElementById('fenDisplay').textContent = fen;
+}
+
+function loadFEN() {
+  const input = document.getElementById('fenInput').value.trim();
+  if (!input) {
+    showError('请输入 FEN 字符串');
+    return;
+  }
+  currentFEN = input;
+  lastMoveFrom = null;
+  lastMoveTo = null;
+  renderBoard(currentFEN, null, null);
+  setStatus('idle', '已加载局面 — 点击 Analyze 开始分析');
+  clearError();
+}
+
+function copyFEN() {
+  const fen = currentFEN;
+  if (!fen) return;
+  navigator.clipboard.writeText(fen).then(() => {
+    const btn1 = document.getElementById('btnCopyFen');
+    const btn2 = document.getElementById('btnFenBar');
+    const orig1 = btn1.textContent;
+    const orig2 = btn2.textContent;
+    btn1.textContent = '✓';
+    btn2.textContent = '✓';
+    setTimeout(() => { btn1.textContent = orig1; btn2.textContent = orig2; }, 1200);
+  }).catch(() => {});
+}
+
+function setStatus(type, text) {
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot ' + type;
+  document.getElementById('statusText').textContent = text;
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function clearError() {
+  document.getElementById('errorBanner').style.display = 'none';
+}
+
+function formatScore(score) {
+  if (score === null || score === undefined) return '--';
+  if (typeof score === 'string') return score;
+  if (score > 0) return '+' + score;
+  if (score < 0) return '' + score;
+  return '0';
+}
+
+function scoreClass(score) {
+  if (score === null || score === undefined) return 'neutral';
+  if (typeof score === 'string') {
+    if (score.startsWith('M')) return score.startsWith('-') ? 'negative' : 'positive';
+    return 'neutral';
+  }
+  if (score > 0) return 'positive';
+  if (score < 0) return 'negative';
+  return 'neutral';
+}
+
+function formatPV(pv) {
+  if (!pv || !Array.isArray(pv) || pv.length === 0) return '';
+  return pv.join(' ');
+}
+
+function renderAnalysis(lines) {
+  const container = document.getElementById('analysisContent');
+  if (!lines || lines.length === 0) {
+    container.innerHTML = '<div class="empty-state">无分析结果</div>';
+    return;
+  }
+
+  let html = '';
+  lines.forEach((line, idx) => {
+    const isBest = idx === 0;
+    const sc = line.score;
+    const scText = formatScore(sc);
+    const scCls = scoreClass(sc);
+    const depthText = line.depth != null ? ('深度 ' + line.depth) : '';
+    const pvText = formatPV(line.pv);
+    const moveText = line.move || '--';
+
+    html += '<div class="pv-line' + (isBest ? ' best' : '') + '">';
+    html += '<div class="pv-header">';
+    html += '<span class="pv-rank">' + (idx + 1) + '</span>';
+    html += '<span class="pv-move">' + moveText + '</span>';
+    html += '<span class="pv-score ' + scCls + '">' + scText + '</span>';
+    html += '<span class="pv-depth">' + depthText + '</span>';
+    html += '</div>';
+    if (pvText) {
+      html += '<div class="pv-variation">' + pvText + '</div>';
+    }
+    html += '</div>';
+  });
+
+  container.innerHTML = html;
+
+  // Highlight best move on board
+  if (lines[0] && lines[0].move && lines[0].move.length >= 4) {
+    const move = lines[0].move;
+    lastMoveFrom = move.substring(0, 2);
+    lastMoveTo = move.substring(2, 4);
+    renderBoard(currentFEN, lastMoveFrom, lastMoveTo);
+  }
+}
+
+async function analyzePosition() {
+  clearError();
+  const fen = currentFEN;
+  if (!fen) {
+    showError('请先加载 FEN 局面');
+    return;
+  }
+
+  const btn = document.getElementById('btnAnalyze');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>分析中...';
+  setStatus('running', 'Velvet 正在分析...');
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fen: fen, depth: 20, multiPv: 3 })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error('API ' + res.status + ': ' + errText.substring(0, 200));
+    }
+
+    const data = await res.json();
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    renderAnalysis(data.lines);
+    setStatus('done', '分析完成');
+  } catch (e) {
+    showError('分析失败: ' + e.message);
+    setStatus('error', '分析失败');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Analyze';
+  }
+}
+
+// Initialize with starting position
+renderBoard(currentFEN, null, null);
+
+// Allow Enter key in FEN input to load
+document.getElementById('fenInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') loadFEN();
+});
+</script>
+</body>
+</html>
