@@ -131,24 +131,26 @@ def add_adjudication(cmd):
 
 
 def build_self_command(cutechess, base_dir, args, uci_script_a, uci_script_b, label_a, label_b):
-    python_exe = sys.executable or "python"
     each_opts = make_each_opts(args)
     pgn_path = resolve_pgn_path(base_dir, args, f"self-{label_a}-{label_b}")
+
+    def engine_cmd(script_path):
+        if script_path.endswith((".cmd", ".bat")):
+            return [f"cmd={script_path}", f"dir={os.path.dirname(script_path)}"]
+        else:
+            py = sys.executable or "python"
+            return [f"cmd={py}", f"arg={script_path}", f"dir={os.path.dirname(script_path)}"]
 
     cmd = [
         cutechess,
         "-engine",
         f"name=HellcopterA-{label_a}",
         "proto=uci",
-        f"cmd={python_exe}",
-        f"arg={uci_script_a}",
-        f"dir={os.path.dirname(uci_script_a) if uci_script_a else base_dir}",
+        *engine_cmd(uci_script_a),
         "-engine",
         f"name=HellcopterB-{label_b}",
         "proto=uci",
-        f"cmd={python_exe}",
-        f"arg={uci_script_b}",
-        f"dir={os.path.dirname(uci_script_b) if uci_script_b else base_dir}",
+        *engine_cmd(uci_script_b),
         "-each",
         ",".join(each_opts),
         "-rounds", str(args.rounds),

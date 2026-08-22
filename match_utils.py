@@ -171,9 +171,9 @@ def create_temp_uci_adapter(temp_dir: str, params_json_path: str,
 def create_temp_uci_adapter_with_env(base_dir: str, config_path: str,
                                       label: str = "adapter") -> Tuple[str, str]:
     """
-    创建临时UCI适配器脚本（带环境变量方式）
+    创建临时UCI适配器（批处理文件方式）
 
-    使用环境变量ENGINE_PARAMS传递配置路径，适用于需要config解析的场景。
+    使用环境变量ENGINE_PARAMS传递配置路径，然后直接运行编译好的UCI引擎可执行文件。
 
     Args:
         base_dir: 项目基础目录
@@ -192,19 +192,13 @@ def create_temp_uci_adapter_with_env(base_dir: str, config_path: str,
     with open(dest_params, "w", encoding="utf-8") as f:
         json.dump(resolved, f, indent=2)
 
-    dest_params_fwd = dest_params.replace("\\", "/")
-    base_dir_fwd = base_dir.replace("\\", "/")
+    exe_path = os.path.join(base_dir, "dist", "Hellcopter.exe")
 
-    script_path = os.path.join(temp_dir, "uci_adapter.py")
+    script_path = os.path.join(temp_dir, "uci_adapter.cmd")
     with open(script_path, "w", encoding="utf-8") as f:
-        f.write("import os\n")
-        f.write("import sys\n\n")
-        f.write(f'os.environ["ENGINE_PARAMS"] = "{dest_params_fwd}"\n')
-        f.write(f'sys.path.insert(0, "{base_dir_fwd}")\n\n')
-        f.write("from uci_engine import UCIEngine\n\n")
-        f.write('if __name__ == "__main__":\n')
-        f.write("    uci = UCIEngine()\n")
-        f.write("    uci.run()\n")
+        f.write("@echo off\n")
+        f.write(f'set "ENGINE_PARAMS={dest_params}"\n')
+        f.write(f'"{exe_path}"\n')
 
     return script_path, temp_dir
 

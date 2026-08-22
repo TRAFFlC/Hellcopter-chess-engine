@@ -1,6 +1,0 @@
-uci
-ucinewgame
-isready
-position startpos
-go movetime 2000
-quit
