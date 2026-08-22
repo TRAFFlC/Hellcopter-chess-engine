@@ -103,3 +103,14 @@ EGTB/
 
 # Cleanup staging (local backup, not for git)
 .trash_can/
+
+# Master-game training data (multi-GB, re-downloadable from lichess)
+master/
+
+# Tuning working-dir artifacts (run outputs; scripts ARE tracked)
+tuning/*.pgn
+tuning/texel_log.json
+tuning/texel_tuned.json
+
+# Dot-prefixed temp files (e.g. .__test_copy__.json)
+.__*
