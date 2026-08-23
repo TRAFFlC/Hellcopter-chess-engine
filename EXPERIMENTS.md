@@ -476,3 +476,41 @@ T1/T2: 进行中（96+0.8 长时制，预计数小时，结果出来后补录 El
 参考来源: 无外部借鉴。openings.epd 为自写生成器（标准开局树常识）。
 
 
+
+---
+
+### 20260823_config_archaeology_and_M1_restart
+
+改动: 无引擎代码改动。基础设施考古+修复日——清洗根 engine_params.json 为规范 resolved(v1.9.5)+Threads1；
+arena/copter 放显式同名配置；新增 run_m1.ps1 并修复两脚本路径/错误处理；两段旧 M1 数据存档 reference-only。
+目的: M1 标定必须测"已知且可复现的配置"，消除三套配置来源漂移。
+
+实测发现（全部有探针脚本佐证，tests/probe_*.py）:
+1. [关键] 独立 exe 比赛条件（无 ENGINE_PARAMS env、cwd 无 json）: 引擎单线程
+   （uci go 分发在读 g_runtime 时 BSS 尚未初始化 → find_best_move_c 直达，
+   find_best_move_smp 内部的懒加载从未发生）、无 book/EGTB、参数=烘焙编译期默认。
+   烘焙默认经探针证实 ≡ resolved(v1.9.5)：固定深度 14 节点数逐位一致（1,880,013, cp51, d2d4）。
+2. [纠错] 昨会话两个结论被推翻:
+   - "M1 引擎跑 4 线程 Lazy SMP 带伤上阵" —— 错。实测单线程（CPU 采样 ~1 核）。
+     16 线程饱和的真因未定（Monarch 自身多线程? 把 OS 线程数当计算线程的观测误差?）。
+   - "setoption Threads=1 可切单线程（源码确认）" —— 半错。选项注册且 set_num_threads 生效，
+     但 go 分发先于参数懒加载读取 threading_enabled，故该选项在首搜前是空操作。
+     幸而比赛条件本就单线程，无实害。
+3. [重大隐患已除] 根 engine_params.json 含 ~40 个来源不明 eval_weights（≠v1.9.3/v1.9.5/
+   texel_tuned 抽查全不匹配），曾使 depth14 搜索树膨胀 4x（7.51M vs 1.88M 节点）、换最佳走法。
+   该文件是 DLL/web/regression 的活跃配置 ⇒ 此前 Python 侧分析全部基于污染权重！
+   已清洗为规范配置，原文件快照: tuning/root_json_mystery_weights_snapshot.json
+4. [挂起] SEE_PRUNE_DEPTH_SCALE 三处三个值: v1.9.5.json=60（生成宏同）/
+   旧 root_json=120（死键——loader 根本不解析该参数）/ EXPERIMENTS 20260717 验证修复值=300
+   （手改宏，后被重新生成覆盖丢失）。当前 dist exe 烘焙=60+新代码条件（legal≥2&&i≥2 等）。
+   无法运行时注入、无法重编译（gcc 受阻）⇒ M1 实测的是未验证组合 scale60+新条件。
+   编译恢复后: 头文件回 300 + params_loader 增加 see_prune_depth_scale 解析（防再丢）。
+5. run_m1/run_m2.ps1 三 bug 修复: cwd 未固定（相对路径失效）、openings.epd 相对路径错误、
+   $ErrorActionPreference=Stop 使 stderr 警告（如 Monarch 无 Threads 选项）杀死整场比赛。
+
+T0 回归: 通过（清洗后根配置 regression.py 4/4）
+资源验证: 9 进程（1 cutechess + 4×2 引擎）, 全部单线程, 合计 ~5 核/16, 内存 <1GB
+
+判定: 保留
+理由: M1 于 2026-08-23 以显式配置重启（240 局 @96+0.8, 并发 4, PGN=arena/m1_monarch_*.pgn）。
+旧数据 75 局(saturated 段)与 43 局(aborted 段)移入 tests/results/*_reference.pgn 仅作参考不对齐统计。

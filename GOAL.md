@@ -52,17 +52,25 @@
 
 ## 五、当前状态快照（每轮工作结束时更新此节）
 
-- 快照日期: 2026-08-23（第 2 次更新）
-- git HEAD: baseline-plus 分支 6c7fa84
-- **M1 标定进行中**: Hellcopter vs Monarch2005 @96+0.8, 240 局, 并发 4,
-  后台进程在 `arena/games`（cutechess-cli, PGN=arena/m1_calibration.pgn）。
-  31 局中期: +79.8±30 Elo, LOS 89.6%（胜 17 负 10 和 4）
-- 已修复: config.py resolve_config 深度合并 bug 再次丢失问题（7/17 修过但未提交，
-  本次已提交 e3dbb6b + 防回归测试 tests/verify_config_merge.py）
-- M2 就绪度: Velvet UCI 接口已实测验证；arena/run_m2.ps1 一键启动脚本已写好
-  （固化 UCI_LimitStrength=true / UCI_Elo=N / SimulateThinkingTime=false / Style=Normal；
-  ⚠️ SimulateThinkingTime 默认 true，必须显式关闭——脚本已内置）
+- 快照日期: 2026-08-23（第 3 次更新）
+- git HEAD: baseline-plus 分支（见 git log）
+- **M1 标定运行中**: Hellcopter vs Monarch2005 @96+0.8, 240 局, 并发 4,
+  启动命令 `arena\run_m1.ps1`（后台隐藏窗口）, PGN=arena/m1_monarch_<时间戳>.pgn,
+  进度日志=arena/games/m1_monarch_<时间戳>_progress.log
+  - 引擎实测单线程×8 进程 ≈5 核/16, 内存 <1GB, 符合资源纪律
+- **配置基线已固化**: arena/copter/engine_params.json = resolved(v1.9.5)+Threads1
+  （tests/make_arena_config.py 生成; 与烘焙宏经节点数逐位验证等价）。
+  根 engine_params.json 已同步清洗——此前含 ~40 个来源不明 eval 权重（已存档快照），
+  Python 侧历史分析数据可信度存疑，重要结论需用干净配置复测
+- [纠错] 前快照"M1 带 4 线程伤上阵"结论错误: 实测比赛条件本就单线程
+  （探针: tests/probe_real_match_conditions.py）。setoption Threads 首搜前是空操作。
+- [挂起-编译恢复后优先] SEE_PRUNE_DEPTH_SCALE 当前烘焙=60, 20260717 验证修复值=300
+  （被头文件再生成覆盖丢失; loader 不解析该键无法运行时注入）。
+  修复动作: src/engine_params.h 回 300 + params_loader 增加该键解析 + 重编译 + Tier0/T1
+- M2 就绪度: run_m2.ps1 已修复路径/错误处理 bug 并实测同型脚本可跑通;
+  Velvet 参数固化未变（UCI_LimitStrength/UCI_Elo/SimulateThinkingTime=false/Style=Normal）
 - gcc 编译器在本机无法启动（疑似安全软件拦截，沙箱内无法解决）:
-  参数实验不受影响（运行时 JSON）；源码改动（EGTB opt-in、Hash 选项）挂起待编译恢复
-- 待办: M1 完成后 → analyze_pgn --name Hellcopter 统计 + classify_losses 归类 +
-  登记 EXPERIMENTS.md → 若优势确认(≥+50)则宣布 M1 达成并打 tag → 启动 run_m2.ps1 -elo 2200
+  参数实验不受影响（运行时 JSON）；源码改动全部挂起待编译恢复
+- 待办: M1 跑完 → analyze_pgn --name Hellcopter + classify_losses → 登记 EXPERIMENTS.md
+  → LOS≥97% 且 Elo≥+50 ⇒ 打 tag M1-achieved + configs/BASELINE 登记
+  → `run_m2.ps1 -elo 2200`
