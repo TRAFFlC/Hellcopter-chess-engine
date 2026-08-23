@@ -54,7 +54,13 @@ def resolve_config(config: dict) -> dict:
         if "parameters" not in result:
             result["parameters"] = {}
         for group_name, group_value in current_params.items():
-            result["parameters"][group_name] = copy.deepcopy(group_value)
+            # 深度合并：变体只覆盖显式写出的参数，其余继承基线
+            # （整组替换会导致变体丢失基线大部分参数，A/B 对比不纯）
+            if group_name in result["parameters"] and isinstance(group_value, dict) \
+                    and isinstance(result["parameters"][group_name], dict):
+                result["parameters"][group_name].update(copy.deepcopy(group_value))
+            else:
+                result["parameters"][group_name] = copy.deepcopy(group_value)
 
     return result
 
