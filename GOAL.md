@@ -39,9 +39,12 @@
   `test_engines/Monarch 2005/Monarch(v1.7)/Monarch(v1.7).exe`，UCI 协议。
 - **Velvet v8.1.1**（M2+ 目标）：
   `test_engines/Velvet/velvet-v8.1.1-x86_64-avx2.exe`，UCI 协议。
-  限制强度的方式**待查证**（读取其项目文件夹 / GitHub 上游文档）。
-  ⚠️ 与 Velvet 对弈时必须核验其限制参数确实生效（如 UCI Skill/Strength 类选项的实际取值），
-  并在 EXPERIMENTS.md 中记录所用设置。
+  限强机制（已查证：GitHub mhonert/velvet-chess v8.0.0 release notes，2026-08-23）：
+  - `setoption name UCI_LimitStrength value true` + `setoption name UCI_Elo value <1225..3000>`
+  - M2 起步档：UCI_Elo 2200；此后按 200 一档递增至 3000
+  - ⚠️ 对局必须显式设置 `SimulateThinkingTime value false`（否则 Velvet 模拟人类思考白白耗时间，
+    影响公平性）与 `Style value Normal`（Risky 风格约 −25 Elo，非目标条件）
+  - ⚠️ 官方声明 UCI_Elo 分值与真实 Elo 的映射未严格校准——M2 各档实测结果才是权威标定
 - **比赛条件**：不加载 opening book（`dist/Goi5.1.bin` 仅限训练研究）、不加载 Syzygy EGTB；
   用独立 UCI exe 参赛，避免 Python 包装层引入变量。
   ⚠️ 已验证的干净环境：`arena/copter/`（仓库二级目录，EGTB 相对路径扫描落空、exe 同目录无 book）。
