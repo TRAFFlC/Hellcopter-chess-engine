@@ -49,9 +49,13 @@ def stats(fn, name="Experiment"):
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    name = "Experiment"
+    for i, a in enumerate(sys.argv[1:]):
+        if a == "--name":
+            name = sys.argv[i + 2]
+    args = [a for a in sys.argv[1:] if not a.startswith("-") and a != name]
     if not args:
         print(__doc__)
         sys.exit(1)
     for f in args:
-        stats(f)
+        stats(f, name)
