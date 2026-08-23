@@ -52,7 +52,17 @@
 
 ## 五、当前状态快照（每轮工作结束时更新此节）
 
-- 快照日期: 2026-08-23
-- git HEAD: f433b4e 之后（含 180e615 material-depth bonus、693990b UCI/mobility 修复）
-- 最近补录实验: 20260719_baseline_plus_recovery —— 自对弈 191 局 +21.9±12 Elo, LOS 82.7%（未达晋升门槛，方向积极）
-- M1 进度: 未开始正式标定（下一步：Hellcopter vs Monarch 2005 @ 96+0.8）
+- 快照日期: 2026-08-23（第 2 次更新）
+- git HEAD: baseline-plus 分支 6c7fa84
+- **M1 标定进行中**: Hellcopter vs Monarch2005 @96+0.8, 240 局, 并发 4,
+  后台进程在 `arena/games`（cutechess-cli, PGN=arena/m1_calibration.pgn）。
+  31 局中期: +79.8±30 Elo, LOS 89.6%（胜 17 负 10 和 4）
+- 已修复: config.py resolve_config 深度合并 bug 再次丢失问题（7/17 修过但未提交，
+  本次已提交 e3dbb6b + 防回归测试 tests/verify_config_merge.py）
+- M2 就绪度: Velvet UCI 接口已实测验证；arena/run_m2.ps1 一键启动脚本已写好
+  （固化 UCI_LimitStrength=true / UCI_Elo=N / SimulateThinkingTime=false / Style=Normal；
+  ⚠️ SimulateThinkingTime 默认 true，必须显式关闭——脚本已内置）
+- gcc 编译器在本机无法启动（疑似安全软件拦截，沙箱内无法解决）:
+  参数实验不受影响（运行时 JSON）；源码改动（EGTB opt-in、Hash 选项）挂起待编译恢复
+- 待办: M1 完成后 → analyze_pgn --name Hellcopter 统计 + classify_losses 归类 +
+  登记 EXPERIMENTS.md → 若优势确认(≥+50)则宣布 M1 达成并打 tag → 启动 run_m2.ps1 -elo 2200
