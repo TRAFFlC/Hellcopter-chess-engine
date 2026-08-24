@@ -54,10 +54,13 @@
 
 - 快照日期: 2026-08-23（第 3 次更新）
 - git HEAD: baseline-plus 分支（见 git log）
-- **M1 标定运行中**: Hellcopter vs Monarch2005 @96+0.8, 240 局, 并发 4,
-  启动命令 `arena\run_m1.ps1`（后台隐藏窗口）, PGN=arena/m1_monarch_<时间戳>.pgn,
-  进度日志=arena/games/m1_monarch_<时间戳>_progress.log
-  - 引擎实测单线程×8 进程 ≈5 核/16, 内存 <1GB, 符合资源纪律
+- **M1 标定第 1 轮已完成（未达标）**: 240 局 @96+0.8 →
+  胜99/负84/和57, Elo +21.7±38.5, LOS 86.6% < 97% 门槛。
+  输棋画像健康（速败仅 19%, 长局消耗为主）。PGN=arena/m1_monarch_20260823_2142.pgn
+- **进行中**: LMR d2.5 Tier1 SPRT 自对弈确认（divisor 2.0→2.5 单参数,
+  SPRT 0,5,.05,.05 @10+0.2 并发4, 日志 temp_exp/lmr_sprt_run1.log）
+  → 若接受 H1: 晋升该参数（走 T2 或直接并入基线候选）→ 以新配置重跑 M1 标定
+  → 若接受 H0: 回滚, 直接以现配置续跑 Monarch 统计
 - **配置基线已固化**: arena/copter/engine_params.json = resolved(v1.9.5)+Threads1
   （tests/make_arena_config.py 生成; 与烘焙宏经节点数逐位验证等价）。
   根 engine_params.json 已同步清洗——此前含 ~40 个来源不明 eval 权重（已存档快照），

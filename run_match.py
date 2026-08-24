@@ -154,6 +154,7 @@ def build_self_command(cutechess, base_dir, args, uci_script_a, uci_script_b, la
         "-each",
         ",".join(each_opts),
         "-rounds", str(args.rounds),
+        "-concurrency", str(getattr(args, "concurrency", 1)),
         "-pgnout", pgn_path,
     ]
     add_adjudication(cmd)
@@ -187,6 +188,7 @@ def build_command(cutechess, base_dir, opp_exe, opp_proto, args, uci_script=None
         "-each",
         ",".join(each_opts),
         "-rounds", str(args.rounds),
+        "-concurrency", str(getattr(args, "concurrency", 1)),
         "-pgnout", pgn_path,
     ]
 
@@ -307,6 +309,8 @@ def main():
                         help="Config for Hellcopter B (self-play mode)")
     parser.add_argument("--rounds", type=int, default=20,
                         help="Number of rounds (each round = 2 games with color swap)")
+    parser.add_argument("--concurrency", type=int, default=1,
+                        help="Parallel games (resource discipline: 4 => 8 single-thread procs)")
     parser.add_argument("--tc", type=str, default="96+0.8",
                         help="Time control string (e.g. 96+0.8, 60+2)")
     parser.add_argument("--tc-standard", action="store_true", help="Use standard time control: 96+0.8s")
