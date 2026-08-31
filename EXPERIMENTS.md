@@ -538,3 +538,223 @@ T0 回归: 通过（赛前 regression.py 4/4）
 
 附注: 双方引擎持续输出 "Illegal PV move" 警告（PV 提取的外观缺陷, 对局不受影响）,
 列入低优先待查。
+
+---
+
+### 20260824_lmr_d25_confirm_failed
+
+改动: 无代码改动。Tier1 快筛确认 lmr_divisor 2.0→2.5（configs/lmr_d2.5.json,
+20260717 网格最优点 +23±33 的首次正式确认）
+目的: 验证网格最优参数是否真实, 若真则强化引擎后再重跑 M1 标定
+
+T0 回归: 通过（实验配置经 make_experiment_config.py 强制单线程）
+T1 快筛: 250 局 @ 10+0.2 并发4, SPRT 未正式越界(llr -0.71)但数据已决定性
+  实验方(A=d2.5): 胜54 / 负78 / 和118, 得分率 45.2%
+  Elo -33.5 ±31.4, LOS 1.8%
+  和棋率 47.2%
+
+判定: ❌ 回滚（不晋升 d2.5）
+理由: 点估计 -33.5 且 LOS 1.8%, 与先验 +23 方向相反。无任何晋升可能。
+
+分析（重要）: 先验来自 7/17 网格扫描, 当时跑在 SEE_PRUNE_DEPTH_SCALE=300 的
+手修版 exe 上; 本次跑在 scale=60 重编译版上。同 TC 同参数、不同剪枝环境,
+效应方向翻转 —— LMR 效应依赖周边剪枝组合, 单参数历史结论不可跨构建环境复用。
+与 20260719_merge_delete_cgi_failed 的教训同族：搜索参数存在环境耦合。
+推论: 所有 7 月网格/消融结论在 scale60 引擎上视为失效, 如需引用必须重测。
+
+---
+
+### 20260831_pepito_source_research
+
+改动: 无代码改动。逐文件研读外部引擎 Pepito v1.59 源码（negascou.c/eval.c/hash.c/
+sort.c/see.c/itera.c/time.c/mueve.c/readme.txt/changes.txt），产出对比研究报告
+目的: 定位 Hellcopter（~1900-2100）与 2500 级引擎的决定性差异，为后续涨分方向提供证据
+
+参考来源: Pepito v1.59（GPL v2, 作者 Carlos del Cacho, 2000-2003, 西班牙）,
+路径 test_engines/Pepito 2492/pepisrc/。
+完整报告: docs/reports/20260831_pepito_vs_hellcopter_research.md
+（报告 §0 含反剽窃声明：仅提取设计思想与事实描述，未复制任何代码；
+后续任何借鉴须在本文件对应条目标注参考来源）
+
+核心结论:
+1. 差异不在技术栈新旧（Hellcopter 的 LMR/SE/ProbCut/RFP 更现代），而在四点：
+   每节点必要成本（增量材料/分段生成/last_cap 重复检测 vs 全量扫描）、
+   两年锦标赛校准的激进参数（NMP 在 PV 也用）、
+   禁书禁库规则下的和棋/残局完备性（TABLAS 封顶/王距赛跑/错误色象）、
+   搜索-评估联动细节（null_threat 经 TT 传播、相对窗口 lazy eval）
+2. 实测 Hellcopter startpos 548-616 kNPS（单线程）；Pepito 沙箱无法编译未测速
+   （正常终端待补，见报告 §6 实验 1）
+3. 附带发现: go movetime 8000 未被遵守（搜到 depth 20 用 294s）——待复核
+
+判定: 研究完成（报告已存档）
+理由: 用户要求的源码研究 + 反剽窃声明已落实；后续涨分方向见报告 §5，
+动代码前须按 GOAL.md 第 1/2 条逐项留痕
+
+---
+
+### 20260831_invictus_source_research
+
+改动: 无代码改动。拉取 InvictusChess 仓库至 test_engines/Invictus 3100/，
+逐文件研读 Invictus r391 源码（search.cpp/eval.cpp/params.cpp/movepicker.cpp/
+trans.cpp/position.cpp/movegen.cpp/attacks.cpp/engine.cpp/uci.cpp/tune.h 等全库
+26 文件约 2900 行，100% 通读），产出对比研究报告
+目的: 定位 Hellcopter（~1900-2100）与 3100 级引擎的决定性差异，交叉验证
+Pepito 报告结论，为后续涨分方向提供二代引擎证据
+
+参考来源: Invictus r391（GPL v3, 作者 Edsel Apostol, 2021, 菲律宾）,
+来源 https://github.com/ed-apostol/InvictusChess（2026-08-31 克隆）,
+本地路径 test_engines/Invictus 3100/InvictusChess/（3100 取自 README 所载
+CCRL 40/4 榜 r382=3108）。
+完整报告: docs/reports/20260831_invictus_vs_hellcopter_research.md
+（报告 §0 含反剽窃声明：GPL v3 传染性强于 Pepito 的 GPL v2，任何一行代码
+直接移植都会感染整个项目——只提取设计思想与数值事实描述；
+后续任何借鉴须在本文件对应条目标注参考来源）
+
+核心结论:
+1. 修正 Pepito 报告假设: NMP-PV 禁用不是主要失分点（Invictus 3100 同样
+   PV 禁用，两台对照引擎做法一致 → 该嫌疑降级）
+2. 真正差距四件事: 每节点执行成本（评估缓存表 vs 每节点全量 evaluate()）、
+   和棋/材料判定框架化（486×486 预计算表+增量索引）、TT 着法完整验证
+   （Hellcopter 缺失）、参数置信度（Texel 调参管线）
+3. 技术栈宽度 Hellcopter 不输 3100 引擎——减法美学+精确数值边界 > 技术数量
+4. 首要事实: Invictus 3100 分在无书/无 EGTB/无 NNUE 条件下取得（与本项目
+   禁书禁库规则同构，证明该规则下纯搜索+评估可达 3100）
+5. 实测受限: 沙箱 gcc 启动失败（0xC0000135，与 Pepito 研究时相同），
+   Invictus kNPS 未测，性能论断均为代码结构推断
+
+判定: 研究完成（报告已存档）
+理由: 用户要求的拉取+研究+报告已落实；两份对照报告（Pepito 2500 / 
+Invictus 3100）已形成交叉证据链，后续涨分方向见报告 §5，
+动代码前须按 GOAL.md 第 1/2 条逐项留痕
+
+---
+
+### 20260831_goldfish_source_research
+
+改动: 无代码改动。拉取 goldfish 仓库至 test_engines/Goldfish 2250/，
+精读 Goldfish v2.1.1 源码（engine/src 约 2000 行 Rust：negamax/cuts/
+speculate/quiescence/tt/evaluate/movelist/opts/limits 等核心 100% 通读），
+产出对比研究报告
+目的: 填补五引擎 Elo 阶梯的 2250 档，定位 Hellcopter（~1900-2100）与
+2250 级引擎的决定性差异（用户指定：自研方向长期瓶颈，先学习）
+
+参考来源: Goldfish v2.1.1（MIT License, 作者 Bendik Samseth）,
+来源 https://github.com/bsamseth/goldfish（2026-08-31 克隆）,
+本地路径 test_engines/Goldfish 2250/goldfish/（README 内部排位表
+v2.1.0=2314, 以 v1.13 CCRL 40/40 为锚; 评估用 CPW 公开 PeSTO 表）。
+完整报告: docs/reports/20260831_goldfish_vs_hellcopter_research.md
+（报告 §0 含反剽窃声明: MIT 宽松许可无传染风险, 但仍只提取设计思想
+与数值事实描述, 不移植代码; PeSTO 表如采用须另行标注 CPW 来源）
+
+核心结论:
+1. 反向修正: 评估项数量不是 2250 档门槛——Goldfish 纯 PeSTO PSQT
+   （零兵结构/零王安全/非增量）+ PVS/NMP/razoring/futility 即到 2250+;
+   Hellcopter 评估特征面已全面超过 Goldfish
+2. 真正差异是 TT 工程代差: SF 式 10 字节条目+32B 3 槽簇+mul_hi64 索引
+   +eval 字段存储+杀分 50 步降级+GHI（halfmove≥90 禁截止）——静态分
+   复用是三代引擎（Pepito/Goldfish/Invictus）一致信号, Hellcopter 空白
+3. LMR/aspiration 不是 2250 档门槛（Goldfish 无此两项）; Hellcopter
+   搜索技术清单全面长于 Goldfish 却低 150-250 分——技术数量≠棋力,
+   与 Invictus 报告 §3.4 结论互证
+4. 诚实修正: Goldfish 测试池可用 Syzygy（本项目禁库）, 禁库规则下其
+   有效棋力大概率低于排位, 两池不同源 ±100 分偏差正常
+5. 实测受限: 沙箱 cargo 不可用, kNPS 未测（并入实验 1）
+
+判定: 研究完成（报告已存档）
+理由: 用户要求的拉取+研究+报告已落实; 五引擎阶梯已补 2250 档,
+后续涨分方向见报告 §5, 动代码前须按 GOAL.md 第 1/2 条逐项留痕
+
+---
+
+### 20260831_facon_source_research
+
+改动: 无代码改动。拉取 facon 仓库至 test_engines/Facon 2800/，精读
+Facon 1.6 "Temple" 源码（src/ 18 文件约 7500 行 C++17: search.cpp 主干
+/QS/go()/SEE/TT/TM 100% 精读, eval.cpp 结构+关键函数+934 权重体系精读）,
+产出对比研究报告并收束五引擎阶梯总对比（报告 §6）
+目的: 填补 2800 档并形成 Hellcopter→Goldfish→Pepito→Facon→Invictus
+完整 Elo 阶梯证据链, 定位各档分水岭（用户指定: 先学习再动手）
+
+参考来源: Facon 1.6 Temple（**无 LICENSE 文件, 默认保留所有权利,
+比 GPL 更严: 任何代码复制均不被许可**）, 作者 Carlos M. Canavessi,
+来源 https://github.com/CMCanavessi/facon（2026-08-31 克隆）,
+本地路径 test_engines/Facon 2800/facon/（README Ordo Elo ~2800,
+gauntlet 26 对手×40 局; 版本表 1.0→1.6 = 1220→2800）。
+完整报告: docs/reports/20260831_facon_vs_hellcopter_research.md
+（报告 §0 含反剽窃声明; §6 为五引擎阶梯总表与分水岭结论）
+
+核心结论:
+1. 最强参数证据: 1.5→1.6 零搜索改动 +250 Elo, 全部来自 934 权重
+   Texel 全量重调（tempo 单项 +19）; 对照其演进史 NMP +340 之后无任何
+   单项搜索技术超过 +250——参数置信度是 2500→2800 主通道
+2. 静态分获取三形态集齐: Hellcopter 每节点 lazy / Facon 仅剪枝浅层
+   计算（深节点零评估成本, 2800 不需要评估缓存）/ Invictus 缓存（3100
+   才需要）——修正 Invictus 报告为两步走: 先"按需计算"再"缓存"
+3. TT 着法轻量验证形态: 对生成着法表逐项比对（~10 行）, 与 Pepito/
+   Invictus 三引擎一致, Hellcopter 仍缺; Facon 形态最易落地
+4. 反例组: Facon 无 PVS、无 SE、无 ProbCut 照样 2800——与 Invictus
+   报告互证技术清单长度与 Elo 不相关
+5. 负结果清单可直接采信: Tarrasch 车置通路兵后（−9）、非线性机动性
+   （−12）、Kaufman 材料不平衡（≈0）已在 2800 级实测, Hellcopter
+   无需再花 A/B 预算验证这三个方向
+6. 五引擎分水岭: 2000→2250 TT 工程代差+静态分复用; 2250→2500 参数
+   置信度+增量成本; 2500→2800 LMR 家族+全量 Texel; 2800→3100 评估
+   缓存+材料级和棋/缩放框架。全程无一项需要新增评估特征或新搜索技术
+7. 实测受限: 沙箱 gcc 第三次复现 0xC0000135, Facon kNPS 未测
+   （自带 bench 10 位深度 18, 并入实验 1）
+
+判定: 研究完成（报告已存档）
+理由: 用户要求的拉取+研究+两份报告（Goldfish+Facon）已落实; 五引擎
+阶梯证据链闭合, 总路线图见 Facon 报告 §6（按分水岭顺序: TT/静态分
+复用 → 全量 Texel → 评估缓存/材料哈希框架）, 动代码前须按 GOAL.md
+第 1/2 条逐项留痕
+
+---
+
+### 20260831_reckless_chess324_research
+
+改动: 无代码改动。拉取 Reckless 仓库至 test_engines/Reckless 3700/，
+精读 v0.10.0-dev 源码（核心约 80 文件: board/parser/movegen/makemove/
+castling/moves/uci/nnue 全家族/evaluation 100% 精读），并外部文献核证
+chess324 变体定义，产出变体兼容专题研究报告
+目的: 用户指定专题——顶级引擎（3700+）如何支持 chess324, 是单独优化
+还是评估与 PST 解耦（用户目标: 更全面的变体兼容引擎, 不做与
+Hellcopter 的全面对比）
+
+参考来源: Reckless v0.10.0-dev（**AGPL v3, 含第 13 条网络条款, 传染性
+强于 GPL: 任何代码复制均不被许可**）, 作者 codedeliveryservice,
+来源 https://github.com/codedeliveryservice/Reckless（2026-08-31 克隆,
+HEAD 91b56c2; README v0.9.0: SPCC 3833 / CCRL 3767）。chess324 定义:
+Larry Kaufman 2022-08 TalkChess（王车标准位/双象异色/每方 18 排列/
+18×18=324/易位规则完全标准）; SPCC AntiDraw 2.0 开局集含 Chess324
+64x（Stefan Pohl, TalkChess 2022-09）——Reckless 实战评级的测试池
+成分。完整报告: docs/reports/20260831_reckless_chess324_research.md
+
+核心结论:
+1. 前提修正: Reckless 代码库零 chess324 专门代码（全库检索 324|960|
+   variant 仅命中 UCI_Chess960 选项与 960 perft 测试）; chess324 本身
+   因王车归位而"任何引擎都能下"（易位零改动, 只需 FEN 解析健壮）
+2. 三层解耦架构（非单独优化的实证）: 易位几何逐局面参数化
+   （castling_path/threat/rooks 从 FEN 动态预计算, 标准棋只是"王 e1
+   车 h1"特例, parser.rs:68-116）; I/O 双格式宽容（Shredder-FEN 与
+   KQkq 都接受, 收着法走"生成集比对"验证, UCI_Chess960 仅控输出
+   格式）; 评估特征零开局先验（NNUE 王桶条件化 PSQ + 攻击关系威胁
+   特征 + 位置无关校正）
+3. PST 解耦的本质: 位置价值 = (子, 格, 王位置桶, 视角) 的函数而非
+   绝对坐标函数——"马 f3 好多少"以"王在哪"为条件（psq.rs:204-211,
+   10 王桶: 第 1-2 行精细 16 桶/第 3 行 1 桶/第 4-8 行压缩 1 桶 =
+   王在宫/离宫/残局三态建模）; 威胁特征 66864 维为"攻击者×被攻击者
+   ×攻击格×被攻击格"六元组, 天然位置无关
+4. 诚实边界: NNUE 网络为嵌入式二进制, 训练数据是否含 FRC 增强不可
+   从源码判断; chess324 实战可用有 SPCC 评级佐证, 但退化幅度未实测
+   （未编译, 沙箱限制延续）
+5. 对 Hellcopter 启示: 兵结构/机动性/王安全特征本就位置无关（存量
+   资产）, 唯一先验污染源是 PST; 最低成本解耦 = PST 加王位置桶维度
+   （[piece][sq] → [piece][sq][king_bucket], 用现有 Texel 管线调参,
+   王翼桶天然吸收现主表, 不需变体训练数据）; AGPL 代码严禁复制,
+   思想层面（王桶条件化/动态易位几何）落地须留痕
+
+判定: 研究完成（报告已存档）
+理由: 用户指定的拉取+chess324 专题研究+报告已落实; 结论为"三层架构
+性解耦而非单独优化", 后续若动 Hellcopter PST/易位代码须按 GOAL.md
+第 1/2 条逐项留痕（AGPL 合规红线已写入报告 §0）

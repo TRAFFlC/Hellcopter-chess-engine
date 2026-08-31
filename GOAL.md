@@ -57,10 +57,11 @@
 - **M1 标定第 1 轮已完成（未达标）**: 240 局 @96+0.8 →
   胜99/负84/和57, Elo +21.7±38.5, LOS 86.6% < 97% 门槛。
   输棋画像健康（速败仅 19%, 长局消耗为主）。PGN=arena/m1_monarch_20260823_2142.pgn
-- **进行中**: LMR d2.5 Tier1 SPRT 自对弈确认（divisor 2.0→2.5 单参数,
-  SPRT 0,5,.05,.05 @10+0.2 并发4, 日志 temp_exp/lmr_sprt_run1.log）
-  → 若接受 H1: 晋升该参数（走 T2 或直接并入基线候选）→ 以新配置重跑 M1 标定
-  → 若接受 H0: 回滚, 直接以现配置续跑 Monarch 统计
+- **进行中→已裁决**: LMR d2.5 Tier1 快筛失败（250局, −33.5±31.4, LOS 1.8%）
+  → 不晋升。教训入档：7 月网格结论跑在 scale300 环境上，在当前 scale60 引擎上
+  **视为失效**，引用前必须重测
+- **M1 统计续磨启动**: 同配置续跑 vs Monarch2005（run_m1.ps1 -rounds 700），
+  与第 1 轮 240 局合并统计；预计需累计 ~920 局达 LOS97%，约 1.5~2 天
 - **配置基线已固化**: arena/copter/engine_params.json = resolved(v1.9.5)+Threads1
   （tests/make_arena_config.py 生成; 与烘焙宏经节点数逐位验证等价）。
   根 engine_params.json 已同步清洗——此前含 ~40 个来源不明 eval 权重（已存档快照），

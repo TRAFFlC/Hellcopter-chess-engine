@@ -225,7 +225,10 @@ class UCIEngine:
         if exit_bonus > 0:
             optimal_time += exit_bonus
 
-        max_depth = params.get("depth", 100)
+        # 注意：max_depth=0（默认）让 C 端按时间控制（time_limit）。
+        # max_depth>0 时 C 端会忽略 time_limit、改跑固定深度（time_limit 被替换为 3600s，
+        # 见 src/engine_search_root.c 的 fallback 逻辑）。
+        max_depth = params.get("depth", 0)
 
         time_left_for_engine = 0.0
         increment_for_engine = 0.0

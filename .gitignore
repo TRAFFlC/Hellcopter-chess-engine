@@ -114,3 +114,18 @@ tuning/texel_tuned.json
 
 # Dot-prefixed temp files (e.g. .__test_copy__.json)
 .__*
+
+# 实验临时产物（Tier 1 快筛工作目录；结论以 EXPERIMENTS.md 为准）
+temp_exp/
+lmr_sprt_run1.log
+
+# M1 自对弈仲裁临时 PGN（正式标定 PGN 为 arena/m1_monarch_*.pgn，仍跟踪）
+arena/m1_self_*.pgn
+
+# 消融/诊断原始日志（中间产物，结论在 EXPERIMENTS.md）
+tests/results/*.log
+tests/results/cpu_test*.pgn
+tests/results/quick_test_merge.pgn
+
+# CPW 翻译参考文章（磁盘保留，不入版本管理）
+chess_programming_articles/
