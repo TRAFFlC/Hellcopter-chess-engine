@@ -43,7 +43,6 @@ typedef struct
     int eval_score;
     int mailbox[64];
     U64 hash;
-    U64 pawn_hash;
     int king_sq[2];
     int phase;
     int npm[2];
@@ -58,7 +57,6 @@ typedef struct
     int en_passant;
     int halfmove_clock;
     U64 hash;
-    U64 pawn_hash;
     int eval_score;
     int phase;
     int king_sq[2];
@@ -177,14 +175,8 @@ typedef struct {
     int history[64][64];
     Move countermove[2][64][64];
     Move followup[2][64][64];
-    int16_t capture_history[7][64][7];
-    int16_t cont_history[7][64][7][64];
     int valid;
 } HeuristicSnapshot;
-
-/* Capture history and Continuation history tables (defined in engine_search.c) */
-extern int16_t g_capture_history[7][64][7];     /* [attacker_type][to_sq][captured_type] */
-extern int16_t g_cont_history[7][64][7][64];    /* [prev_piece][prev_to][curr_piece][curr_to] */
 
 void save_heuristic_snapshot(const SearchState *s);
 void restore_heuristic_snapshot(SearchState *s);

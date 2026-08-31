@@ -582,7 +582,7 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
             # 其他搜索参数
             f.write("/* --- Other Search --- */\n")
             f.write(
-                f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 60)}\n")
+                f"#define SEE_PRUNE_DEPTH_SCALE {search_params.get('see_prune_depth_scale', 120)}\n")
             f.write(
                 f"#define HISTORY_PRUNE_BASE {search_params.get('history_prune_base', 3)}\n")
             f.write(f"#define LMP_BASE {search_params.get('lmp_base', 6)}\n")
@@ -727,6 +727,15 @@ def _generate_params_header(config: Dict[str, Any], output_path: str) -> bool:
                 f"static const int EST_MOVES_MATERIAL_THRESHOLDS[{len(est_thresholds)}] = {{\n")
             f.write("    " + ", ".join(str(v) for v in est_thresholds) + "\n")
             f.write("};\n\n")
+
+            # 阶段感知时间分配常量
+            f.write(f"#define PHASE_OPENING_MOVES_REMAINING {time_mgmt.get('phase_opening_moves_remaining', 20)}\n")
+            f.write(f"#define PHASE_MIDGAME_MOVES_REMAINING {time_mgmt.get('phase_midgame_moves_remaining', 12)}\n")
+            f.write(f"#define PHASE_ENDGAME_MOVES_REMAINING {time_mgmt.get('phase_endgame_moves_remaining', 20)}\n")
+            f.write(f"#define PHASE_OPENING_MAX_MOVE {time_mgmt.get('phase_opening_max_move', 12)}\n")
+            f.write(f"#define PHASE_MIDGAME_MAX_MOVE {time_mgmt.get('phase_midgame_max_move', 30)}\n")
+            f.write(f"#define PHASE_BASE_MAX_TIME_FRACTION_NUM {time_mgmt.get('phase_base_max_time_fraction_num', 1)}\n")
+            f.write(f"#define PHASE_BASE_MAX_TIME_FRACTION_DEN {time_mgmt.get('phase_base_max_time_fraction_den', 3)}\n\n")
 
             root_capture = time_mgmt.get('root_capture_value', [
                                          0, 100, 300, 320, 500, 900, 0])

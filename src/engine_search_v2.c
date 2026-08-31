@@ -1,33 +1,33 @@
-/* engine_search.c — 搜索核心：TT、SEE、走法排序、quiescence、negamax（从 engine_core.c 拆分） */
-/* v2: 重复检测优化 + TT 命中率统计 (Task #109) */
+﻿/* engine_search.c 鈥?鎼滅储鏍稿績锛歍T銆丼EE銆佽蛋娉曟帓搴忋€乹uiescence銆乶egamax锛堜粠 engine_core.c 鎷嗗垎锛?*/
+/* v2: 閲嶅妫€娴嬩紭鍖?+ TT 鍛戒腑鐜囩粺璁?(Task #109) */
 
 /* Syzygy tablebase largest cardinality (exported from tbprobe.c via engine_debug.c) */
 extern unsigned TB_LARGEST;
 
-/* === TT 命中率统计 (诊断用) === */
+/* === TT 鍛戒腑鐜囩粺璁?(璇婃柇鐢? === */
 long long g_tt_probe_count = 0;
-long long g_tt_hit_count = 0;      /* TT 命中且深度足够, 直接返回 */
-long long g_tt_move_only_count = 0; /* TT 命中但深度不够, 只用 TT move */
-long long g_tt_flag_fail_count = 0; /* TT 命中且深度够但 flag 不满足条件 */
-long long g_tt_miss_count = 0;     /* TT 未命中 */
-long long g_tt_store_count = 0;    /* TT store 次数 */
+long long g_tt_hit_count = 0;      /* TT 鍛戒腑涓旀繁搴﹁冻澶? 鐩存帴杩斿洖 */
+long long g_tt_move_only_count = 0; /* TT 鍛戒腑浣嗘繁搴︿笉澶? 鍙敤 TT move */
+long long g_tt_flag_fail_count = 0; /* TT 鍛戒腑涓旀繁搴﹀浣?flag 涓嶆弧瓒虫潯浠?*/
+long long g_tt_miss_count = 0;     /* TT 鏈懡涓?*/
+long long g_tt_store_count = 0;    /* TT store 娆℃暟 */
 
-/* === SEE 剪枝诊断计数器 === */
-long long g_see_capture_total = 0;     /* move loop 中遇到的吃子着法总数 */
-long long g_see_eligible = 0;          /* 满足 SEE 剪枝前 6 个条件的吃子着法 */
-long long g_see_zero_window = 0;       /* 其中满足零窗口的 */
-long long g_see_threshold_met = 0;     /* 其中 SEE 值 < -depth*scale 的 */
-long long g_see_bad_capture_count = 0; /* bad capture (SEE<0) 总数 */
-long long g_see_bad_capture_sum = 0;   /* bad capture SEE 值总和（用于算平均） */
-long long g_see_bad_capture_min = 0;   /* bad capture SEE 最小值（最负） */
-/* move scoring 阶段的 see() 诊断 */
-long long g_see_scoring_bad_count = 0;  /* see() 返回 < 0 的次数 */
-long long g_see_scoring_bad_sum = 0;    /* see() < 0 时返回值总和 */
-long long g_see_scoring_bad_min = 0;    /* see() < 0 时最小值 */
-/* NMP 诊断 */
-long long g_nmp_null_fail = 0;          /* null_score < beta (NMP 搜索未产生 cutoff) */
-long long g_nmp_verify_fail = 0;        /* null_score >= beta 但验证搜索失败 */
-long long g_nmp_verify_depth = 0;       /* 进入验证搜索的次数 */
+/* === SEE 鍓灊璇婃柇璁℃暟鍣?=== */
+long long g_see_capture_total = 0;     /* move loop 涓亣鍒扮殑鍚冨瓙鐫€娉曟€绘暟 */
+long long g_see_eligible = 0;          /* 婊¤冻 SEE 鍓灊鍓?6 涓潯浠剁殑鍚冨瓙鐫€娉?*/
+long long g_see_zero_window = 0;       /* 鍏朵腑婊¤冻闆剁獥鍙ｇ殑 */
+long long g_see_threshold_met = 0;     /* 鍏朵腑 SEE 鍊?< -depth*scale 鐨?*/
+long long g_see_bad_capture_count = 0; /* bad capture (SEE<0) 鎬绘暟 */
+long long g_see_bad_capture_sum = 0;   /* bad capture SEE 鍊兼€诲拰锛堢敤浜庣畻骞冲潎锛?*/
+long long g_see_bad_capture_min = 0;   /* bad capture SEE 鏈€灏忓€硷紙鏈€璐燂級 */
+/* move scoring 闃舵鐨?see() 璇婃柇 */
+long long g_see_scoring_bad_count = 0;  /* see() 杩斿洖 < 0 鐨勬鏁?*/
+long long g_see_scoring_bad_sum = 0;    /* see() < 0 鏃惰繑鍥炲€兼€诲拰 */
+long long g_see_scoring_bad_min = 0;    /* see() < 0 鏃舵渶灏忓€?*/
+/* NMP 璇婃柇 */
+long long g_nmp_null_fail = 0;          /* null_score < beta (NMP 鎼滅储鏈骇鐢?cutoff) */
+long long g_nmp_verify_fail = 0;        /* null_score >= beta 浣嗛獙璇佹悳绱㈠け璐?*/
+long long g_nmp_verify_depth = 0;       /* 杩涘叆楠岃瘉鎼滅储鐨勬鏁?*/
 void print_tt_stats(void)
 {
     if (g_tt_probe_count > 0)
@@ -80,10 +80,10 @@ void reset_tt_stats(void)
     g_nmp_verify_depth = 0;
 }
 
-/* === 重复检测哈希表 (Task #109) ===
- * 原实现: engine_search.c L898-916 对 game_history[512] + search_history[256] 线性扫描
- * 新实现: game_history 用哈希表 O(1) 查询 (懒初始化), search_history 仍线性扫描 (栈式, <30 元素)
- * 性能: 从 ~768 比较/节点 降至 ~30 比较 + 1 哈希查询/节点
+/* === 閲嶅妫€娴嬪搱甯岃〃 (Task #109) ===
+ * 鍘熷疄鐜? engine_search.c L898-916 瀵?game_history[512] + search_history[256] 绾挎€ф壂鎻?
+ * 鏂板疄鐜? game_history 鐢ㄥ搱甯岃〃 O(1) 鏌ヨ (鎳掑垵濮嬪寲), search_history 浠嶇嚎鎬ф壂鎻?(鏍堝紡, <30 鍏冪礌)
+ * 鎬ц兘: 浠?~768 姣旇緝/鑺傜偣 闄嶈嚦 ~30 姣旇緝 + 1 鍝堝笇鏌ヨ/鑺傜偣
  */
 #define REP_HASH_BITS 10
 #define REP_HASH_SIZE (1 << REP_HASH_BITS)
@@ -93,17 +93,17 @@ void reset_tt_stats(void)
 typedef struct {
     U64 keys[REP_HASH_SIZE];
     int8_t counts[REP_HASH_SIZE];
-    int used;  /* 已使用的槽数 (用于诊断) */
+    int used;  /* 宸蹭娇鐢ㄧ殑妲芥暟 (鐢ㄤ簬璇婃柇) */
 } RepHash;
 
-/* 每线程缓存: 懒初始化, 用 SearchState 指针 + count + 首尾元素校验 */
+/* 姣忕嚎绋嬬紦瀛? 鎳掑垵濮嬪寲, 鐢?SearchState 鎸囬拡 + count + 棣栧熬鍏冪礌鏍￠獙 */
 static struct {
     SearchState *s;
     int game_history_count;
-    U64 first_key;   /* game_history[0] 或 0 */
-    U64 last_key;    /* game_history[count-1] 或 0 */
+    U64 first_key;   /* game_history[0] 鎴?0 */
+    U64 last_key;    /* game_history[count-1] 鎴?0 */
     RepHash hash;
-    int initialized; /* 是否已初始化过 */
+    int initialized; /* 鏄惁宸插垵濮嬪寲杩?*/
 } g_rep_cache[REP_HASH_MAX_THREADS];
 
 /* Thread-local evaluation thread id.  evaluate() is called deep inside the
@@ -159,11 +159,11 @@ void set_eval_thread_id(int tid)
 /* FNV-like hash for 64-bit key to 10-bit index */
 static inline int rep_hash_idx(U64 key)
 {
-    /* 使用 key 的高位 (Zobrist hash 高位分布更均匀) */
+    /* 浣跨敤 key 鐨勯珮浣?(Zobrist hash 楂樹綅鍒嗗竷鏇村潎鍖€) */
     return (int)((key >> 54) ^ (key >> 44)) & REP_HASH_MASK;
 }
 
-/* 插入/递增 (开放寻址, 有限探测) */
+/* 鎻掑叆/閫掑 (寮€鏀惧鍧€, 鏈夐檺鎺㈡祴) */
 static void rep_hash_insert(RepHash *t, U64 key)
 {
     int idx = rep_hash_idx(key);
@@ -185,10 +185,10 @@ static void rep_hash_insert(RepHash *t, U64 key)
         }
         idx = (idx + 1) & REP_HASH_MASK;
     }
-    /* Table full — silently drop this entry (extremely rare) */
+    /* Table full 鈥?silently drop this entry (extremely rare) */
 }
 
-/* 查询计数 (开放寻址, 有限探测) */
+/* 鏌ヨ璁℃暟 (寮€鏀惧鍧€, 鏈夐檺鎺㈡祴) */
 static int rep_hash_count(const RepHash *t, U64 key)
 {
     int idx = rep_hash_idx(key);
@@ -204,9 +204,9 @@ static int rep_hash_count(const RepHash *t, U64 key)
     return 0; /* Table full, key not found */
 }
 
-/* 懒初始化 + 查询 game_history 重复次数
- * 校验: SearchState 指针 + game_history_count + 首尾 key
- * 若校验失败则重建哈希表 (O(game_history_count), 仅在搜索首次调用时发生)
+/* 鎳掑垵濮嬪寲 + 鏌ヨ game_history 閲嶅娆℃暟
+ * 鏍￠獙: SearchState 鎸囬拡 + game_history_count + 棣栧熬 key
+ * 鑻ユ牎楠屽け璐ュ垯閲嶅缓鍝堝笇琛?(O(game_history_count), 浠呭湪鎼滅储棣栨璋冪敤鏃跺彂鐢?
  */
 static int game_rep_count_cached(SearchState *s, U64 key)
 {
@@ -218,13 +218,13 @@ static int game_rep_count_cached(SearchState *s, U64 key)
     U64 fk = (ghc > 0) ? s->game_history[0] : 0;
     U64 lk = (ghc > 0) ? s->game_history[ghc - 1] : 0;
 
-    /* 校验缓存是否有效 */
+    /* 鏍￠獙缂撳瓨鏄惁鏈夋晥 */
     if (g_rep_cache[tid].s != s ||
         g_rep_cache[tid].game_history_count != ghc ||
         g_rep_cache[tid].first_key != fk ||
         g_rep_cache[tid].last_key != lk)
     {
-        /* 重建哈希表 */
+        /* 閲嶅缓鍝堝笇琛?*/
         memset(&g_rep_cache[tid].hash, 0, sizeof(RepHash));
         for (int i = 0; i < ghc; i++)
         {
@@ -238,8 +238,8 @@ static int game_rep_count_cached(SearchState *s, U64 key)
     }
 
     int hash_reps = rep_hash_count(&g_rep_cache[tid].hash, key);
-    /* 1024 槽哈希表的碰撞概率非零。当哈希表报告 >= 2 时回退到线性
-     * 扫描验证，防止伪阳性导致错误的和棋判定。 */
+    /* 1024 妲藉搱甯岃〃鐨勭鎾炴鐜囬潪闆躲€傚綋鍝堝笇琛ㄦ姤鍛?>= 2 鏃跺洖閫€鍒扮嚎鎬?
+     * 鎵弿楠岃瘉锛岄槻姝吉闃虫€у鑷撮敊璇殑鍜屾鍒ゅ畾銆?*/
     if (hash_reps >= 2)
     {
         int linear_reps = 0;
@@ -325,34 +325,6 @@ static int g_tt_cluster_count = 0;
 static int g_tt_generation = 1;
 static int g_tt_hash_mb = 128;
 
-/* Capture History: tracks success of captures indexed by [attacker_type][to_sq][captured_type] */
-int16_t g_capture_history[7][64][7];
-
-/* Continuation History: tracks move success after specific previous moves [prev_piece][prev_to][curr_piece][curr_to] */
-int16_t g_cont_history[7][64][7][64];
-
-/* Atomic, clamped update for the globally-shared history tables in SMP mode.
- * Uses a compare-and-swap loop so concurrent updates from multiple workers do
- * not silently overwrite each other.  The value is clamped to
- * +/- HISTORY_SCORE_LIMIT before being stored. */
-static void history_atomic_add(int16_t *ptr, int delta)
-{
-    int16_t old_val, new_val;
-    do
-    {
-        old_val = *ptr;
-        new_val = old_val + (int16_t)delta;
-        if (new_val > HISTORY_SCORE_LIMIT)
-            new_val = HISTORY_SCORE_LIMIT;
-        if (new_val < -HISTORY_SCORE_LIMIT)
-            new_val = -HISTORY_SCORE_LIMIT;
-#ifdef _MSC_VER
-    } while (_InterlockedCompareExchange16((volatile short *)ptr, (short)new_val, (short)old_val) != (short)old_val);
-#else
-    } while (!__atomic_compare_exchange_n(ptr, &old_val, new_val,
-                                          0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
-#endif
-}
 
 static void tt_init_global(int hash_mb)
 {
@@ -453,7 +425,7 @@ static int tt_probe(SearchState *s, U64 key, int depth, int alpha, int beta, Mov
                     g_tt_hit_count++;
                     return score;
                 }
-                /* depth 够但 flag 不满足条件 */
+                /* depth 澶熶絾 flag 涓嶆弧瓒虫潯浠?*/
                 g_tt_flag_fail_count++;
             }
             else
@@ -499,7 +471,7 @@ static void tt_store(SearchState *s, U64 key, int depth, int score, int flag, Mo
     /* All SMP workers now write into the shared TT, so that the global
      * tt_generation counter (incremented by all workers each iteration)
      * stays consistent with the entries stored.  Lazy SMP tolerates the
-     * occasional data race — the benefit of shared knowledge outweighs it. */
+     * occasional data race 鈥?the benefit of shared knowledge outweighs it. */
     /* Singular Extension: don't store TT when we have an excluded move at this ply,
      * to avoid polluting TT with results from an incomplete search. */
     if (ply < 128 && (s->se_excluded[ply].from != 0 || s->se_excluded[ply].to != 0))
@@ -807,7 +779,7 @@ static int see(Board *b, int from, int to)
         int next_value = see_piece_value(next_piece);
 
         /* Remove the attacker from its original square (X-ray effect).
-         * Do NOT update current_sq — all subsequent captures happen at the
+         * Do NOT update current_sq 鈥?all subsequent captures happen at the
          * original target square 'to'. The piece moves to 'to' conceptually
          * but occupied already has a piece at 'to', so we only need to clear
          * the attacker's origin to reveal sliding attackers behind it. */
@@ -818,7 +790,7 @@ static int see(Board *b, int from, int to)
         if (next_piece == KING)
         {
             /* Check if the target square is attacked by any opponent piece.
-             * If so, the king cannot safely capture — abort the exchange
+             * If so, the king cannot safely capture 鈥?abort the exchange
              * and discard the king's gain. */
             U64 opp_bq = b->pieces[1 - stm][BISHOP] | b->pieces[1 - stm][QUEEN];
             U64 opp_rq = b->pieces[1 - stm][ROOK] | b->pieces[1 - stm][QUEEN];
@@ -841,10 +813,10 @@ static int see(Board *b, int from, int to)
                 break;
             }
 
-            /* 国王安全吃子，对手无法回吃国王。
-             * 直接返回净收益。
-             * 注意: 与标准路径一致，gain[0] 不截断 —
-             * 吃子方已经走了，无法撤回。 */
+            /* 鍥界帇瀹夊叏鍚冨瓙锛屽鎵嬫棤娉曞洖鍚冨浗鐜嬨€?
+             * 鐩存帴杩斿洖鍑€鏀剁泭銆?
+             * 娉ㄦ剰: 涓庢爣鍑嗚矾寰勪竴鑷达紝gain[0] 涓嶆埅鏂?鈥?
+             * 鍚冨瓙鏂瑰凡缁忚蛋浜嗭紝鏃犳硶鎾ゅ洖銆?*/
             int g = gain_count - 1;
             while (g > 0)
             {
@@ -856,7 +828,7 @@ static int see(Board *b, int from, int to)
             return gain[0];
         }
 
-        /* current_sq stays as 'to' — all captures happen at the target square */
+        /* current_sq stays as 'to' 鈥?all captures happen at the target square */
         stm = 1 - stm;
         piece = next_piece;
 
@@ -864,11 +836,11 @@ static int see(Board *b, int from, int to)
             break;
     }
 
-    /* SEE 反向计算: 从交换序列末尾向前推导每方的最优净收益。
-     * 关键: 只有"可以选择不参与"的一方才截断负数为 0 (stand pat)。
-     * 吃子方(第一步)已经走了, 无法撤回, 所以 gain[0] 不截断 —
-     * 这样 see() 能正确返回负数, 使 SEE 剪枝可以工作。
-     * 修复前: 所有 gain[i] 都截断, see() 永远 >= 0, SEE 剪枝从未触发。 */
+    /* SEE 鍙嶅悜璁＄畻: 浠庝氦鎹㈠簭鍒楁湯灏惧悜鍓嶆帹瀵兼瘡鏂圭殑鏈€浼樺噣鏀剁泭銆?
+     * 鍏抽敭: 鍙湁"鍙互閫夋嫨涓嶅弬涓?鐨勪竴鏂规墠鎴柇璐熸暟涓?0 (stand pat)銆?
+     * 鍚冨瓙鏂?绗竴姝?宸茬粡璧颁簡, 鏃犳硶鎾ゅ洖, 鎵€浠?gain[0] 涓嶆埅鏂?鈥?
+     * 杩欐牱 see() 鑳芥纭繑鍥炶礋鏁? 浣?SEE 鍓灊鍙互宸ヤ綔銆?
+     * 淇鍓? 鎵€鏈?gain[i] 閮芥埅鏂? see() 姘歌繙 >= 0, SEE 鍓灊浠庢湭瑙﹀彂銆?*/
     while (gain_count > 1)
     {
         gain_count--;
@@ -989,7 +961,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
                 else
                     qs_tb_score = -(MATE_SCORE - 200) + ply;
                 s->tb_hits++;
-                /* TB result is exact — store in TT with EXACT flag and return */
+                /* TB result is exact 鈥?store in TT with EXACT flag and return */
                 {
                     Move zero_move = {0};
                     tt_store(s, pos_key, 0, qs_tb_score, 0, zero_move, ply);
@@ -1015,16 +987,19 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
          * delta pruning, so that positions where a queen capture is still
          * relevant are not incorrectly pruned.  Uses get_piece_value() so
          * runtime-loaded piece values are respected. */
-        if (stand_pat + get_piece_value(QUEEN) + get_piece_value(QUEEN) - get_piece_value(PAWN) < alpha)
-            return alpha;
+        if (g_runtime_params.delta_prune_enabled)
         {
-            int delta_margin = get_piece_value(QUEEN);
-            int my_npm = s->board.npm[s->board.side_to_move];
-            int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
-            if (my_npm < opp_npm - 100)
-                delta_margin = delta_margin * 3 / 2;
-            if (stand_pat + delta_margin < alpha)
+            if (stand_pat + get_piece_value(QUEEN) + get_piece_value(QUEEN) - get_piece_value(PAWN) < alpha)
                 return alpha;
+            {
+                int delta_margin = get_piece_value(QUEEN);
+                int my_npm = s->board.npm[s->board.side_to_move];
+                int opp_npm = s->board.npm[s->board.side_to_move ^ 1];
+                if (my_npm < opp_npm - 100)
+                    delta_margin = delta_margin * 3 / 2;
+                if (stand_pat + delta_margin < alpha)
+                    return alpha;
+            }
         }
         if (ply >= 60)
             return alpha;
@@ -1040,7 +1015,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     else
     {
         n = qsearch_generate_moves(&s->board, moves);
-        /* 在浅层 QS 中加入安静将军着法，提升战术视野 */
+        /* 鍦ㄦ祬灞?QS 涓姞鍏ュ畨闈欏皢鍐涚潃娉曪紝鎻愬崌鎴樻湳瑙嗛噹 */
         if (qs_depth < QS_CHECK_MAX_DEPTH)
         {
             n = generate_checking_moves(&s->board, moves, n);
@@ -1050,7 +1025,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
     for (i = 0; i < n; i++)
     {
         moves[i].score = mvv_lva(&s->board, &moves[i]);
-        /* 安静将军着法给固定分数，低于吃子但高于普通安静走法 */
+        /* 瀹夐潤灏嗗啗鐫€娉曠粰鍥哄畾鍒嗘暟锛屼綆浜庡悆瀛愪絾楂樹簬鏅€氬畨闈欒蛋娉?*/
         if (!moves[i].capture && !moves[i].promotion && moves[i].score == 0)
             moves[i].score = QS_CHECK_SCORE;
         /* Give TT move the highest priority for better move ordering */
@@ -1067,7 +1042,7 @@ int quiescence_search(SearchState *s, int alpha, int beta, int ply, int qs_depth
         pick_next_move(moves, n, i);
         if (!in_check && moves[i].capture && !moves[i].promotion)
         {
-            /* SEE 只读 Board 不修改，直接传指针避免 436 字节拷贝 */
+            /* SEE 鍙 Board 涓嶄慨鏀癸紝鐩存帴浼犳寚閽堥伩鍏?436 瀛楄妭鎷疯礉 */
             int see_score = see(&s->board, moves[i].from, moves[i].to);
             if (see_score < 0)
                 continue;
@@ -1145,8 +1120,14 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     if ((s->nodes & s->time_check_mask) == 0)
     {
         double elapsed = get_time() - s->start_time;
-        if (elapsed >= s->time_limit || g_engine_abort_flag ||
-            (s->node_limit > 0 && s->nodes >= s->node_limit))
+        if (s->node_limit > 0 && s->nodes >= s->node_limit) {
+            fprintf(stderr, "DEB NLHIT tid=%d n=%lld lim=%lld\n",
+                    s->thread_id, (long long)s->nodes, (long long)s->node_limit);
+            fflush(stderr);
+            s->aborted = 1;
+            return 0;
+        }
+        if (elapsed >= s->time_limit || g_engine_abort_flag)
         {
             s->aborted = 1;
             return 0;
@@ -1249,9 +1230,9 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int total_reps = 0;
         int game_reps = 0;
         int search_reps = 0;
-        /* Task #109: game_history 用哈希表 O(1) 查询替代线性扫描 */
+        /* Task #109: game_history 鐢ㄥ搱甯岃〃 O(1) 鏌ヨ鏇夸唬绾挎€ф壂鎻?*/
         game_reps = game_rep_count_cached(s, key);
-        /* search_history 是栈式 (深度通常 <30), 线性扫描成本可接受 */
+        /* search_history 鏄爤寮?(娣卞害閫氬父 <30), 绾挎€ф壂鎻忔垚鏈彲鎺ュ彈 */
         for (rep_i = 0; rep_i < s->search_history_count; rep_i++)
         {
             if (s->search_history[rep_i] == key)
@@ -1279,11 +1260,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     }
 
     int in_check = is_check(&s->board, s->board.side_to_move);
-    if (in_check && ext_count < 2)
-    {
-        depth++;
-        ext_count++;
-    }
+    /* check extension removed 鈥?ablation showed 0 Elo contribution */
 
     int is_endgame = 0;
     int is_simple_endgame = 0;
@@ -1333,26 +1310,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
     }
 
-    /* Endgame checkmate extension: in clearly winning endgames (e.g. KQ+P vs K),
-     * extend search depth to help find checkmate paths more efficiently.
-     * Only apply when one side has Q or R and the other has no Q/R at all. */
-    if (is_endgame && ext_count < 3)
-    {
-        int w_mat = s->board.npm[0];
-        int b_mat = s->board.npm[1];
-        int w_has_major = (count_bits(s->board.pieces[WHITE][QUEEN]) + count_bits(s->board.pieces[WHITE][ROOK])) > 0;
-        int b_has_major = (count_bits(s->board.pieces[BLACK][QUEEN]) + count_bits(s->board.pieces[BLACK][ROOK])) > 0;
-        if (w_has_major && !b_has_major && w_mat - b_mat > 400)
-        {
-            depth++;
-            ext_count++;
-        }
-        else if (b_has_major && !w_has_major && b_mat - w_mat > 400)
-        {
-            depth++;
-            ext_count++;
-        }
-    }
+
 
     int static_eval = evaluate(&s->board);
     if (s->board.side_to_move == BLACK)
@@ -1445,7 +1403,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         {
             int see_val = see(b, moves[i].from, moves[i].to);
             move_see_vals[i] = see_val; /* Store pure SEE for pruning (Task #110) */
-            /* 诊断: 统计 see() 返回值分布 */
+            /* 璇婃柇: 缁熻 see() 杩斿洖鍊煎垎甯?*/
             if (see_val < 0)
             {
                 g_see_scoring_bad_count++;
@@ -1461,59 +1419,51 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
             {
                 moves[i].score = BAD_CAPTURE_BASE + see_val;
             }
-            /* Capture History: refine capture ordering based on past success */
-            if (g_runtime_params.capture_history_enabled)
-            {
-                int ch_attacker = piece_on_square(b, moves[i].from);
-                int ch_captured = moves[i].capture;
-                if (ch_attacker > 0 && ch_attacker <= 6 && ch_captured > 0 && ch_captured <= 6)
-                    moves[i].score += g_capture_history[ch_attacker][moves[i].to][ch_captured];
-            }
+
         }
         else
         {
-            int k1, k2;
-            if (ply < 64)
+            if (g_runtime_params.killers_enabled)
             {
-                for (k1 = 0; k1 < 2; k1++)
+                int k1, k2;
+                if (ply < 64)
                 {
-                    if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
+                    for (k1 = 0; k1 < 2; k1++)
                     {
-                        moves[i].score = KILLER_BASE_SCORE - k1 * KILLER_STEP;
-                        break;
+                        if (s->killers[ply][k1].from == moves[i].from && s->killers[ply][k1].to == moves[i].to)
+                        {
+                            moves[i].score = KILLER_BASE_SCORE - k1 * KILLER_STEP;
+                            break;
+                        }
                     }
                 }
             }
-            if (moves[i].score == 0 && ply >= 1)
+            if (g_runtime_params.countermove_followup_enabled)
             {
-                Move prev_move_cm = s->move_stack[ply - 1];
-                int prev_side = 1 - s->board.side_to_move;
-                Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
-                if (cm->from == moves[i].from && cm->to == moves[i].to)
+                if (moves[i].score == 0 && ply >= 1)
                 {
-                    moves[i].score = COUNTERMOVE_SCORE;
+                    Move prev_move_cm = s->move_stack[ply - 1];
+                    int prev_side = 1 - s->board.side_to_move;
+                    Move *cm = &s->countermove[prev_side][prev_move_cm.from][prev_move_cm.to];
+                    if (cm->from == moves[i].from && cm->to == moves[i].to)
+                    {
+                        moves[i].score = COUNTERMOVE_SCORE;
+                    }
+                }
+                if (moves[i].score == 0 && ply >= 3)
+                {
+                    Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
+                    if (fu->from == moves[i].from && fu->to == moves[i].to)
+                    {
+                        moves[i].score = FOLLOWUP_SCORE;
+                    }
                 }
             }
-            if (moves[i].score == 0 && ply >= 3)
-            {
-                Move *fu = &s->followup[s->board.side_to_move][moves[i].from][moves[i].to];
-                if (fu->from == moves[i].from && fu->to == moves[i].to)
-                {
-                    moves[i].score = FOLLOWUP_SCORE;
-                }
-            }
-            if (moves[i].score == 0)
+            if (moves[i].score == 0 && g_runtime_params.history_table_enabled)
             {
                 moves[i].score = s->history[moves[i].from][moves[i].to];
             }
-            /* Continuation History: refine quiet move ordering with previous-move context */
-            if (g_runtime_params.continuation_history_enabled && ply >= 1)
-            {
-                int ch_prev_pt = s->piece_type_stack[ply - 1];
-                int ch_curr_pt = piece_on_square(b, moves[i].from);
-                if (ch_prev_pt > 0 && ch_prev_pt <= 6 && ch_curr_pt > 0 && ch_curr_pt <= 6)
-                    moves[i].score += g_cont_history[ch_prev_pt][s->move_stack[ply - 1].to][ch_curr_pt][moves[i].to];
-            }
+
             /* Promotion bonus: always prioritize promotions regardless of game phase.
              * A promotion is one of the most critical moves in any position and must
              * be searched early to avoid missing mates or tactical wins. */
@@ -1521,7 +1471,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 moves[i].score += PROMOTION_SCORE;
             if (is_endgame)
             {
-                /* Check bonus removed from scoring phase — move_gives_check()
+                /* Check bonus removed from scoring phase 鈥?move_gives_check()
                  * does full make/unmake which is too expensive per-move.
                  * Checks will still be found during search naturally. */
                 if (!moves[i].capture && !moves[i].promotion)
@@ -1614,7 +1564,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
      *   The old check (beta < INF - 1000) was useless because MATE_SCORE (900000)
      *   is far below INF (1000000), so NMP would still fire at mate scores.
      * Guard 2: abs(static_eval) < MATE_SCORE - 500 prevents NMP when the position
-     *   is already evaluated as "nearly mated" — pruning here risks false positives
+     *   is already evaluated as "nearly mated" 鈥?pruning here risks false positives
      *   (missing the opponent's defense) or false negatives (missing our own mate).
      * Guard 3: In won positions (eval > 2000), reduce NMP depth to be more careful.
      * Guard 4: In clearly winning positions (static_eval > 2000), reduce NMP
@@ -1629,7 +1579,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
     {
         g_prof_nmp_triggered++;
         /* Guard 6: Disable NMP in pure pawn endgames.
-         * Zugzwang is extremely common in pawn endgames — a null move
+         * Zugzwang is extremely common in pawn endgames 鈥?a null move
          * gives an unrealistically optimistic result because being forced
          * to move is often a disadvantage. */
         {
@@ -1643,7 +1593,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         int saved_side = b->side_to_move;
         int saved_ep = b->en_passant;
         U64 saved_hash = b->hash;
-        U64 saved_pawn_hash = b->pawn_hash;
         int saved_eval_score = b->eval_score;
         int saved_mg = b->mg_score;
         int saved_eg = b->eg_score;
@@ -1689,7 +1638,6 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         b->side_to_move = saved_side;
         b->en_passant = saved_ep;
         b->hash = saved_hash;
-        b->pawn_hash = saved_pawn_hash;
         b->eval_score = saved_eval_score;
         b->mg_score = saved_mg;
         b->eg_score = saved_eg;
@@ -1825,10 +1773,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         if (g_runtime_params.see_prune_enabled && !in_check && moves[i].capture && !moves[i].promotion && depth <= 3 &&
             legal_count >= 2 && i >= 2 && (beta - alpha <= 1))
         {
-            /* Task #110: Use pure SEE value stored during scoring phase.
-             * Previously used (score - BAD_CAPTURE_BASE) which included
-             * capture_history adjustment, causing false SEE pruning when
-             * capture_history was strongly negative. */
+            /* Use pure SEE value stored during scoring phase */
             int cached_see = move_see_vals[i];
             g_see_zero_window++;
             if (cached_see < 0)
@@ -1845,7 +1790,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                 continue;
             }
         }
-        /* 诊断: 统计吃子着法总数和满足前 6 个条件的数量 */
+        /* 璇婃柇: 缁熻鍚冨瓙鐫€娉曟€绘暟鍜屾弧瓒冲墠 6 涓潯浠剁殑鏁伴噺 */
         if (moves[i].capture && !moves[i].promotion && depth <= 8 && !in_check)
         {
             g_see_capture_total++;
@@ -1875,7 +1820,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         }
         legal_count++;
 
-        /* TT Prefetch: 预取子节点的 TT 槽，减少递归调用时的 cache miss */
+        /* TT Prefetch: 棰勫彇瀛愯妭鐐圭殑 TT 妲斤紝鍑忓皯閫掑綊璋冪敤鏃剁殑 cache miss */
         {
             int tt_idx = (int)(b->hash & (U64)(s->tt_cluster_count - 1));
             __builtin_prefetch(&s->tt[tt_idx], 0, 1);
@@ -1894,7 +1839,7 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
         /* Promotion extension: extend search by 1 ply when a pawn promotes.
          * This ensures critical promotion lines (often leading to mates) are
          * searched deeply enough to be correctly evaluated. */
-        int promo_ext = (moves[i].promotion && ext_count < 3) ? 1 : 0;
+        int promo_ext = 0;
 
         if (ply < 128)
             s->move_stack[ply] = moves[i];
@@ -1987,31 +1932,11 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
 
         if (!moves[i].capture && !moves[i].promotion && score <= alpha)
         {
-            s->history[moves[i].from][moves[i].to] -= depth * depth;
-            if (s->history[moves[i].from][moves[i].to] < -HISTORY_SCORE_LIMIT)
-                s->history[moves[i].from][moves[i].to] = -HISTORY_SCORE_LIMIT;
-            /* Continuation History fail-low penalty */
-            if (g_runtime_params.continuation_history_enabled && ply >= 1)
+            if (g_runtime_params.history_table_enabled)
             {
-                int fl_prev_pt = s->piece_type_stack[ply - 1];
-                int fl_curr_pt = s->piece_type_stack[ply];
-                if (fl_prev_pt > 0 && fl_prev_pt <= 6 && fl_curr_pt > 0 && fl_curr_pt <= 6)
-                {
-                    int16_t *ce = &g_cont_history[fl_prev_pt][s->move_stack[ply - 1].to][fl_curr_pt][moves[i].to];
-                    history_atomic_add(ce, -depth * depth);
-                }
-            }
-        }
-
-        /* Capture History fail-low penalty */
-        if (g_runtime_params.capture_history_enabled && moves[i].capture && !moves[i].promotion && score <= alpha)
-        {
-            int fl_att = s->piece_type_stack[ply];
-            int fl_cap = moves[i].capture;
-            if (fl_att > 0 && fl_att <= 6 && fl_cap > 0 && fl_cap <= 6)
-            {
-                int16_t *che = &g_capture_history[fl_att][moves[i].to][fl_cap];
-                history_atomic_add(che, -depth * depth);
+                s->history[moves[i].from][moves[i].to] -= depth * depth;
+                if (s->history[moves[i].from][moves[i].to] < -HISTORY_SCORE_LIMIT)
+                    s->history[moves[i].from][moves[i].to] = -HISTORY_SCORE_LIMIT;
             }
         }
 
@@ -2031,49 +1956,31 @@ int negamax(SearchState *s, int depth, int alpha, int beta, int ext_count, int p
                     flag = 2;
                     if (!moves[i].capture && ply < 128)
                     {
-                        if (moves[i].from != s->killers[ply][0].from || moves[i].to != s->killers[ply][0].to)
+                        if (g_runtime_params.killers_enabled)
                         {
-                            /* Only shift if the new move is also different from killer[1],
-                             * otherwise we'd duplicate killer[1] into killer[0]. */
-                            if (moves[i].from != s->killers[ply][1].from || moves[i].to != s->killers[ply][1].to)
+                            if (moves[i].from != s->killers[ply][0].from || moves[i].to != s->killers[ply][0].to)
                             {
-                                s->killers[ply][1] = s->killers[ply][0];
-                                s->killers[ply][0] = moves[i];
+                                if (moves[i].from != s->killers[ply][1].from || moves[i].to != s->killers[ply][1].to)
+                                {
+                                    s->killers[ply][1] = s->killers[ply][0];
+                                    s->killers[ply][0] = moves[i];
+                                }
                             }
                         }
-                        s->history[moves[i].from][moves[i].to] += depth * depth;
-                        if (s->history[moves[i].from][moves[i].to] > HISTORY_SCORE_LIMIT)
-                            s->history[moves[i].from][moves[i].to] = HISTORY_SCORE_LIMIT;
-                        /* Continuation History beta cutoff bonus */
-                        if (g_runtime_params.continuation_history_enabled && ply >= 1)
+                        if (g_runtime_params.history_table_enabled)
                         {
-                            int bc_prev_pt = s->piece_type_stack[ply - 1];
-                            int bc_curr_pt = s->piece_type_stack[ply];
-                            if (bc_prev_pt > 0 && bc_prev_pt <= 6 && bc_curr_pt > 0 && bc_curr_pt <= 6)
-                            {
-                                int16_t *bce = &g_cont_history[bc_prev_pt][s->move_stack[ply - 1].to][bc_curr_pt][moves[i].to];
-                                history_atomic_add(bce, depth * depth);
-                            }
+                            s->history[moves[i].from][moves[i].to] += depth * depth;
+                            if (s->history[moves[i].from][moves[i].to] > HISTORY_SCORE_LIMIT)
+                                s->history[moves[i].from][moves[i].to] = HISTORY_SCORE_LIMIT;
                         }
                     }
-                    /* Capture History beta cutoff bonus */
-                    if (g_runtime_params.capture_history_enabled && moves[i].capture && ply < 128)
-                    {
-                        int bc_att = s->piece_type_stack[ply];
-                        int bc_cap = moves[i].capture;
-                        if (bc_att > 0 && bc_att <= 6 && bc_cap > 0 && bc_cap <= 6)
-                        {
-                            int16_t *bche = &g_capture_history[bc_att][moves[i].to][bc_cap];
-                            history_atomic_add(bche, depth * depth);
-                        }
-                    }
-                    if (ply >= 1)
+                    if (ply >= 1 && g_runtime_params.countermove_followup_enabled)
                     {
                         Move prev_move = s->move_stack[ply - 1];
                         int prev_side = 1 - b->side_to_move;
                         s->countermove[prev_side][prev_move.from][prev_move.to] = moves[i];
                     }
-                    if (ply >= 2)
+                    if (ply >= 2 && g_runtime_params.countermove_followup_enabled)
                     {
                         Move prev_own_move = s->move_stack[ply - 2];
                         s->followup[b->side_to_move][prev_own_move.from][prev_own_move.to] = moves[i];

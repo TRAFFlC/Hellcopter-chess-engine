@@ -293,8 +293,12 @@ static void init_runtime_params_defaults(void)
     g_runtime_params.probcut_min_depth = 5;  /* PROBCUT_MIN_DEPTH */
     g_runtime_params.probcut_margin = 200;   /* PROBCUT_MARGIN */
     g_runtime_params.probcut_reduction = 4;  /* PROBCUT_REDUCTION */
-    g_runtime_params.capture_history_enabled = 1;
-    g_runtime_params.continuation_history_enabled = 1;
+    g_runtime_params.history_table_enabled = 1;
+    g_runtime_params.killers_enabled = 1;
+    g_runtime_params.countermove_followup_enabled = 1;
+    g_runtime_params.delta_prune_enabled = 1;
+    g_runtime_params.eval_king_safety_enabled = 1;
+    g_runtime_params.eval_endgame_enabled = 0;
     g_runtime_params.mate_score = MATE_SCORE;
     g_runtime_params.delta = DELTA;
     g_runtime_params.endgame_phase_threshold = ENDGAME_PHASE_THRESHOLD;
@@ -1839,6 +1843,16 @@ load_params_from_file(const char *filename)
             if (parse_json_boolean(val, &value))
                 g_runtime_params.see_prune_enabled = value;
         }
+        if ((val = find_json_key(search_params_obj, "eval_king_safety_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.eval_king_safety_enabled = value;
+        }
+        if ((val = find_json_key(search_params_obj, "eval_endgame_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.eval_endgame_enabled = value;
+        }
         if ((val = find_json_key(search_params_obj, "history_prune_enabled")) != NULL)
         {
             if (parse_json_boolean(val, &value))
@@ -1874,15 +1888,25 @@ load_params_from_file(const char *filename)
             if (parse_json_number(val, &value))
                 g_runtime_params.probcut_reduction = value;
         }
-        if ((val = find_json_key(search_params_obj, "capture_history_enabled")) != NULL)
+        if ((val = find_json_key(search_params_obj, "history_table_enabled")) != NULL)
         {
             if (parse_json_boolean(val, &value))
-                g_runtime_params.capture_history_enabled = value;
+                g_runtime_params.history_table_enabled = value;
         }
-        if ((val = find_json_key(search_params_obj, "continuation_history_enabled")) != NULL)
+        if ((val = find_json_key(search_params_obj, "killers_enabled")) != NULL)
         {
             if (parse_json_boolean(val, &value))
-                g_runtime_params.continuation_history_enabled = value;
+                g_runtime_params.killers_enabled = value;
+        }
+        if ((val = find_json_key(search_params_obj, "countermove_followup_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.countermove_followup_enabled = value;
+        }
+        if ((val = find_json_key(search_params_obj, "delta_prune_enabled")) != NULL)
+        {
+            if (parse_json_boolean(val, &value))
+                g_runtime_params.delta_prune_enabled = value;
         }
         if ((val = find_json_key(search_params_obj, "qs_max_depth_mg")) != NULL)
         {
@@ -2280,8 +2304,12 @@ set_search_param(const char *name, int value)
     if (strcmp(name, "probcut_min_depth") == 0) { g_runtime_params.probcut_min_depth = value; return 1; }
     if (strcmp(name, "probcut_margin") == 0) { g_runtime_params.probcut_margin = value; return 1; }
     if (strcmp(name, "probcut_reduction") == 0) { g_runtime_params.probcut_reduction = value; return 1; }
-    if (strcmp(name, "capture_history_enabled") == 0) { g_runtime_params.capture_history_enabled = value; return 1; }
-    if (strcmp(name, "continuation_history_enabled") == 0) { g_runtime_params.continuation_history_enabled = value; return 1; }
+    if (strcmp(name, "history_table_enabled") == 0) { g_runtime_params.history_table_enabled = value; return 1; }
+    if (strcmp(name, "killers_enabled") == 0) { g_runtime_params.killers_enabled = value; return 1; }
+    if (strcmp(name, "countermove_followup_enabled") == 0) { g_runtime_params.countermove_followup_enabled = value; return 1; }
+    if (strcmp(name, "delta_prune_enabled") == 0) { g_runtime_params.delta_prune_enabled = value; return 1; }
+    if (strcmp(name, "eval_king_safety_enabled") == 0) { g_runtime_params.eval_king_safety_enabled = value; return 1; }
+    if (strcmp(name, "eval_endgame_enabled") == 0) { g_runtime_params.eval_endgame_enabled = value; return 1; }
     return 0;
 }
 
@@ -2307,7 +2335,11 @@ get_search_param(const char *name)
     if (strcmp(name, "probcut_min_depth") == 0) return g_runtime_params.probcut_min_depth;
     if (strcmp(name, "probcut_margin") == 0) return g_runtime_params.probcut_margin;
     if (strcmp(name, "probcut_reduction") == 0) return g_runtime_params.probcut_reduction;
-    if (strcmp(name, "capture_history_enabled") == 0) return g_runtime_params.capture_history_enabled;
-    if (strcmp(name, "continuation_history_enabled") == 0) return g_runtime_params.continuation_history_enabled;
+    if (strcmp(name, "history_table_enabled") == 0) return g_runtime_params.history_table_enabled;
+    if (strcmp(name, "killers_enabled") == 0) return g_runtime_params.killers_enabled;
+    if (strcmp(name, "countermove_followup_enabled") == 0) return g_runtime_params.countermove_followup_enabled;
+    if (strcmp(name, "delta_prune_enabled") == 0) return g_runtime_params.delta_prune_enabled;
+    if (strcmp(name, "eval_king_safety_enabled") == 0) return g_runtime_params.eval_king_safety_enabled;
+    if (strcmp(name, "eval_endgame_enabled") == 0) return g_runtime_params.eval_endgame_enabled;
     return -1;
 }

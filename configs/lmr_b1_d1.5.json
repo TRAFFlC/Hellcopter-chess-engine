@@ -1,0 +1,9 @@
+{
+  "base_version": "v1.9.5",
+  "parameters": {
+    "search_params": {
+      "lmr_base": 1,
+      "lmr_divisor": 1.5
+    }
+  }
+}

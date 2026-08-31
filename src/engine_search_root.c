@@ -58,8 +58,6 @@ save_heuristic_snapshot(const SearchState *s)
     memcpy(g_heuristic_snapshot.history, s->history, sizeof(s->history));
     memcpy(g_heuristic_snapshot.countermove, s->countermove, sizeof(s->countermove));
     memcpy(g_heuristic_snapshot.followup, s->followup, sizeof(s->followup));
-    memcpy(g_heuristic_snapshot.capture_history, g_capture_history, sizeof(g_capture_history));
-    memcpy(g_heuristic_snapshot.cont_history, g_cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 1;
     g_preserve_heuristics = 0;
 }
@@ -76,8 +74,6 @@ restore_heuristic_snapshot(SearchState *s)
     memcpy(s->history, g_heuristic_snapshot.history, sizeof(s->history));
     memcpy(s->countermove, g_heuristic_snapshot.countermove, sizeof(s->countermove));
     memcpy(s->followup, g_heuristic_snapshot.followup, sizeof(s->followup));
-    memcpy(g_capture_history, g_heuristic_snapshot.capture_history, sizeof(g_capture_history));
-    memcpy(g_cont_history, g_heuristic_snapshot.cont_history, sizeof(g_cont_history));
     g_heuristic_snapshot.valid = 0; /* One-time use */
 }
 
@@ -104,7 +100,7 @@ reset_smp_stats(void)
     memset(&g_smp_stats, 0, sizeof(g_smp_stats));
 }
 
-/* Critical position detection: compute a 0-100 score based on 5 signals.
+/* Critical position detection: compute a 0-100 score based on 8 signals.
  * Higher score = more critical position = deserves more search time. */
 static int compute_criticality_score(const TimeManager *tm, int current_score, int prev_score,
                                      int best_move_changed, int aw_fails_this_iter,
@@ -112,38 +108,38 @@ static int compute_criticality_score(const TimeManager *tm, int current_score, i
 {
     int score = 0;
 
-    /* Signal 1: Best move instability (weight 30) */
+    /* Signal 1: Best move instability (weight 25) */
     if (best_move_changed)
-        score += 30;
-    else if (tm->instability_count >= 2)
-        score += 15;
-
-    /* Signal 2: Aspiration window failures (weight 25) */
-    if (aw_fails_this_iter >= 3)
         score += 25;
-    else if (aw_fails_this_iter >= 1)
-        score += 10 + aw_fails_this_iter * 5;
+    else if (tm->instability_count >= 2)
+        score += 12;
 
-    /* Signal 3: Node explosion (weight 20) */
+    /* Signal 2: Aspiration window failures (weight 20) */
+    if (aw_fails_this_iter >= 3)
+        score += 20;
+    else if (aw_fails_this_iter >= 1)
+        score += 8 + aw_fails_this_iter * 4;
+
+    /* Signal 3: Node explosion (weight 15) */
     if (tm->nodes_last_iter > 0)
     {
         long long ratio = nodes_this_iter / (tm->nodes_last_iter + 1);
         if (ratio >= 5)
-            score += 20;
+            score += 15;
         else if (ratio >= 3)
-            score += 12;
+            score += 10;
         else if (ratio >= 2)
-            score += 6;
+            score += 5;
     }
 
-    /* Signal 4: Top 2 moves close (weight 15) */
+    /* Signal 4: Top 2 moves close (weight 10) */
     if (prev_score > -MATE_SCORE + 1000)
     {
         int top2_gap = abs(current_score - prev_score);
         if (top2_gap < 10)
-            score += 15;
+            score += 10;
         else if (top2_gap < 25)
-            score += 8;
+            score += 5;
     }
 
     /* Signal 5: Static eval vs search score divergence (weight 10) */
@@ -155,7 +151,25 @@ static int compute_criticality_score(const TimeManager *tm, int current_score, i
             score += 5;
     }
 
-    (void)legal_moves_count; /* reserved for future use */
+    /* Signal 6: 合法走法 ≤ 3 → 强制局面（weight 20） */
+    if (legal_moves_count >= 1 && legal_moves_count <= 3)
+        score += 20;
+    else if (legal_moves_count <= 5)
+        score += 8;
+
+    /* Signal 7: 中局相位 +10（weight 10） */
+    if (!tm->is_endgame)
+        score += 10;
+
+    /* Signal 8: 战术密度 — 每个走法的平均节点数（weight 15） */
+    if (legal_moves_count > 0)
+    {
+        long long nodes_per_move = nodes_this_iter / legal_moves_count;
+        if (nodes_per_move > 5000)
+            score += 15;
+        else if (nodes_per_move > 2000)
+            score += 8;
+    }
 
     if (score > 100)
         score = 100;
@@ -197,34 +211,33 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
         tm->best_promo_history[i] = 0;
     }
 
-    /* Estimated remaining moves — simple phase-based estimation.
-     * When moves_to_go is provided by the GUI, use it directly. */
+    /* 阶段感知分配：根据 move_number 选择所在阶段，各阶段有独立预估步数 */
     int estimated_moves;
     if (moves_to_go > 0)
     {
         estimated_moves = moves_to_go;
     }
+    else if (move_number <= PHASE_OPENING_MAX_MOVE)
+    {
+        /* 开局：预留足够步数 */
+        estimated_moves = PHASE_OPENING_MOVES_REMAINING;
+    }
+    else if (move_number <= PHASE_MIDGAME_MAX_MOVE)
+    {
+        /* 中局：关键阶段，每步获得更多时间 */
+        estimated_moves = PHASE_MIDGAME_MOVES_REMAINING;
+    }
     else
     {
-        if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[0])
-            estimated_moves = EST_MOVES_BY_MATERIAL[0] - move_number;
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[1])
-            estimated_moves = EST_MOVES_BY_MATERIAL[1];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[2])
-            estimated_moves = EST_MOVES_BY_MATERIAL[2];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[3])
-            estimated_moves = EST_MOVES_BY_MATERIAL[3];
-        else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[4])
-            estimated_moves = EST_MOVES_BY_MATERIAL[4];
-        else
-            estimated_moves = EST_MOVES_BY_MATERIAL[5];
+        /* 残局：保守剩余步数 */
+        estimated_moves = PHASE_ENDGAME_MOVES_REMAINING;
     }
 
     /* Core time allocation formula:
-     * optimum = time_left / estimated_moves + increment × OPTIMAL_TIME_INC_FRACTION_NUM/OPTIMAL_TIME_INC_FRACTION_DEN
-     * maximum = min(time_left × MAX_TIME_FRACTION_NUM/MAX_TIME_FRACTION_DEN, optimum × MAX_TIME_OPTIMAL_MULTIPLIER) */
+     * optimum = time_left / estimated_moves + increment fraction
+     * maximum = min(time_left × fraction, optimum × multiplier) */
     tm->optimal_time = time_left / estimated_moves + inc * OPTIMAL_TIME_INC_FRACTION_NUM / OPTIMAL_TIME_INC_FRACTION_DEN;
-    tm->max_time = time_left * MAX_TIME_FRACTION_NUM / MAX_TIME_FRACTION_DEN;
+    tm->max_time = time_left * PHASE_BASE_MAX_TIME_FRACTION_NUM / PHASE_BASE_MAX_TIME_FRACTION_DEN;
     if (tm->max_time > tm->optimal_time * MAX_TIME_OPTIMAL_MULTIPLIER)
         tm->max_time = tm->optimal_time * MAX_TIME_OPTIMAL_MULTIPLIER;
 
@@ -244,6 +257,16 @@ static void init_time_manager(TimeManager *tm, double time_left, double inc, int
 
     if (tm->optimal_time < (double)MIN_OPTIMAL_TIME_MS / 1000.0)
         tm->optimal_time = (double)MIN_OPTIMAL_TIME_MS / 1000.0;
+}
+static int count_total_material(Board *b)
+{
+    static const int piece_vals[] = {0, PAWN_VALUE, KNIGHT_VALUE, BISHOP_VALUE, ROOK_VALUE, QUEEN_VALUE, 0};
+    int total = 0;
+    int side, pt;
+    for (side = 0; side < 2; side++)
+        for (pt = PAWN; pt <= QUEEN; pt++)
+            total += count_bits(b->pieces[side][pt]) * piece_vals[pt];
+    return total;
 }
 
 static int count_total_material(Board *b)
@@ -383,6 +406,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
     int root_scores[MAX_MOVES];
     int scores_valid = 0;
     int early_terminate = 0;
+    (void)early_terminate;
     for (i = 0; i < MAX_MOVES; i++)
         root_scores[i] = -MATE_SCORE;
 
@@ -1125,12 +1149,41 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 int pv_len = s->pv_length[0];
                 if (pv_len <= 0)
                     pv_len = 1;
+                Board replay_board = s->board;
                 int pi;
                 for (pi = 0; pi < pv_len && pi < 32; pi++)
                 {
                     Move *pm = &s->pv_table[0][pi];
                     if (pm->from == 0 && pm->to == 0 && pi > 0)
                         break;
+                    Move legal_moves[256];
+                    int n_legal = generate_pseudo_legal_moves(&replay_board, legal_moves);
+                    int found = 0;
+                    int j;
+                    for (j = 0; j < n_legal; j++)
+                    {
+                        if (legal_moves[j].from == pm->from && legal_moves[j].to == pm->to && legal_moves[j].promotion == pm->promotion)
+                        {
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        fprintf(stderr, "PV_REPLAY: illegal move %c%c%c%c at depth %d pv[%d], truncating\n",
+                                'a' + (pm->from & 7), '1' + (pm->from >> 3),
+                                'a' + (pm->to & 7), '1' + (pm->to >> 3), depth, pi);
+                        break;
+                    }
+                    UndoInfo replay_undo;
+                    make_move(&replay_board, pm, &replay_undo);
+                    if (is_check(&replay_board, replay_board.side_to_move ^ 1))
+                    {
+                        fprintf(stderr, "PV_REPLAY: move %c%c%c%c leaves king in check at depth %d pv[%d], truncating\n",
+                                'a' + (pm->from & 7), '1' + (pm->from >> 3),
+                                'a' + (pm->to & 7), '1' + (pm->to >> 3), depth, pi);
+                        break;
+                    }
                     if (pv_pos > 0)
                         pv_pos += sprintf(pv_buf + pv_pos, " ");
                     pv_pos += sprintf(pv_buf + pv_pos, "%c%c%c%c",
@@ -1213,24 +1266,17 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                 }
             }
 
-            /* Easy move: best_move stable ≥ EASY_MOVE_STABILITY_COUNT layers and
-             * score stable (change < EASY_MOVE_SCORE_THRESHOLD).
-             * Conservative: only allow early termination when position is truly
-             * stable (stable_count >= 3, score change < 10cp) and we're winning.
-             * The previous relaxed condition (stable_count >= 2, < 15cp) was
-             * causing premature termination on positions that needed deeper search. */
+            /* Easy move: stable for 4+ iterations with score change < 10cp.
+             * 不再提前终止搜索，改为稍后在时间调整中应用 easy 系数。 */
             {
                 int easy_condition = 0;
-                if (tm.stable_count >= EASY_MOVE_STABILITY_COUNT && abs(current_score - prev_score) < EASY_MOVE_SCORE_THRESHOLD)
-                    easy_condition = 1;
-                else if (tm.stable_count >= 3 && abs(current_score - prev_score) < 10 && current_score > 100)
+                if (tm.stable_count >= 4 && abs(current_score - prev_score) < 10)
                     easy_condition = 1;
 
                 if (easy_condition && max_depth <= 0)
                 {
-                    double em_elapsed = get_time() - tm.start_time;
-                    if (em_elapsed >= tm.optimal_time * EASY_MOVE_TIME_FRACTION_NUM / EASY_MOVE_TIME_FRACTION_DEN)
-                        early_terminate = 1;
+                    /* Set flag — 后续时间调整段将使用此标志设置 time_limit = base_optimal */
+                    tm.critical_position_flag = 2;  /* 2 = easy mode */
                 }
             }
 
@@ -1298,17 +1344,15 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     tm.panic_flag = 0;
                 }
 
-                /* Safety cap using actual remaining time */
-                double actual_remaining = tm.remaining - (get_time() - tm.start_time);
-                if (actual_remaining < 0.01)
-                    actual_remaining = 0.01;
-                double safety_cap = actual_remaining * SAFETY_CAP_REMAINING_FRACTION_NUM / SAFETY_CAP_REMAINING_FRACTION_DEN + tm.increment * SAFETY_CAP_INC_FRACTION_NUM / SAFETY_CAP_INC_FRACTION_DEN;
-                if (safety_cap < (double)SAFETY_CAP_MIN_TIME_MS / 1000.0)
-                    safety_cap = (double)SAFETY_CAP_MIN_TIME_MS / 1000.0; /* Ensure minimum time for next iteration */
-                if (safety_cap > tm.max_time)
-                    safety_cap = tm.max_time;
-                if (time_limit > safety_cap)
-                    time_limit = safety_cap;
+                /* 移除 — 单一上限 max_time 已在 init_time_manager 中保障，不再二次限缩 */
+
+                /* Apply easy mode: cap time_limit at base_optimal (no boost) */
+                if (tm.critical_position_flag == 2)
+                {
+                    if (time_limit > tm.base_optimal_time)
+                        time_limit = tm.base_optimal_time;
+                    tm.critical_position_flag = 0;
+                }
 
                 /* Critical position detection + time bank (Task 5) */
                 if (depth >= 3 && max_depth <= 0)
@@ -1318,13 +1362,13 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                     int crit = compute_criticality_score(&tm, current_score, prev_score,
                         best_move_changed, aw_fails_this_iter, nodes_this_iter, legal_moves_count);
 
-                    if (crit >= 70)
+                    if (crit >= 55)
                     {
                         /* Critical position: use max_time + withdraw from bank */
                         double crit_limit = tm.max_time;
                         double withdraw = tm.time_bank * 0.5;
-                        if (withdraw > 0.5)
-                            withdraw = 0.5;
+                        if (withdraw > 2.0)
+                            withdraw = 2.0;
                         crit_limit += withdraw;
                         if (time_limit < crit_limit)
                             time_limit = crit_limit;
@@ -1333,7 +1377,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         if (tm.time_bank < 0)
                             tm.time_bank = 0;
                     }
-                    else if (crit >= 40)
+                    else if (crit >= 25)
                     {
                         /* Moderate: 1.5x base optimal */
                         double mod_limit = tm.base_optimal_time * 1.5;
@@ -1341,16 +1385,16 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                             time_limit = mod_limit;
                         tm.critical_position_flag = 0;
                     }
-                    else if (crit <= 15 && tm.stable_count >= 3)
+                    else if (crit <= 12 && tm.stable_count >= 3)
                     {
                         /* Simple position: save time to bank */
                         double simple_limit = tm.base_optimal_time * 0.7;
                         double saved = time_limit - simple_limit;
                         if (saved > 0.05)
                         {
-                            tm.time_bank += saved * 0.5;
-                            if (tm.time_bank > tm.base_optimal_time * 3.0)
-                                tm.time_bank = tm.base_optimal_time * 3.0;
+                            tm.time_bank += saved * 0.7;
+                            if (tm.time_bank > tm.base_optimal_time * 8.0)
+                                tm.time_bank = tm.base_optimal_time * 8.0;
                             time_limit = simple_limit;
                         }
                         tm.critical_position_flag = 0;
@@ -1360,9 +1404,7 @@ find_best_move_c(const char *fen, double time_limit, double time_left, double in
                         tm.critical_position_flag = 0;
                     }
 
-                    /* Re-apply safety cap after criticality adjustment */
-                    if (time_limit > safety_cap)
-                        time_limit = safety_cap;
+                    /* 移除 — safety_cap 已不再使用 */
                 }
 
                 s->time_limit = time_limit;
@@ -2180,23 +2222,15 @@ find_best_move_smp(const char *fen, double time_limit, double time_left, double 
         int estimated_moves;
         if (moves_to_go > 0)
             estimated_moves = moves_to_go;
+        else if (move_number <= PHASE_OPENING_MAX_MOVE)
+            estimated_moves = PHASE_OPENING_MOVES_REMAINING;
+        else if (move_number <= PHASE_MIDGAME_MAX_MOVE)
+            estimated_moves = PHASE_MIDGAME_MOVES_REMAINING;
         else
-        {
-            if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[0])
-                estimated_moves = EST_MOVES_BY_MATERIAL[0] - move_number;
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[1])
-                estimated_moves = EST_MOVES_BY_MATERIAL[1];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[2])
-                estimated_moves = EST_MOVES_BY_MATERIAL[2];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[3])
-                estimated_moves = EST_MOVES_BY_MATERIAL[3];
-            else if (move_number < EST_MOVES_MATERIAL_THRESHOLDS[4])
-                estimated_moves = EST_MOVES_BY_MATERIAL[4];
-            else
-                estimated_moves = EST_MOVES_BY_MATERIAL[5];
-        }
+            estimated_moves = PHASE_ENDGAME_MOVES_REMAINING;
+
         smp_optimal = time_left / estimated_moves + increment * OPTIMAL_TIME_INC_FRACTION_NUM / OPTIMAL_TIME_INC_FRACTION_DEN;
-        smp_max = time_left * MAX_TIME_FRACTION_NUM / MAX_TIME_FRACTION_DEN;
+        smp_max = time_left * PHASE_BASE_MAX_TIME_FRACTION_NUM / PHASE_BASE_MAX_TIME_FRACTION_DEN;
         if (smp_max > smp_optimal * MAX_TIME_OPTIMAL_MULTIPLIER)
             smp_max = smp_optimal * MAX_TIME_OPTIMAL_MULTIPLIER;
         if (smp_max > time_left - 0.1)

@@ -69,8 +69,12 @@ typedef struct
     int probcut_min_depth;
     int probcut_margin;
     int probcut_reduction;
-    int capture_history_enabled;
-    int continuation_history_enabled;
+    int history_table_enabled;
+    int killers_enabled;
+    int countermove_followup_enabled;
+    int delta_prune_enabled;
+    int eval_king_safety_enabled;
+    int eval_endgame_enabled;
     int mate_score;
     int delta;
     int endgame_phase_threshold;
@@ -428,15 +432,6 @@ void regenerate_lmr_table(void)
 {
     init_lmr_table();
 }
-
-typedef struct
-{
-    U64 key;
-    int score;
-} PawnTTEntry;
-
-#define PAWN_HASH_SIZE (1 << PAWN_HASH_SIZE_EXP)
-static PawnTTEntry volatile pawn_hash_table[PAWN_HASH_SIZE];
 
 /* MAX_BLUNDER_ENTRIES now defined in engine_params.h */
 
@@ -1394,22 +1389,6 @@ board_from_fen(Board *b, const char *fen)
     b->hash = compute_hash(b);
 
     {
-        U64 h = 0;
-        int side;
-        for (side = 0; side < 2; side++)
-        {
-            U64 bb = b->pieces[side][PAWN];
-            while (bb)
-            {
-                int sq = lsb_index(bb);
-                bb &= bb - 1;
-                h ^= zobrist_table[((side * 6 + 0) * 64 + sq)];
-            }
-        }
-        b->pawn_hash = h;
-    }
-
-    {
         int npm_w = 0, npm_b = 0;
         int pt;
         for (pt = KNIGHT; pt <= QUEEN; pt++)
@@ -2069,7 +2048,6 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     undo->halfmove_clock = b->halfmove_clock;
     undo->fullmove_number = b->fullmove_number;
     undo->hash = b->hash;
-    undo->pawn_hash = b->pawn_hash;
     undo->eval_score = b->eval_score;
     undo->phase = b->phase;
     undo->king_sq[0] = b->king_sq[0];
@@ -2103,12 +2081,6 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
     b->hash ^= zobrist_table[((side * 6 + (pt - 1)) * 64 + m->from)];
     b->hash ^= zobrist_table[((side * 6 + (pt - 1)) * 64 + m->to)];
 
-    if (pt == PAWN)
-    {
-        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->from)];
-        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
-    }
-
     /* Detect en passant capture early so we skip the regular capture handler */
     int is_ep_capture = (pt == PAWN && old_ep >= 0 && m->to == old_ep &&
                          (abs(m->to - m->from) == 7 || abs(m->to - m->from) == 9));
@@ -2121,11 +2093,7 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
 
         b->hash ^= zobrist_table[((opp * 6 + (cap_pt - 1)) * 64 + m->to)];
 
-        if (cap_pt == PAWN)
-        {
-            b->pawn_hash ^= zobrist_table[((opp * 6 + 0) * 64 + m->to)];
-        }
-        else
+        if (cap_pt != PAWN)
         {
             b->npm[opp] -= npm_piece_value(cap_pt);
         }
@@ -2139,8 +2107,6 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
 
         b->hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
         b->hash ^= zobrist_table[((side * 6 + (m->promotion - 1)) * 64 + m->to)];
-
-        b->pawn_hash ^= zobrist_table[((side * 6 + 0) * 64 + m->to)];
 
         b->npm[side] += npm_piece_value(m->promotion);
     }
@@ -2268,7 +2234,6 @@ void make_move(Board *b, const Move *m, UndoInfo *undo)
             b->mailbox[ep_cap_sq] = 0;
 
             b->hash ^= zobrist_table[((opp * 6 + 0) * 64 + ep_cap_sq)];
-            b->pawn_hash ^= zobrist_table[((opp * 6 + 0) * 64 + ep_cap_sq)];
         }
     }
 
@@ -2451,7 +2416,6 @@ void unmake_move(Board *b, const Move *m, const UndoInfo *undo)
     b->halfmove_clock = undo->halfmove_clock;
     b->fullmove_number = undo->fullmove_number;
     b->hash = undo->hash;
-    b->pawn_hash = undo->pawn_hash;
     b->eval_score = undo->eval_score;
     b->phase = undo->phase;
     b->king_sq[0] = undo->king_sq[0];

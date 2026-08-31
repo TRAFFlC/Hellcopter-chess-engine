@@ -1,0 +1,10 @@
+{
+  "base_version": "v1.9.5",
+  "parameters": {
+    "search_params": {
+      "history_table_enabled": false,
+      "killers_enabled": false,
+      "countermove_followup_enabled": false
+    }
+  }
+}

@@ -1,0 +1,1 @@
+Auto-loaded Syzygy EGTB from: ../EGTB (TB_LARGEST=5)

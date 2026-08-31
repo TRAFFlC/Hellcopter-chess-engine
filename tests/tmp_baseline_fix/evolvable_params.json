@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "description": "Hellcopter 可演化参数骨架 - 新特征必须先注册再实现",
+  "last_updated": "",
+
+  "active": [
+    {
+      "name": "bishop_pair_bonus",
+      "type": "int",
+      "range": [0, 200],
+      "value": 50,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "doubled_pawn_penalty",
+      "type": "int",
+      "range": [-100, 0],
+      "value": -10,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "isolated_pawn_penalty",
+      "type": "int",
+      "range": [-100, 0],
+      "value": -20,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "pawn_chain_bonus",
+      "type": "int",
+      "range": [0, 100],
+      "value": 15,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "passed_pawn_bonus",
+      "type": "list[int]",
+      "range": [0, 200],
+      "value": [0, 10, 20, 30, 50, 80, 120, 0],
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "open_file_bonus",
+      "type": "int",
+      "range": [0, 50],
+      "value": 15,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "semi_open_file_bonus",
+      "type": "int",
+      "range": [0, 50],
+      "value": 10,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "king_activity_weight",
+      "type": "int",
+      "range": [0, 50],
+      "value": 10,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "simplify_threshold",
+      "type": "int",
+      "range": [0, 500],
+      "value": 200,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "simplify_bonus",
+      "type": "int",
+      "range": [0, 50],
+      "value": 15,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "castle_short_bonus",
+      "type": "int",
+      "range": [0, 100],
+      "value": 30,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "castle_long_bonus",
+      "type": "int",
+      "range": [0, 100],
+      "value": 15,
+      "category": "eval_weights",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "null_move_reduction",
+      "type": "int",
+      "range": [1, 5],
+      "value": 2,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "null_move_min_depth",
+      "type": "int",
+      "range": [1, 6],
+      "value": 3,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "lmr_min_depth",
+      "type": "int",
+      "range": [1, 6],
+      "value": 3,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "lmr_move_threshold",
+      "type": "int",
+      "range": [1, 6],
+      "value": 2,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "futility_margin_base",
+      "type": "int",
+      "range": [50, 500],
+      "value": 150,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "razoring_margin",
+      "type": "int",
+      "range": [100, 600],
+      "value": 300,
+      "category": "search_params",
+      "source": "v1.8.0"
+    },
+    {
+      "name": "endgame_phase_threshold",
+      "type": "int",
+      "range": [4, 30],
+      "value": 20,
+      "category": "constants",
+      "source": "v1.8.0"
+    }
+  ],
+
+  "planned": [],
+
+  "implemented": []
+}

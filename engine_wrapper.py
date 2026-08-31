@@ -117,6 +117,7 @@ def _load_library():
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.c_int,
@@ -131,6 +132,7 @@ def _load_library():
         ctypes.c_int,
         ctypes.c_int,
         ctypes.c_int,
+        ctypes.c_longlong,
         ctypes.POINTER(ctypes.c_int),
         ctypes.POINTER(ctypes.c_uint64),
         ctypes.c_int,
@@ -280,7 +282,8 @@ def compute_hash(fen: str) -> int:
 def search(fen: str, time_limit: float, max_depth: int,
            position_history: list | None = None, use_smp: bool = False,
            time_left: float = 0.0, increment: float = 0.0,
-           moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int]:
+           moves_to_go: int = 0, move_number: int = 0,
+           node_limit: int = 0) -> tuple[str, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -299,6 +302,7 @@ def search(fen: str, time_limit: float, max_depth: int,
         ctypes.c_int(moves_to_go),
         ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
+        ctypes.c_longlong(node_limit),
         ctypes.byref(nodes),
         hist_array,
         ctypes.c_int(hist_count),
@@ -316,7 +320,8 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
                       position_history: list | None = None,
                       use_smp: bool = False,
                       time_left: float = 0.0, increment: float = 0.0,
-                      moves_to_go: int = 0, move_number: int = 0) -> tuple[str, int, int]:
+                      moves_to_go: int = 0, move_number: int = 0,
+                      node_limit: int = 0) -> tuple[str, int, int]:
     _ensure_loaded()
     nodes = ctypes.c_int(0)
 
@@ -335,6 +340,7 @@ def search_with_score(fen: str, time_limit: float, max_depth: int,
         ctypes.c_int(moves_to_go),
         ctypes.c_int(move_number),
         ctypes.c_int(max_depth),
+        ctypes.c_longlong(node_limit),
         ctypes.byref(nodes),
         hist_array,
         ctypes.c_int(hist_count),

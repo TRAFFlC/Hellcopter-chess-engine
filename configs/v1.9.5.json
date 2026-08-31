@@ -1275,7 +1275,7 @@
       "lmr_min_depth": 3,
       "lmr_move_threshold": 2,
       "lmr_base": 0.75,
-      "lmr_divisor": 2.0,
+      "lmr_divisor": 2.5,
       "lmr_history_threshold": 500,
       "futility_enabled": true,
       "futility_margin_base": 150,
@@ -1315,7 +1315,7 @@
       "nmp_med_adv_reduction": -1,
       "nmp_low_phase_threshold": 10,
       "nmp_low_phase_reduction": -1,
-      "see_prune_depth_scale": 60,
+      "see_prune_depth_scale": 120,
       "history_prune_base": 3,
       "lmp_base": 6,
       "se_beta_depth_scale": 2,
@@ -1340,6 +1340,13 @@
         40,
         60
       ],
+      "phase_opening_moves_remaining": 20,
+      "phase_midgame_moves_remaining": 12,
+      "phase_endgame_moves_remaining": 20,
+      "phase_opening_max_move": 12,
+      "phase_midgame_max_move": 30,
+      "phase_base_max_time_fraction_num": 1,
+      "phase_base_max_time_fraction_den": 3,
       "optimal_time_inc_fraction_num": 3,
       "optimal_time_inc_fraction_den": 5,
       "max_time_fraction_num": 2,
@@ -1433,7 +1440,7 @@
     },
     "threading": {
       "enabled": true,
-      "num_threads": 4
+      "num_threads": 1
     }
   },
   "tuning_metadata": {
